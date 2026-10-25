@@ -410,3 +410,18 @@ fn generation_schema_matches_authoritative_scene_component_bounds() {
 fn concrete_creator_example_has_grounded_supports_and_clear_access() {
  let (_,body)=build_generation_request(&request(false)).unwrap();let text=body["contents"][0]["parts"][0]["text"].as_str().unwrap();let start=text.find("structure: ").unwrap()+"structure: ".len();let example:Value=serde_json::Deserializer::from_str(&text[start..]).into_iter::<Value>().next().unwrap().unwrap();let recipe:living_world_core::Recipe=serde_json::from_value(example).unwrap();let checks=evaluate_with_theme(&recipe,&theme()).unwrap();assert!(checks.iter().all(|check|check.status=="pass"),"{checks:?}");
 }
+
+#[test]
+fn direct_argon_generation_gets_low_thinking_and_larger_json_budget_only() {
+    let mut argon = request(false);
+    argon.model = "gemini-4-argon".into();
+    let (_, argon_body) = build_generation_request(&argon).unwrap();
+    assert_eq!(argon_body["generationConfig"]["maxOutputTokens"], 16384);
+    assert_eq!(argon_body["generationConfig"]["thinkingConfig"]["thinkingLevel"], "low");
+
+    let flash = request(false);
+    let (_, flash_body) = build_generation_request(&flash).unwrap();
+    assert_eq!(flash_body["generationConfig"]["maxOutputTokens"], 7000);
+    assert!(flash_body["generationConfig"].get("thinkingConfig").is_none());
+}
+

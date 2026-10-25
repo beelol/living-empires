@@ -216,9 +216,14 @@ pub fn build_generation_request(request: &GenerationRequest) -> Result<(String, 
     } else {
         let mut parts = vec![json!({"text":input})];
         parts.extend(image_parts.iter().map(|image| json!({"inlineData":{"mimeType":image["mimeType"], "data":image["data"]}})));
+        let generation_config = if request.model == "gemini-4-argon" {
+            json!({"responseMimeType":"application/json","responseJsonSchema":serde_json::from_str::<Value>(GENERATION_SCHEMA).expect("static recipe schema"),"maxOutputTokens":16384,"thinkingConfig":{"thinkingLevel":"low"}})
+        } else {
+            json!({"responseMimeType":"application/json","responseJsonSchema":serde_json::from_str::<Value>(GENERATION_SCHEMA).expect("static recipe schema"),"maxOutputTokens":7000})
+        };
         let body = json!({
             "contents": [{"role":"user", "parts":parts}],
-            "generationConfig": {"responseMimeType":"application/json", "responseJsonSchema":serde_json::from_str::<Value>(GENERATION_SCHEMA).expect("static recipe schema"), "maxOutputTokens":7000}
+            "generationConfig": generation_config
         });
         Ok((format!("{API_ROOT}/models/{}:generateContent", url_segment(&request.model)), body))
     }
