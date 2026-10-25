@@ -76,15 +76,34 @@ export function validateRecipe(r, themeOrId) {
   if (!r || typeof r !== 'object' || r.themeId !== theme.id) throw new Error('Candidate changed the frozen theme.');
   if (typeof r.name !== 'string' || !r.name.trim() || r.name.length > 100 || typeof r.description !== 'string' || r.description.length > 2000) throw new Error('Invalid candidate identity.');
   if (!Number.isFinite(r.sensorRadius) || r.sensorRadius < 1 || r.sensorRadius > 20) throw new Error('Sensor radius must be 1–20 metres.');
-  if (!Array.isArray(r.parts) || r.parts.length < 4 || r.parts.length > 48) throw new Error('Provide 4–48 structural parts.');
+  const hasScene = r.scene !== undefined && r.scene !== null;
+  if (!Array.isArray(r.parts) || r.parts.length < 4 || r.parts.length > (hasScene ? 128 : 48)) throw new Error(`Provide 4–${hasScene ? 128 : 48} structural parts.`);
+  let extent = 4;
+  if (hasScene) {
+    const scene = r.scene;
+    if (!scene || !Number.isFinite(scene.halfExtent) || scene.halfExtent < 4 || scene.halfExtent > 16) throw new Error('Scene halfExtent must be 4–16 metres.');
+    extent = scene.halfExtent;
+    if (!Array.isArray(scene.components) || scene.components.length < 1 || scene.components.length > 32) throw new Error('Scene must contain 1–32 components.');
+    const componentIds = new Set(), covered = new Set();
+    for (const c of scene.components) {
+      if (!c || typeof c.id !== 'string' || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(c.id) || c.id.length > 64 || componentIds.has(c.id)) throw new Error('Scene component IDs must be unique lowercase hyphenated slugs.');
+      componentIds.add(c.id);
+      if (typeof c.name !== 'string' || !c.name.trim() || c.name.length > 100 || typeof c.role !== 'string' || !c.role.trim() || c.role.length > 80 || !Array.isArray(c.partIds) || !c.partIds.length) throw new Error('Scene component names, roles, and part membership must be bounded and non-empty.');
+      for (const id of c.partIds) {
+        if (typeof id !== 'string' || covered.has(id)) throw new Error('Each part must belong to exactly one scene component.');
+        covered.add(id);
+      }
+    }
+    if (covered.size !== r.parts.length || r.parts.some(p => !covered.has(p.id))) throw new Error('Scene components must cover every part exactly once.');
+  }
   const ids = new Set();
   for (const p of r.parts) {
     if (typeof p.id !== 'string' || p.id.length > 80 || ids.has(p.id)) throw new Error('Part IDs must be unique.');
     ids.add(p.id);
     if (!['box', 'cylinder', 'cone'].includes(p.shape) || !['wall','support','roof','detail'].includes(p.role) || !['shell','frame','accent'].includes(p.material) || !(p.material in theme.palette)) throw new Error('Unsupported geometry or theme material.');
-    if (!Array.isArray(p.position) || p.position.length !== 3 || p.position.some(v => !Number.isFinite(v) || Math.abs(v) > 10)) throw new Error('Part outside the build envelope.');
+    if (!Array.isArray(p.position) || p.position.length !== 3 || p.position.some(v => !Number.isFinite(v)) || Math.abs(p.position[0]) > 28 || Math.abs(p.position[1]) > 10 || Math.abs(p.position[2]) > 28) throw new Error('Part outside the build envelope.');
     if (!Array.isArray(p.size) || p.size.length !== 3 || p.size.some(v => !Number.isFinite(v) || v <= 0 || v > 12)) throw new Error('Invalid part dimensions.');
-    if (Math.abs(p.position[0]) + p.size[0] / 2 > 4.05 || Math.abs(p.position[2]) + p.size[2] / 2 > 4.05) throw new Error('Building must stay within x/z ±4m.');
+    if (Math.abs(p.position[0]) + p.size[0] / 2 > extent + .05 || Math.abs(p.position[2]) + p.size[2] / 2 > extent + .05) throw new Error(hasScene ? 'Part exceeds scene halfExtent.' : 'Building must stay within x/z ±4m.');
     if (p.position[1] - p.size[1] / 2 < -.05) throw new Error('Geometry intersects the ground.');
   }
   return r;
@@ -137,7 +156,7 @@ export function injectDefect(recipe) {
 
 export const recipeSchema = {
   type:'object', required:['themeId','name','description','sensorRadius','parts'],
-  properties:{themeId:{type:'string'},name:{type:'string'},description:{type:'string'},sensorRadius:{type:'number'},parts:{type:'array',items:{type:'object',required:['id','shape','role','position','size','material'],properties:{id:{type:'string'},shape:{type:'string',enum:['box','cylinder','cone']},role:{type:'string',enum:['wall','support','roof','detail']},position:{type:'array',items:{type:'number'},minItems:3,maxItems:3},size:{type:'array',items:{type:'number'},minItems:3,maxItems:3},material:{type:'string',enum:['shell','frame','accent']}}}}}
+  properties:{themeId:{type:'string'},name:{type:'string'},description:{type:'string'},sensorRadius:{type:'number'},parts:{type:'array',items:{type:'object',required:['id','shape','role','position','size','material'],properties:{id:{type:'string'},shape:{type:'string',enum:['box','cylinder','cone']},role:{type:'string',enum:['wall','support','roof','detail']},position:{type:'array',items:{type:'number'},minItems:3,maxItems:3},size:{type:'array',items:{type:'number'},minItems:3,maxItems:3},material:{type:'string',enum:['shell','frame','accent']}}}},scene:{type:'object',required:['halfExtent','components'],properties:{halfExtent:{type:'number',minimum:4,maximum:16},components:{type:'array',minItems:1,maxItems:32,items:{type:'object',required:['id','name','role','partIds'],properties:{id:{type:'string',pattern:'^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$'},name:{type:'string',minLength:1,maxLength:100},role:{type:'string',minLength:1,maxLength:80},partIds:{type:'array',minItems:1,items:{type:'string'}}}}}}}}
 };
 
 export function eligible(job) {

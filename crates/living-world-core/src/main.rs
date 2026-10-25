@@ -1,8 +1,9 @@
 use std::io::{self, Read};
 use living_world_core::{Recipe,ThemeContract,evaluate,evaluate_with_theme,access_scenario};
-use living_world_core::pipeline::{AssetPipeline,Provenance,ReviewDecision,Evidence};
+use living_world_core::pipeline::{AssetPipeline,Provenance,ReviewDecision,Evidence,RefinementContract};
 use living_world_core::provider::{fixture_recipe,repair_fixture};
 use serde::de::DeserializeOwned;
+#[cfg(feature="live-provider")]
 use serde::Serialize;
 use serde_json::{Value,json};
 
@@ -32,8 +33,15 @@ fn run(input:Value)->Result<Value,String>{
     if op=="capabilities"{return Ok(json!({"engine":"living-world-core/0.1.0","nativeProvider":cfg!(feature="live-provider"),"pipelineVersion":1}));}
     if op=="create"{
         let mut pipeline=AssetPipeline::create(field(&input,"theme")?,field(&input,"prompt")?,now)?;
+        if input.get("sceneHalfExtent").is_some(){pipeline.set_scene_half_extent(field(&input,"sceneHalfExtent")?)?;}
+        if input.get("refinement").is_some(){pipeline.set_refinement(field::<RefinementContract>(&input,"refinement")?)?;}
         if input.get("provenance").is_some(){pipeline.set_provenance(field::<Provenance>(&input,"provenance")?)?;}
         return Ok(json!({"pipeline":pipeline}));
+    }
+    if op=="prepare-generation"{
+        let request=field::<living_world_core::provider::GenerationRequest>(&input,"request")?;
+        let (endpoint,body)=living_world_core::provider::build_generation_request(&request).map_err(|e|e.to_string())?;
+        return Ok(json!({"endpoint":endpoint,"body":body}));
     }
     if op=="fixture"{
         let theme=field::<ThemeContract>(&input,"theme")?;
@@ -74,6 +82,37 @@ fn main(){
     let mut input=String::new();
     let result=io::stdin().take(12_000_000).read_to_string(&mut input).map_err(|_|"Unable to read request".to_string()).and_then(|_|serde_json::from_str(&input).map_err(|e|format!("Invalid JSON: {e}"))).and_then(run);
     match result{Ok(value)=>println!("{value}"),Err(error)=>{println!("{}",json!({"error":error}));std::process::exit(1);}}
+}
+
+#[cfg(test)]
+mod offline_tests {
+    use super::*;
+
+    #[test]
+    fn prepare_generation_routes_frozen_feedback_without_credentials_or_network() {
+        let input=json!({
+            "op":"prepare-generation",
+            "request":{
+                "theme":{
+                    "id":"custom-forest","name":"Forest relay","genre":"Frontier","description":"A forest sensor relay.",
+                    "biome":"Moss forest","shapeLanguage":"Arched timber","materialFinish":"Weathered wood","weathering":"Moss at joints",
+                    "technology":"Sensor relay","motifs":["seed pods"],"lighting":"Soft green","scale":"Human scale",
+                    "gameplayRole":"Route marker","exclusions":["military insignia"],"visualChecks":["Entry remains visible"],
+                    "assumptions":[],"renderingNotes":["Texture is contract metadata"],"referencePreset":"sylvan",
+                    "palette":{"shell":"#b4bd92","frame":"#615444","accent":"#ffc577","ground":"#3f614e","rock":"#788475"},
+                    "sky":"#b9cdb1","flora":"tree","architecture":"organic"
+                },
+                "prompt":"Build the Forest Relay","userFeedback":"Make the arch unmistakable; keep its entrance open.",
+                "sceneHalfExtent":10.0,"model":"gemini-test","agent":"test-agent","managed":false
+            }
+        });
+        let prepared=run(input).unwrap();
+        assert!(prepared["endpoint"].as_str().unwrap().ends_with("/models/gemini-test:generateContent"));
+        let prompt=prepared["body"]["contents"][0]["parts"][0]["text"].as_str().unwrap();
+        assert!(prompt.contains("Make the arch unmistakable"));
+        assert!(prompt.contains("halfExtent of 10 metres"));
+        assert!(prepared["body"].get("key").is_none());
+    }
 }
 
 #[cfg(all(test,feature="live-provider"))]

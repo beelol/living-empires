@@ -33,7 +33,21 @@ pub struct FrozenJobContract {
     pub deadline_ms: u64,
     pub limits: JobLimits,
     pub provenance: Provenance,
+    /// Fixed renderer camera extent for coherent scene candidates in this job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_half_extent: Option<f64>,
+    /// User-directed refinement starts from a previously accepted asset and its actual captures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refinement: Option<RefinementContract>,
     pub frozen_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RefinementContract {
+    pub user_feedback: String,
+    pub baseline_recipe: Recipe,
+    pub baseline_evidence: Evidence,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -207,6 +221,7 @@ impl AssetPipeline {
         let mut contract = FrozenJobContract {
             job_id, prompt, prompt_sha256, theme, theme_sha256, created_at_ms: now_ms, deadline_ms, limits,
             provenance: Provenance::default(), frozen_sha256: String::new(),
+            scene_half_extent: None, refinement: None,
         };
         contract.frozen_sha256 = contract_hash(&contract)?;
         let mut pipeline = Self {
@@ -237,9 +252,55 @@ impl AssetPipeline {
             || provenance.source_fingerprint.as_ref().is_some_and(|v| v.len() > 512) {
             return Err("Provider provenance fields must be non-empty and bounded".into());
         }
+        let frozen_extent = self.contract.scene_half_extent.or(if !provenance.rehearsal { Some(12.0) } else { None });
+        if let (Some(extent), Some(refinement)) = (frozen_extent, self.contract.refinement.as_ref()) {
+            if refinement.baseline_recipe.scene.as_ref().is_some_and(|scene| scene.half_extent.to_bits() != extent.to_bits()) {
+                return Err("Refinement baseline scene halfExtent must match the frozen camera extent".into());
+            }
+        }
+        self.contract.scene_half_extent = frozen_extent;
         self.contract.provenance = provenance;
         self.contract.frozen_sha256 = contract_hash(&self.contract)?;
         self.refresh_state_hash()?;
+        Ok(())
+    }
+
+    pub fn set_scene_half_extent(&mut self, extent: f64) -> Result<(), String> {
+        self.check_integrity()?;
+        self.ensure_unstarted()?;
+        if !extent.is_finite() || !(4.0..=16.0).contains(&extent) {
+            return Err("Scene halfExtent must be between 4 and 16 metres".into());
+        }
+        if self.contract.refinement.as_ref().and_then(|r| r.baseline_recipe.scene.as_ref())
+            .is_some_and(|scene| scene.half_extent.to_bits() != extent.to_bits()) {
+            return Err("Refinement baseline scene halfExtent must match the frozen camera extent".into());
+        }
+        self.contract.scene_half_extent = Some(extent);
+        self.contract.frozen_sha256 = contract_hash(&self.contract)?;
+        self.refresh_state_hash()?;
+        Ok(())
+    }
+
+    pub fn set_refinement(&mut self, refinement: RefinementContract) -> Result<(), String> {
+        self.check_integrity()?;
+        self.ensure_unstarted()?;
+        validate_refinement(&refinement, &self.contract.theme)?;
+        if let Some(extent) = self.contract.scene_half_extent {
+            let baseline_extent = refinement.baseline_recipe.scene.as_ref().map(|scene| scene.half_extent);
+            if baseline_extent.is_some_and(|baseline| baseline.to_bits() != extent.to_bits()) {
+                return Err("Refinement baseline scene halfExtent must match the frozen camera extent".into());
+            }
+        }
+        self.contract.refinement = Some(refinement);
+        self.contract.frozen_sha256 = contract_hash(&self.contract)?;
+        self.refresh_state_hash()?;
+        Ok(())
+    }
+
+    fn ensure_unstarted(&self) -> Result<(), String> {
+        if self.status != PipelineStatus::Active || self.provider_calls != 0 || self.attempt_count != 0 {
+            return Err("Scene extent and refinement feedback are frozen before provider work".into());
+        }
         Ok(())
     }
 
@@ -284,10 +345,8 @@ impl AssetPipeline {
         }
         self.attempt_count += 1;
         let candidate_sha256 = sha256_json(&recipe)?;
-        let (checks, validation_error) = match evaluate_with_theme(&recipe, &self.contract.theme) {
-            Ok(checks) => (checks, None),
-            Err(error) => (Vec::new(), Some(error)),
-        };
+        let evaluation = evaluate_candidate(&recipe, &self.contract.theme, self.contract.provenance.rehearsal, self.contract.scene_half_extent);
+        let (checks, validation_error) = match evaluation { Ok(checks) => (checks, None), Err(error) => (Vec::new(), Some(error)) };
         let record = CandidateRecord { recipe, candidate_sha256, checks, validation_error, reviewed_evidence: None, comparison: None };
         self.candidates.push(record.clone());
         self.last_verdict = None;
@@ -323,7 +382,8 @@ impl AssetPipeline {
             || review.summary.as_ref().is_some_and(|summary| summary.trim().is_empty() || summary.len() > 2_000) {
             return Err("Review findings must be non-empty, bounded entries".into());
         }
-        let prior_evidence = self.candidates.iter().rev().nth(1).and_then(|candidate| candidate.reviewed_evidence.clone());
+        let prior_evidence = self.candidates.iter().rev().nth(1).and_then(|candidate| candidate.reviewed_evidence.clone())
+            .or_else(|| if self.attempt_count == 1 { self.contract.refinement.as_ref().map(|r| r.baseline_evidence.clone()) } else { None });
         let deterministic_failure = candidate.validation_error.is_some()
             && (review.theme_status == EvidenceStatus::Fail || review.render_status == EvidenceStatus::Fail);
         if !self.contract.provenance.rehearsal && review.comparison.is_none() && !deterministic_failure {
@@ -341,9 +401,15 @@ impl AssetPipeline {
         }
         let blocked = review.theme_status == EvidenceStatus::Blocked || review.render_status == EvidenceStatus::Blocked;
         let comparison = review.comparison.as_ref();
+        let prior_recipe = self.candidates.iter().rev().nth(1).map(|prior| &prior.recipe)
+            .or_else(|| if self.attempt_count == 1 { self.contract.refinement.as_ref().map(|r| &r.baseline_recipe) } else { None });
+        // Independent visual improvement cannot be asserted when the actual visible inputs did not change.
+        // Ignore recipe labels/descriptions: only renderer geometry and captured pixels establish a visible delta.
+        let visible_noop = prior_recipe.is_some_and(|prior| prior.parts == candidate.recipe.parts)
+            || prior_evidence.as_ref().is_some_and(|prior| prior.image_sha256 == evidence.image_sha256);
         let comparison_blocked = comparison.is_some_and(|value| value.status == ComparisonStatus::Blocked);
         let comparison_failed = comparison.is_some_and(|value| {
-            !value.defects.is_empty() || if prior_evidence.is_none() { value.status != ComparisonStatus::Initial }
+            !value.defects.is_empty() || visible_noop || if prior_evidence.is_none() { value.status != ComparisonStatus::Initial }
             else { value.status != ComparisonStatus::Improved || value.improvements.is_empty() || !value.regressions.is_empty() }
         });
         let failed = review.theme_status == EvidenceStatus::Fail || review.render_status == EvidenceStatus::Fail
@@ -431,6 +497,15 @@ impl AssetPipeline {
 
     fn check_integrity(&self) -> Result<(), String> {
         validate_theme(&self.contract.theme)?;
+        if self.contract.scene_half_extent.is_some_and(|extent| !extent.is_finite() || !(4.0..=16.0).contains(&extent)) {
+            return Err("Frozen scene halfExtent is invalid".into());
+        }
+        if let Some(refinement) = &self.contract.refinement { validate_refinement(refinement, &self.contract.theme)?; }
+        if let (Some(extent), Some(refinement)) = (self.contract.scene_half_extent, self.contract.refinement.as_ref()) {
+            if refinement.baseline_recipe.scene.as_ref().is_some_and(|scene| scene.half_extent.to_bits() != extent.to_bits()) {
+                return Err("Refinement baseline scene extent differs from frozen renderer extent".into());
+            }
+        }
         if pipeline_hash(self)? != self.state_sha256
             || self.contract.limits.max_attempts > 3 || self.contract.limits.max_provider_calls > 6
             || self.contract.limits.time_budget_ms > DEFAULT_TIME_BUDGET_MS || self.contract.limits.required_image_hashes != 3
@@ -445,7 +520,7 @@ impl AssetPipeline {
         }
         for (index, candidate) in self.candidates.iter().enumerate() {
             if sha256_json(&candidate.recipe)? != candidate.candidate_sha256 { return Err("Candidate hash integrity check failed".into()); }
-            match evaluate_with_theme(&candidate.recipe, &self.contract.theme) {
+            match evaluate_candidate(&candidate.recipe, &self.contract.theme, self.contract.provenance.rehearsal, self.contract.scene_half_extent) {
                 Ok(checks) if candidate.validation_error.is_none() && checks == candidate.checks => {}
                 Err(error) if candidate.validation_error.as_deref() == Some(error.as_str()) && candidate.checks.is_empty() => {}
                 _ => return Err("Candidate evaluation record was tampered with".into()),
@@ -456,7 +531,8 @@ impl AssetPipeline {
                     return Err("Reviewed candidate evidence was tampered with".into());
                 }
                 if let Some(comparison) = &candidate.comparison {
-                    let previous = index.checked_sub(1).and_then(|prior_index| self.candidates.get(prior_index)).and_then(|prior| prior.reviewed_evidence.as_ref());
+                    let previous = index.checked_sub(1).and_then(|prior_index| self.candidates.get(prior_index)).and_then(|prior| prior.reviewed_evidence.as_ref())
+                        .or_else(|| if index == 0 { self.contract.refinement.as_ref().map(|r| &r.baseline_evidence) } else { None });
                     validate_comparison(comparison, evidence, previous, &candidate.checks, &self.contract.theme)?;
                     if comparison.simulated != self.contract.provenance.rehearsal {
                         return Err("Stored comparison rehearsal flag does not match the frozen job".into());
@@ -515,6 +591,43 @@ fn validate_comparison(comparison: &ReviewComparison, evidence: &Evidence, previ
             return Err("Comparison defect must cite a frozen visual check or candidate functional check".into());
         }
     }
+    Ok(())
+}
+
+fn evaluate_candidate(recipe: &Recipe, theme: &ThemeContract, rehearsal: bool, scene_half_extent: Option<f64>) -> Result<Vec<Check>, String> {
+    let checks = evaluate_with_theme(recipe, theme)?;
+    if !rehearsal && recipe.scene.is_none() {
+        return Err("Live candidates require the complete coherent scene contract".into());
+    }
+    if let (Some(expected), Some(scene)) = (scene_half_extent, recipe.scene.as_ref()) {
+        if scene.half_extent.to_bits() != expected.to_bits() {
+            return Err("Candidate scene halfExtent does not match the frozen camera extent".into());
+        }
+    }
+    if let (Some(expected), None) = (scene_half_extent, recipe.scene.as_ref()) {
+        if !rehearsal { return Err(format!("Candidate is missing the frozen scene halfExtent {expected}")); }
+    }
+    Ok(checks)
+}
+
+fn validate_refinement(refinement: &RefinementContract, theme: &ThemeContract) -> Result<(), String> {
+    if refinement.user_feedback.trim().is_empty() || refinement.user_feedback.len() > 3_000 {
+        return Err("Refinement feedback must be non-empty and at most 3,000 bytes".into());
+    }
+    evaluate_with_theme(&refinement.baseline_recipe, theme)
+        .map_err(|_| "Refinement baseline recipe does not match the frozen theme or deterministic contract".to_string())?;
+    let evidence = &refinement.baseline_evidence;
+    if evidence.candidate_sha256 != sha256_json(&refinement.baseline_recipe)?
+        || !valid_sha256(&evidence.candidate_sha256)
+        || evidence.image_sha256.len() != 3 || evidence.image_sha256.iter().any(|hash| !valid_sha256(hash))
+        || (!evidence.image_urls.is_empty() && (evidence.image_urls.len() != 3
+            || evidence.image_urls.iter().any(|url| url.trim().is_empty() || url.len() > 2_048))) {
+        return Err("Refinement baseline must bind the exact recipe and three renderer image hashes".into());
+    }
+    let mut hashes = evidence.image_sha256.clone();
+    hashes.sort();
+    hashes.dedup();
+    if hashes.len() != 3 { return Err("Refinement baseline image hashes must be distinct".into()); }
     Ok(())
 }
 
