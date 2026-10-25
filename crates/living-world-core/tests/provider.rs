@@ -1,6 +1,7 @@
 use living_world_core::{
     access_scenario,
-    provider::{build_generation_request, build_review_request, fixture_recipe, generate_with_transport, repair_fixture, review_with_transport, GenerationRequest, ProviderError, ProviderTransport, ReviewRequest},
+    evaluate_with_theme,
+    provider::{build_generation_request, build_review_request, fixture_recipe, generate_with_transport, repair_fixture, review_with_transport, GenerationRequest, PreviousReviewEvidence, ProviderError, ProviderTransport, ReviewRequest},
     Part,
     Architecture, Flora, Palette, ReferencePreset, ThemeContract,
 };
@@ -42,6 +43,13 @@ impl ProviderTransport for MockTransport {
 
 fn text_response(text: String) -> Value {
     json!({"candidates":[{"content":{"parts":[{"text":text}]}}],"usageMetadata":{"totalTokenCount":21}})
+}
+
+fn png_view(label: &[u8]) -> (String, String) {
+    use base64::Engine as _;
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend_from_slice(label);
+    (base64::engine::general_purpose::STANDARD.encode(&bytes), living_world_core::pipeline::sha256(&bytes))
 }
 
 #[test]
@@ -87,38 +95,90 @@ fn managed_generation_resumes_context_and_environment_and_extracts_final_text() 
     assert!(call.0.ends_with("/interactions"));
     assert_eq!(call.2["previous_interaction_id"],"previous-turn");
     assert_eq!(call.2["environment"],"sandbox-2");
+    assert_eq!(call.2["agent_config"]["model"],"gemini-test");
+    assert_eq!(call.2["agent_config"]["max_total_tokens"],50_000);
+}
+
+#[test]
+fn completed_managed_model_output_step_is_used_and_raw_response_metadata_is_preserved(){
+    let request=request(true);
+    let recipe=fixture_recipe(&request.theme).unwrap();
+    let raw=json!({"id":"completed-interaction","status":"completed","usage":{"total_tokens":31},"environment_id":"remote-env","agent":"antigravity-preview-09-2026","steps":[
+        {"type":"thought","summary":"ignore this reasoning"},
+        {"type":"code_execution_call","arguments":{"command":"ignored tool call"}},
+        {"type":"code_execution_result","result":"ignored tool result"},
+        {"type":"model_output","content":[{"type":"text","text":format!("```json\n{}\n```",serde_json::to_string(&recipe).unwrap())}]}
+    ]});
+    let transport=MockTransport::default();*transport.response.lock().unwrap()=Some(raw.clone());
+    let result=generate_with_transport(&request,"key",&transport).unwrap();
+    assert_eq!(result.recipe.theme_id,"custom-forest");
+    assert_eq!(result.interaction_id.as_deref(),Some("completed-interaction"));
+    assert_eq!(result.environment_id.as_deref(),Some("remote-env"));
+    assert_eq!(result.usage.as_ref().unwrap()["total_tokens"],31);
+    assert_eq!(result.response,raw);
+
+    let malformed=json!({"id":"unknown-outcome-id","status":"completed","usage":{"total_tokens":47},"environment_id":"remote-env","steps":[{"type":"model_output","content":[{"type":"text","text":"not recipe json"}]}],"agent":"antigravity-preview-09-2026"});
+    *transport.response.lock().unwrap()=Some(malformed.clone());
+    let error=generate_with_transport(&request,"key",&transport).unwrap_err();
+    assert!(error.to_string().contains("malformed JSON"));
+    assert_eq!(error.response,Some(malformed));
 }
 
 #[test]
 fn malformed_or_invalid_provider_recipes_are_rejected_without_retry() {
     let request=request(false);
     let transport=MockTransport::default();
-    *transport.response.lock().unwrap()=Some(text_response("not json".into()));
-    assert!(generate_with_transport(&request,"key",&transport).unwrap_err().to_string().contains("malformed JSON"));
+    let malformed=text_response("not json".into());
+    *transport.response.lock().unwrap()=Some(malformed.clone());
+    let error=generate_with_transport(&request,"key",&transport).unwrap_err();
+    assert!(error.to_string().contains("malformed JSON"));
+    assert_eq!(error.response,Some(malformed));
     let invalid=fixture_recipe(&request.theme).unwrap();
     let mut invalid=serde_json::to_value(invalid).unwrap();
     invalid["parts"][0]["material"]=json!("#fff");
     *transport.response.lock().unwrap()=Some(text_response(invalid.to_string()));
-    assert!(generate_with_transport(&request,"key",&transport).unwrap_err().to_string().contains("deterministic validation"));
+    let result=generate_with_transport(&request,"key",&transport).unwrap();
+    assert!(evaluate_with_theme(&result.recipe,&request.theme).is_err(),"pipeline owns deterministic failure recording and repair");
     assert_eq!(transport.calls.lock().unwrap().len(),2);
 }
 
 #[test]
 fn reviewer_request_uses_three_actual_inline_pngs_and_checks_verdicts() {
-    let request=ReviewRequest {theme:theme(),prompt:"Forest relay".into(),images:vec!["cG5nLWE=".into(),"cG5nLWI=".into(),"cG5nLWM=".into()],model:"gemini-review".into()};
+    let views: Vec<_> = [b"a".as_slice(),b"b".as_slice(),b"c".as_slice()].iter().map(|label| png_view(label)).collect();
+    let request=ReviewRequest {theme:theme(),prompt:"Forest relay".into(),images:views.iter().map(|view|view.0.clone()).collect(),candidate_hash:"d".repeat(64),image_hashes:views.iter().map(|view|view.1.clone()).collect(),previous:None,model:"gemini-review".into()};
     let (url,body)=build_review_request(&request).unwrap();
     assert!(url.ends_with(":generateContent"));
-    assert_eq!(body["contents"][0]["parts"].as_array().unwrap().len(),4);
-    assert_eq!(body["contents"][0]["parts"][1]["inlineData"]["mimeType"],"image/png");
-    assert_eq!(body["contents"][0]["parts"][3]["inlineData"]["data"],"cG5nLWM=");
+    assert_eq!(body["contents"][0]["parts"].as_array().unwrap().len(),7);
+    assert_eq!(body["contents"][0]["parts"][2]["inlineData"]["mimeType"],"image/png");
+    assert_eq!(body["contents"][0]["parts"][6]["inlineData"]["data"],request.images[2]);
+    assert_eq!(body["contents"][0]["parts"][1]["text"],"CURRENT VIEW 1");
+    assert!(body["contents"][0]["parts"][0]["text"].as_str().unwrap().contains("Set simulated=false"));
+    let comparison=json!({"candidateHash":request.candidate_hash.clone(),"imageHashes":request.image_hashes.clone(),"previousCandidateHash":null,"previousImageHashes":[],"status":"initial","summary":"Three matched views show the expected forest relay silhouette.","strengths":["Entry remains visible"],"defects":[],"improvements":[],"regressions":[],"simulated":false});
     let transport=MockTransport::default();
-    *transport.response.lock().unwrap()=Some(text_response(r#"{"themeStatus":"pass","renderStatus":"blocked","findings":"View 3 is unclear."}"#.into()));
+    *transport.response.lock().unwrap()=Some(text_response(json!({"themeStatus":"pass","renderStatus":"blocked","findings":"View 3 is unclear.","comparison":comparison}).to_string()));
     let result=review_with_transport(&request,"key",&transport).unwrap();
     assert_eq!(result.theme_status,"pass");
     assert_eq!(result.render_status,"blocked");
     assert!(result.findings.contains("View 3"));
-    *transport.response.lock().unwrap()=Some(text_response(r#"{"themeStatus":"maybe","renderStatus":"pass","findings":""}"#.into()));
+    assert_eq!(result.comparison.image_hashes,request.image_hashes);
+    *transport.response.lock().unwrap()=Some(text_response(r#"{"themeStatus":"maybe","renderStatus":"pass","findings":"","comparison":{}}"#.into()));
     assert!(review_with_transport(&request,"key",&transport).unwrap_err().to_string().contains("invalid verdict"));
+}
+
+#[test]
+fn reviewer_hashes_decoded_png_bytes_and_binds_matched_previous_views() {
+    let current: Vec<_> = [b"new-a".as_slice(),b"new-b".as_slice(),b"new-c".as_slice()].iter().map(|label| png_view(label)).collect();
+    let previous: Vec<_> = [b"old-a".as_slice(),b"old-b".as_slice(),b"old-c".as_slice()].iter().map(|label| png_view(label)).collect();
+    let mut request = ReviewRequest { theme: theme(), prompt: "Forest relay".into(), images: current.iter().map(|v|v.0.clone()).collect(),
+        candidate_hash: "a".repeat(64), image_hashes: current.iter().map(|v|v.1.clone()).collect(),
+        previous: Some(PreviousReviewEvidence { candidate_hash:"b".repeat(64), image_hashes:previous.iter().map(|v|v.1.clone()).collect(), images:previous.iter().map(|v|v.0.clone()).collect(), strengths:vec!["Open entry".into()] }), model:"gemini-review".into() };
+    let (_, body) = build_review_request(&request).unwrap();
+    let parts = body["contents"][0]["parts"].as_array().unwrap();
+    assert!(parts.iter().any(|part|part["text"]=="PREVIOUS VIEW 1"));
+    assert!(parts.iter().any(|part|part["text"]=="CURRENT VIEW 1"));
+    assert_eq!(parts.iter().filter(|part|part["inlineData"].is_object()).count(),6);
+    request.image_hashes[0] = "c".repeat(64);
+    assert!(build_review_request(&request).unwrap_err().to_string().contains("hash does not match"));
 }
 
 #[test]

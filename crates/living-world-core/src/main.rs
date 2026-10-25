@@ -3,7 +3,27 @@ use living_world_core::{Recipe,ThemeContract,evaluate,evaluate_with_theme,access
 use living_world_core::pipeline::{AssetPipeline,Provenance,ReviewDecision,Evidence};
 use living_world_core::provider::{fixture_recipe,repair_fixture};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::{Value,json};
+
+#[cfg(feature="live-provider")]
+fn provider_output<T:Serialize>(result:Result<T,living_world_core::provider::ProviderError>)->Result<Value,String>{
+    match result{
+        Ok(value)=>Ok(json!(value)),
+        Err(error)=>{
+            let message=error.to_string();
+            match error.response{
+            Some(response)=>Ok(provider_response_output(message,response)),
+            None=>Err(message),
+            }
+        },
+    }
+}
+
+#[cfg(feature="live-provider")]
+fn provider_response_output(message:String,response:Value)->Value{
+    json!({"providerError":{"message":message,"response":response}})
+}
 
 fn field<T:DeserializeOwned>(input:&Value,key:&str)->Result<T,String>{serde_json::from_value(input.get(key).cloned().ok_or_else(||format!("Missing {key}"))?).map_err(|e|format!("Invalid {key}: {e}"))}
 fn run(input:Value)->Result<Value,String>{
@@ -24,8 +44,8 @@ fn run(input:Value)->Result<Value,String>{
         #[cfg(feature="live-provider")]{
             use living_world_core::provider::{GenerationRequest,ReviewRequest,UreqTransport,generate_with_transport,review_with_transport};
             let key=std::env::var("GEMINI_API_KEY").or_else(|_|std::env::var("GOOGLE_API_KEY")).map_err(|_|"GEMINI_API_KEY is not configured")?;
-            if op=="generate"{return generate_with_transport(&field::<GenerationRequest>(&input,"request")?,&key,&UreqTransport).map(|r|json!(r)).map_err(|e|e.to_string());}
-            return review_with_transport(&field::<ReviewRequest>(&input,"request")?,&key,&UreqTransport).map(|r|json!(r)).map_err(|e|e.to_string());
+            if op=="generate"{return provider_output(generate_with_transport(&field::<GenerationRequest>(&input,"request")?,&key,&UreqTransport));}
+            return provider_output(review_with_transport(&field::<ReviewRequest>(&input,"request")?,&key,&UreqTransport));
         }
         #[cfg(not(feature="live-provider"))]{return Err("Native Gemini transport is disabled in this build; cargo build -p living-world-core --features live-provider".into());}
     }
@@ -54,4 +74,17 @@ fn main(){
     let mut input=String::new();
     let result=io::stdin().take(12_000_000).read_to_string(&mut input).map_err(|_|"Unable to read request".to_string()).and_then(|_|serde_json::from_str(&input).map_err(|e|format!("Invalid JSON: {e}"))).and_then(run);
     match result{Ok(value)=>println!("{value}"),Err(error)=>{println!("{}",json!({"error":error}));std::process::exit(1);}}
+}
+
+#[cfg(all(test,feature="live-provider"))]
+mod tests{
+    use super::*;
+
+    #[test]
+    fn provider_output_preserves_raw_received_response_without_turning_it_into_transport_failure(){
+        let raw=json!({"id":"interaction-7","status":"completed","usage":{"total_tokens":123},"environment_id":"env-2","steps":[{"type":"model_output","content":[{"type":"text","text":"unparseable recipe"}]}],"agent":"managed-agent"});
+        let envelope=provider_response_output("Managed agent returned invalid recipe".into(),raw.clone());
+        assert_eq!(envelope["providerError"]["message"],"Managed agent returned invalid recipe");
+        assert_eq!(envelope["providerError"]["response"],raw);
+    }
 }

@@ -1,6 +1,7 @@
 use living_world_core::{
     Architecture, AssetPipeline, Evidence, EvidenceStatus, Flora, Palette, PipelineStatus,
     Provenance, Recipe, ReferencePreset, ReviewDecision, ReviewVerdict, ThemeContract,
+    pipeline::{ComparisonStatus, ReviewComparison, VisualDefect},
 };
 use serde_json;
 
@@ -29,11 +30,21 @@ fn recipe(theme_id: &str) -> Recipe {
 }
 
 fn review() -> ReviewDecision {
-    ReviewDecision { theme_status: EvidenceStatus::Pass, render_status: EvidenceStatus::Pass, findings: vec![], summary: Some("Review confirms the theme and render are clear.".into()) }
+    ReviewDecision { theme_status: EvidenceStatus::Pass, render_status: EvidenceStatus::Pass, findings: vec![], summary: Some("Review confirms the theme and render are clear.".into()), comparison: None }
 }
 
 fn evidence(candidate_sha256: String) -> Evidence {
     Evidence { candidate_sha256, image_sha256: ["a", "b", "c"].iter().map(|v| v.repeat(64)).collect(), image_urls: vec![] }
+}
+
+fn comparison(current: &Evidence, previous: Option<&Evidence>, status: ComparisonStatus) -> ReviewComparison {
+    ReviewComparison {
+        candidate_hash: current.candidate_sha256.clone(), image_hashes: current.image_sha256.clone(),
+        previous_candidate_hash: previous.map(|item| item.candidate_sha256.clone()),
+        previous_image_hashes: previous.map(|item| item.image_sha256.clone()).unwrap_or_default(),
+        status, summary: "Matched views preserve the requested form and entry.".into(),
+        strengths: vec!["Entry remains visible".into()], defects: vec![], improvements: vec![], regressions: vec![], simulated: false,
+    }
 }
 
 #[test]
@@ -103,7 +114,7 @@ fn cancellation_deadline_and_call_attempt_budgets_reject_late_work() {
     assert_eq!(calls.status, PipelineStatus::Exhausted);
 
     let mut attempts = AssetPipeline::create(theme.clone(), "Build".into(), 0).unwrap();
-    let reject = ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Pass, findings: vec!["Repair needed".into()], summary: None };
+    let reject = ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Pass, findings: vec!["Repair needed".into()], summary: None, comparison: None };
     for i in 0..attempts.contract.limits.max_attempts {
         let candidate = attempts.submit_candidate(recipe(&theme.id), i as u64).unwrap();
         let expected = if i + 1 == attempts.contract.limits.max_attempts { ReviewVerdict::Exhausted } else { ReviewVerdict::Repair };
@@ -118,7 +129,7 @@ fn cancellation_deadline_and_call_attempt_budgets_reject_late_work() {
 fn final_attempt_and_call_responses_remain_processable() {
     let theme = theme();
     let mut final_attempt = AssetPipeline::create(theme.clone(), "Build".into(), 0).unwrap();
-    let repair = ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Pass, findings: vec!["Fix theme".into()], summary: None };
+    let repair = ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Pass, findings: vec!["Fix theme".into()], summary: None, comparison: None };
     for i in 0..2 {
         let candidate = final_attempt.submit_candidate(recipe(&theme.id), i * 2 + 1).unwrap();
         assert_eq!(final_attempt.decide(repair.clone(), evidence(candidate.candidate_sha256), i * 2 + 2).unwrap(), ReviewVerdict::Repair);
@@ -148,13 +159,13 @@ fn review_requires_independent_statuses_and_exact_image_evidence() {
     assert!(pipeline.decide(review(), duplicate, 2).is_err());
     let excess = Evidence { candidate_sha256: candidate.candidate_sha256.clone(), image_sha256: ["d", "e", "f", "g"].iter().map(|v| v.repeat(64)).collect(), image_urls: vec![] };
     assert!(pipeline.decide(review(), excess, 2).is_err());
-    let missing_render = ReviewDecision { theme_status: EvidenceStatus::Pass, render_status: EvidenceStatus::Blocked, findings: vec![], summary: None };
+    let missing_render = ReviewDecision { theme_status: EvidenceStatus::Pass, render_status: EvidenceStatus::Blocked, findings: vec![], summary: None, comparison: None };
     assert_eq!(pipeline.decide(missing_render, evidence(candidate.candidate_sha256.clone()), 2).unwrap(), ReviewVerdict::Blocked);
     assert_eq!(pipeline.status, PipelineStatus::Blocked);
 
     let mut failed = AssetPipeline::create(theme.clone(), "Build".into(), 0).unwrap();
     let candidate = failed.submit_candidate(recipe(&theme.id), 1).unwrap();
-    let review_fail = ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Pass, findings: vec!["Palette mismatch".into()], summary: None };
+    let review_fail = ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Pass, findings: vec!["Palette mismatch".into()], summary: None, comparison: None };
     assert_eq!(failed.decide(review_fail, evidence(candidate.candidate_sha256), 2).unwrap(), ReviewVerdict::Repair);
 }
 
@@ -182,8 +193,8 @@ fn mismatched_evidence_and_tampered_deserialized_state_are_rejected() {
 #[test]
 fn theme_and_render_review_statuses_must_each_pass() {
     for decision in [
-        ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Pass, findings: vec![], summary: None },
-        ReviewDecision { theme_status: EvidenceStatus::Pass, render_status: EvidenceStatus::Fail, findings: vec![], summary: None },
+        ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Pass, findings: vec![], summary: None, comparison: None },
+        ReviewDecision { theme_status: EvidenceStatus::Pass, render_status: EvidenceStatus::Fail, findings: vec![], summary: None, comparison: None },
     ] {
         let theme = theme();
         let mut pipeline = AssetPipeline::create(theme.clone(), "Build".into(), 0).unwrap();
@@ -204,7 +215,10 @@ fn provenance_is_frozen_and_exported_without_loss() {
     pipeline.charge_call(1).unwrap();
     assert!(pipeline.set_provenance(Provenance::default()).is_err());
     let candidate = pipeline.submit_candidate(recipe(&theme.id), 2).unwrap();
-    pipeline.decide(review(), evidence(candidate.candidate_sha256), 3).unwrap();
+    let current_evidence = evidence(candidate.candidate_sha256);
+    let mut decision = review();
+    decision.comparison = Some(comparison(&current_evidence, None, ComparisonStatus::Initial));
+    pipeline.decide(decision, current_evidence, 3).unwrap();
     let package = pipeline.package(4).unwrap();
     assert!(!package.manifest.rehearsal);
     assert_eq!(package.manifest.provider, "gemini");
@@ -212,4 +226,57 @@ fn provenance_is_frozen_and_exported_without_loss() {
     assert_eq!(package.manifest.agent.as_deref(), Some("builder"));
     assert_eq!(package.manifest.source_revision.as_deref(), Some("rev-abc"));
     assert_eq!(package.manifest.source_fingerprint.as_deref(), Some("fp-123"));
+}
+
+#[test]
+fn live_repairs_require_a_hash_bound_improvement_and_export_the_review() {
+    let theme = theme();
+    let mut pipeline = AssetPipeline::create(theme.clone(), "Build a traversable orchard outpost".into(), 0).unwrap();
+    pipeline.set_provenance(Provenance { rehearsal: false, provider: "gemini".into(), model: "gemini-review".into(), agent: None, source_revision: None, source_fingerprint: None }).unwrap();
+
+    let first = pipeline.submit_candidate(recipe(&theme.id), 1).unwrap();
+    let first_evidence = evidence(first.candidate_sha256.clone());
+    let mut first_comparison = comparison(&first_evidence, None, ComparisonStatus::Initial);
+    first_comparison.defects.push(VisualDefect { view: 2, location: "central doorway".into(), criterion: "Entry remains visible".into(), issue: "A post obscures the entry in the front view".into(), repair: "Move the post outside the doorway".into() });
+    let first_review = ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Pass, findings: vec!["Obstructed entrance".into()], summary: Some("Initial view found an entrance obstruction".into()), comparison: Some(first_comparison) };
+    assert_eq!(pipeline.decide(first_review, first_evidence.clone(), 2).unwrap(), ReviewVerdict::Repair);
+
+    let mut repaired_recipe = recipe(&theme.id);
+    repaired_recipe.name = "Open Orchard Relay".into();
+    let second = pipeline.submit_candidate(repaired_recipe, 3).unwrap();
+    let mut second_evidence = evidence(second.candidate_sha256.clone());
+    second_evidence.image_sha256 = ["d", "e", "f"].iter().map(|v| v.repeat(64)).collect();
+    let mut second_review = review();
+    let mut improved = comparison(&second_evidence, Some(&first_evidence), ComparisonStatus::Improved);
+    improved.improvements = vec!["The central doorway is unobstructed in the matched front view".into()];
+    improved.strengths.push("The broad roof silhouette is preserved".into());
+    second_review.comparison = Some(improved.clone());
+    assert_eq!(pipeline.decide(second_review, second_evidence.clone(), 4).unwrap(), ReviewVerdict::Accept);
+    let package = pipeline.package(5).unwrap();
+    assert_eq!(package.manifest.comparison, Some(improved));
+
+    let mut tampered: AssetPipeline = serde_json::from_slice(&serde_json::to_vec(&pipeline).unwrap()).unwrap();
+    tampered.candidates[1].comparison.as_mut().unwrap().improvements.clear();
+    assert!(tampered.package(5).unwrap_err().contains("tampered"));
+}
+
+#[test]
+fn deterministic_live_failure_keeps_capture_as_the_next_comparison_baseline() {
+    let theme = theme();
+    let mut pipeline = AssetPipeline::create(theme.clone(), "Build a traversable relay".into(), 0).unwrap();
+    pipeline.set_provenance(Provenance { rehearsal: false, provider: "gemini".into(), model: "gemini-review".into(), agent: None, source_revision: None, source_fingerprint: None }).unwrap();
+    let invalid = pipeline.submit_candidate(recipe("wrong-theme"), 1).unwrap();
+    assert!(invalid.validation_error.is_some());
+    let first_evidence = evidence(invalid.candidate_sha256);
+    let fail = ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Fail, findings: vec!["Recipe theme identity mismatch".into()], summary: None, comparison: None };
+    assert_eq!(pipeline.decide(fail, first_evidence.clone(), 2).unwrap(), ReviewVerdict::Repair);
+
+    let fixed = pipeline.submit_candidate(recipe(&theme.id), 3).unwrap();
+    let mut current = evidence(fixed.candidate_sha256);
+    current.image_sha256 = ["d", "e", "f"].iter().map(|value| value.repeat(64)).collect();
+    let mut decision = review();
+    let mut critique = comparison(&current, Some(&first_evidence), ComparisonStatus::Improved);
+    critique.improvements.push("Recipe now carries the frozen theme identity".into());
+    decision.comparison = Some(critique);
+    assert_eq!(pipeline.decide(decision, current, 4).unwrap(), ReviewVerdict::Accept);
 }
