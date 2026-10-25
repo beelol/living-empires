@@ -1,4 +1,6 @@
 //! Native terrain presentation and development controls. Release art still requires independent review.
+#[path = "presentation.rs"]
+mod presentation;
 #[path = "terrain/mod.rs"]
 mod terrain;
 use super::{ClientState, network_tick};
@@ -6,7 +8,6 @@ use bevy::{
     input::mouse::{MouseScrollUnit, MouseWheel},
     light::CascadeShadowConfigBuilder,
     prelude::*,
-    text::FontSize,
     window::PrimaryWindow,
 };
 use std::{
@@ -18,6 +19,7 @@ const LEGACY_SCALE: f32 = 0.1;
 
 pub(super) fn install(app: &mut App) {
     terrain::install(app);
+    presentation::install(app);
     app.insert_resource(ClearColor(Color::srgb(0.18, 0.27, 0.30)))
         .insert_resource(ViewState::default())
         .add_systems(Startup, setup)
@@ -28,7 +30,6 @@ pub(super) fn install(app: &mut App) {
                 camera_control,
                 player_input,
                 reconcile_units,
-                update_overlay,
                 capture_frame,
             )
                 .chain()
@@ -73,8 +74,6 @@ impl Default for ViewState {
 struct ArenaCamera;
 #[derive(Component)]
 struct Unit(String);
-#[derive(Component)]
-struct StatusText;
 #[derive(Component)]
 struct TargetMarker;
 #[derive(Component)]
@@ -156,34 +155,6 @@ fn setup(
         Transform::from_xyz(0.0, 0.04, 0.0),
         Visibility::Hidden,
         TargetMarker,
-    ));
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: px(22),
-                top: px(20),
-                padding: UiRect::all(px(16)),
-                max_width: px(640),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.025, 0.045, 0.06, 0.92)),
-        ))
-        .with_child((
-            Text::new("LIVING EMPIRES\nConnecting..."),
-            TextFont {
-                font_size: FontSize::Px(18.0),
-                ..default()
-            },
-            TextColor(Color::srgb(0.87, 0.93, 0.92)),
-            StatusText,
-        ));
-    commands.spawn((
-        Text::new("WASD  Move commander     Right click  Destination     Space  Stop\nArrows  Pan     Q / E  Rotate     Scroll  Zoom     Home  Recenter\nPage Up / Down  Tilt     F12  Capture native view | Host owns terrain and movement"),
-        TextFont { font_size: FontSize::Px(15.0), ..default() },
-        TextColor(Color::srgb(0.72, 0.82, 0.82)),
-        Node { position_type: PositionType::Absolute, left: px(22), bottom: px(20), padding: UiRect::all(px(14)), ..default() },
-        BackgroundColor(Color::srgba(0.025, 0.045, 0.06, 0.92)),
     ));
 }
 
@@ -547,63 +518,6 @@ fn reconcile_units(
                     Transform::from_xyz(0.0, 0.03, 0.0),
                 ));
             });
-    }
-}
-
-fn update_overlay(state: Res<ClientState>, mut text: Query<&mut Text, With<StatusText>>) {
-    let who = state
-        .player
-        .as_ref()
-        .map(|p| format!("{}  |  {:.0}, {:.0}", p.name, p.x, p.y))
-        .unwrap_or_else(|| "Waiting for commander...".into());
-    let terrain_status = if let Some(terrain) = &state.terrain {
-        state
-            .player
-            .as_ref()
-            .and_then(|p| terrain.sample(p.x, p.y))
-            .map(|surface| {
-                use argon_dev::terrain::Biome;
-                let name = match surface.biome {
-                    Biome::Coast => "Coast",
-                    Biome::Grassland => "Grassland",
-                    Biome::Wetland => "Wetland",
-                    Biome::Jungle => "Jungle",
-                    Biome::LuminousGrove => "Luminous grove",
-                };
-                format!(
-                    "\n{name}  |  movement {:.0}%  |  elevation {:.1} m  |  slope {:.0}%",
-                    surface.movement_multiplier * 100.,
-                    surface.height,
-                    surface.slope * 100.
-                )
-            })
-            .unwrap_or_default()
-    } else if state.terrain_info.is_some() {
-        "\nReceiving and validating saved terrain…".into()
-    } else {
-        String::new()
-    };
-    let short = |value: &str| value.chars().take(12).collect::<String>();
-    let message = state.fatal.as_deref().or(state.content_error.as_deref());
-    let error = message
-        .map(|error| format!("\n{error}"))
-        .unwrap_or_default();
-    for mut text in &mut text {
-        text.0 = format!(
-            "LIVING EMPIRES  /  {}\n{}\n{}  |  {} commanders\nLua {}  |  host {}{}{}",
-            if state.world_name.is_empty() {
-                "DEVELOPMENT"
-            } else {
-                &state.world_name
-            },
-            state.status,
-            who,
-            state.players.len(),
-            short(&state.content_version),
-            short(&state.release),
-            terrain_status,
-            error
-        );
     }
 }
 

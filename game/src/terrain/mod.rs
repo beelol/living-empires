@@ -32,7 +32,7 @@ struct Palette {
     foliage: Handle<StandardMaterial>,
     stone: Handle<StandardMaterial>,
     glow: Handle<StandardMaterial>,
-    water: Handle<StandardMaterial>,
+    water: Handle<super::presentation::WaterMaterial>,
 }
 
 pub(super) fn install(app: &mut App) {
@@ -44,6 +44,7 @@ fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut waters: ResMut<Assets<super::presentation::WaterMaterial>>,
 ) {
     // A repeatable mineral-grain albedo texture, authored here; no external asset dependencies.
     let mut bytes = Vec::with_capacity(128 * 128 * 4);
@@ -102,12 +103,15 @@ fn setup(
         cull_mode: None,
         ..default()
     });
-    let water = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.045, 0.17, 0.19),
-        perceptual_roughness: 0.24,
-        metallic: 0.22,
-        reflectance: 0.6,
-        ..default()
+    let water = waters.add(super::presentation::WaterMaterial {
+        base: StandardMaterial {
+            base_color: Color::srgb(0.045, 0.17, 0.19),
+            perceptual_roughness: 0.28,
+            metallic: 0.12,
+            reflectance: 0.5,
+            ..default()
+        },
+        extension: default(),
     });
     commands.insert_resource(Palette {
         ground,
@@ -718,6 +722,7 @@ mod tests {
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>()
             .init_resource::<Assets<Image>>()
+            .init_resource::<Assets<super::super::presentation::WaterMaterial>>()
             .init_resource::<Landscape>()
             .init_resource::<ViewState>()
             .init_resource::<ButtonInput<KeyCode>>()
