@@ -31,3 +31,12 @@ Checks: both JS files pass node --check; all referenced static DOM IDs exist wit
 no duplicates. Actual 880x850 and 1280x720 usability, saved-region inheritance,
 accepted design reuse and persistence remain lead integration evidence, not_run
 at this handoff. No paid calls were made by this stream.
+
+Live follow-up: lead verified drawer controls at 880x850 and 1280x720, saved-area
+assignment and new construction inheriting its area faction despite a different
+selected fallback. The dashed one-pixel green saved outline was not clearly visible
+in actual screenshots. Replaced only that overlay with 0.24 m violet border meshes,
+fog and depth tests disabled; accepted asset geometry/materials remain untouched.
+The area note now explains that resizing retains existing assigned buildings.
+Both JS syntax checks and owned diff validation pass; final border visibility
+remains lead's browser verification.
