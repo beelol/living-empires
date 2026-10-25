@@ -1,6 +1,6 @@
 //! Development meteor simulation. Public broadcasts and survey drones are real
 //! authoritative state; these fixture drones do not imply a paid economy exists.
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -63,6 +63,19 @@ pub struct Response {
     pub completed: bool,
 }
 
+/// GM v1 envelope. `at` is an actually captured UNIX receipt time; simulation
+/// timestamps remain explicitly labeled inside the payload. Public facts only.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Broadcast {
+    pub id: String,
+    pub source: String,
+    pub at: u64,
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub allowed_recipients: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EventSnapshot {
@@ -97,6 +110,10 @@ struct Saved {
     knowledge: Vec<Knowledge>,
     units: Vec<SurveyUnit>,
     responses: Vec<Response>,
+    #[serde(default)]
+    namespace: String,
+    #[serde(default)]
+    broadcasts: Vec<Broadcast>,
 }
 
 pub struct EventWorld {
@@ -125,6 +142,8 @@ impl EventWorld {
                 center: [520.0, 300.0],
                 events: vec![],
                 responses: vec![],
+                namespace: format!("fixture-{seed:x}"),
+                broadcasts: vec![],
                 knowledge: FACTIONS
                     .iter()
                     .map(|f| Knowledge {
@@ -163,6 +182,7 @@ impl EventWorld {
             .open(lock_path)?;
         fs2::FileExt::try_lock_exclusive(&lock).context("another host owns the event world")?;
         let mut world = Self::new(seed);
+        world.saved.namespace = String::new();
         match File::open(&path) {
             Ok(file) => {
                 let mut bytes = vec![];
@@ -174,6 +194,14 @@ impl EventWorld {
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
+        }
+        if world.saved.namespace.is_empty() {
+            let mut nonce = [0; 16];
+            getrandom::fill(&mut nonce).map_err(|e| anyhow::anyhow!("event namespace: {e}"))?;
+            world.saved.namespace = format!(
+                "world-{}",
+                nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            );
         }
         world.path = Some(path);
         world.lock = Some(lock);
@@ -238,6 +266,12 @@ impl EventWorld {
             .filter(|r| r.faction == faction)
             .cloned()
             .collect()
+    }
+
+    /// Durable public outbox, separate from frequent client snapshots so a long
+    /// history does not inflate every gameplay packet. A consumer deduplicates IDs.
+    pub fn broadcasts(&self) -> Vec<Broadcast> {
+        self.saved.broadcasts.clone()
     }
 
     /// Set a fresh world's event region to a terrain-validated demo site. Never
@@ -312,6 +346,23 @@ impl EventWorld {
     }
 
     pub fn advance(&mut self, seconds: u64) -> Result<()> {
+        self.advance_with_receipt(seconds, None)
+    }
+
+    pub fn advance_recorded(&mut self, seconds: u64, receipt_unix: u64) -> Result<()> {
+        ensure!(
+            receipt_unix > 0
+                && self
+                    .saved
+                    .broadcasts
+                    .last()
+                    .is_none_or(|b| receipt_unix >= b.at),
+            "invalid or backwards broadcast receipt clock"
+        );
+        self.advance_with_receipt(seconds, Some(receipt_unix))
+    }
+
+    fn advance_with_receipt(&mut self, seconds: u64, receipt: Option<u64>) -> Result<()> {
         ensure!(
             seconds <= 3600,
             "advance at most one simulation hour per call"
@@ -321,7 +372,27 @@ impl EventWorld {
         }
         let mut next = self.saved.clone();
         for _ in 0..seconds {
+            let previous: Vec<_> = next
+                .events
+                .iter()
+                .map(|r| (r.event.id, r.event.phase))
+                .collect();
             tick(&mut next)?;
+            if let Some(at) = receipt {
+                for record in next
+                    .events
+                    .iter()
+                    .filter(|r| r.broadcast && !previous.contains(&(r.event.id, r.event.phase)))
+                {
+                    let phase = phase_name(record.event.phase);
+                    next.broadcasts.push(Broadcast {
+                        id:format!("{}/meteor/{}/{phase}",next.namespace,record.event.id),source:"world-events".into(),at,
+                        kind:format!("meteor.{phase}"),
+                        payload:serde_json::json!({"simulation_time":next.now,"event":record.event}),
+                        allowed_recipients:FACTIONS.iter().map(|f|(*f).into()).collect(),
+                    });
+                }
+            }
         }
         self.commit(next)
     }
@@ -386,6 +457,14 @@ impl EventWorld {
             let _ = fs::remove_file(temp);
         }
         result
+    }
+}
+
+fn phase_name(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Warning => "warning",
+        Phase::Impact => "impact",
+        Phase::Cooled => "cooled",
     }
 }
 
@@ -564,6 +643,58 @@ fn validate(saved: &Saved) -> Result<()> {
         saved.schema_version == 1 && saved.events.len() <= MAX_EVENTS,
         "unsupported event save"
     );
+    ensure!(
+        saved.namespace.len() <= 64
+            && saved
+                .namespace
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+        "invalid event namespace"
+    );
+    ensure!(
+        saved.broadcasts.len() <= MAX_EVENTS * 3,
+        "broadcast outbox exceeds limit"
+    );
+    let mut ids = std::collections::HashSet::new();
+    let mut last_at = 0;
+    for broadcast in &saved.broadcasts {
+        let event: PublicEvent = serde_json::from_value(broadcast.payload["event"].clone())
+            .context("invalid public broadcast payload")?;
+        let known = saved
+            .events
+            .iter()
+            .find(|r| r.event.id == event.id && r.broadcast)
+            .context("broadcast references nonpublic event")?;
+        let mut expected = known.event.clone();
+        expected.phase = event.phase;
+        ensure!(
+            event == expected
+                && broadcast.payload["simulation_time"]
+                    .as_u64()
+                    .is_some_and(|at| at <= saved.now),
+            "broadcast facts disagree with event history"
+        );
+        ensure!(
+            broadcast.id
+                == format!(
+                    "{}/meteor/{}/{}",
+                    saved.namespace,
+                    event.id,
+                    phase_name(event.phase)
+                )
+                && ids.insert(&broadcast.id),
+            "invalid or duplicate broadcast identity"
+        );
+        ensure!(
+            broadcast.at > 0
+                && broadcast.at >= last_at
+                && broadcast.source == "world-events"
+                && broadcast.kind == format!("meteor.{}", phase_name(event.phase))
+                && broadcast.allowed_recipients == FACTIONS,
+            "invalid broadcast provenance"
+        );
+        last_at = broadcast.at;
+    }
     ensure!(
         saved
             .center
