@@ -2,6 +2,8 @@ import {fixtureRecipe} from './core.mjs';
 import {THEMES,validateTheme,draftThemeFromPrompt} from './themes.mjs';
 import {createWorld} from './scene.mjs';
 import {startRenderWorker} from './render-worker.mjs';
+import {requestJSON as api} from './request.mjs';
+import {describeJob,jobErrorText} from './job-status.mjs';
 const $=id=>document.getElementById(id),world=createWorld($('world'));
 startRenderWorker();
 let currentJob=null,lastHash='',busy=false,config,releasePinned=false,pollInFlight=false,sceneRevision=0,referenceObjectUrl=null,referenceImage=null,referenceReadPending=false,referenceLoadToken=0,jobsCache=new Map();
@@ -15,27 +17,18 @@ let displayedBrief=briefs.argonaut;
 const labels=[['THEME-01','Frozen theme & material palette'],['GEN-05.access','Commander can enter'],['GEN-06.support','Structure meets the ground'],['GEN-05.sensor','Sensor detects the test target'],['THEME-02','Visual theme consistency'],['LIVE-04','Three actual rendered views']];
 const terminal=['accepted','active','failed','blocked','cancelled','exhausted'];
 function el(tag,text,className){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(className)e.className=className;return e;}
-const runSummary=el('section'),runSummaryTitle=el('strong'),runSummaryReason=el('p'),runSummarySpend=el('p');
+const runSummary=el('section'),runSummaryTitle=el('strong'),runSummaryReason=el('p'),runSummaryTiming=el('p'),runSummarySpend=el('p');
 runSummary.id='current-run-summary';runSummary.hidden=true;runSummary.setAttribute('role','status');runSummary.setAttribute('aria-live','polite');runSummary.style.cssText='font-size:12px;line-height:1.5;margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:5px';
 runSummaryReason.style.margin='6px 0';runSummarySpend.style.cssText='font-size:10px;margin:6px 0;color:var(--muted)';
-runSummary.append(runSummaryTitle,runSummaryReason,runSummarySpend,$('cancel'));$('generation-panel').before(runSummary,$('error'));
-function runLimitReason(job){
-  const limits=job.pipeline?.contract?.limits||{},attempts=job.attempts?.length||0,calls=job.calls||0,reached=[];
-  if(attempts>=(limits.maxAttempts??3))reached.push(`Candidate limit reached (${attempts}/${limits.maxAttempts??3})`);
-  if(calls>=(limits.maxProviderCalls??6))reached.push(`API call limit reached (${calls}/${limits.maxProviderCalls??6})`);
-  const stoppedAt=terminal.includes(job.status)?Date.parse(job.events?.at(-1)?.at):Date.now(),deadline=Number(job.deadline||job.pipeline?.contract?.deadlineMs);
-  if(deadline&&Number.isFinite(stoppedAt)&&stoppedAt>=deadline)reached.push(`Time limit reached (${Math.round((limits.timeBudgetMs??1200000)/60000)} minutes)`);
-  return job.status==='exhausted'?(reached.join('; ')||`Run stopped at ${attempts}/${limits.maxAttempts??3} candidates and ${calls}/${limits.maxProviderCalls??6} API calls; ${job.stopReason||'no further work allowed'}`):job.stopReason||'';
-}
+runSummaryTiming.style.cssText='font-size:11px;margin:6px 0;color:var(--muted)';
+runSummary.append(runSummaryTitle,runSummaryReason,runSummaryTiming,runSummarySpend,$('cancel'));$('generation-panel').before(runSummary,$('error'));
 function renderRunSummary(job){
-  const limits=job.pipeline?.contract?.limits||{},attempt=job.attempts?.at(-1),stopped=['failed','blocked','exhausted','cancelled'].includes(job.status),phase={generating:'Generating scene',repairing:'Revising scene',rendering:'Capturing actual renders',reviewing:'Independent visual review in progress',validating:'Checking geometry',preparing:'Preparing the selected scene',accepted:'Scene accepted',active:'Scene active'}[job.status]||job.status;
+  const {limits,phase,reason,timing}=describeJob(job);
   runSummary.hidden=false;runSummaryTitle.textContent=`${phase} · ${job.attempts?.length||0}/${limits.maxAttempts??3} candidates · ${job.calls||0}/${limits.maxProviderCalls??6} API calls`;
-  const failure=attempt?.validationError||(attempt?.checks||[]).find(check=>check.status==='fail'||check.status==='blocked')?.detail||attempt?.decisionReason;
-  const reason=stopped?[runLimitReason(job),failure&&`Last issue: ${failure}`].filter(Boolean).join('. '):job.status==='reviewing'?'The critic is inspecting three actual renderer views.':!terminal.includes(job.status)?job.events?.at(-1)?.message||'Work is in progress.':job.stopReason||'';
   runSummaryReason.textContent=reason.length>320?reason.slice(0,317)+'…':reason;runSummaryReason.title=reason;
+  runSummaryTiming.textContent=timing;runSummaryTiming.hidden=!timing;
   const spend=job.spending||config?.spending;runSummarySpend.hidden=!spend||!Number.isFinite(spend.capUsd);runSummarySpend.textContent=spend?`Session dollars: $${Number(spend.capUsd).toFixed(2)} allowance · $${Number(spend.allocatedUsd||0).toFixed(2)} reserved, not billed spend. Job candidates and API calls have separate limits.`:'';
 }
-async function api(url,body){const response=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const value=await response.json();if(!response.ok)throw new Error(value.error||'Request failed');return value;}
 function error(e){$('error').textContent=e.message;}
 function validateContract(value){
   const result=validateTheme(value);
@@ -505,6 +498,7 @@ async function refreshDashboard(){
 }
 function renderJob(job){
   const newJob=currentJob?.id!==job.id;
+  const displayedError=jobErrorText(job,{previousJob:currentJob,currentError:$('error').textContent});
   if(newJob&&typeof job.prompt==='string'){$('prompt').value=job.prompt;displayedBrief=Object.values(briefs).includes(job.prompt)?job.prompt:'';$('user-feedback').value=job.userFeedback||'';$('refinement-preview-result').replaceChildren();$('refinement-error').textContent='';}
   jobsCache.set(job.id,job);
   currentJob=job;busy=!terminal.includes(job.status);renderSavedScenes();const savedUrl=new URL(location.href);savedUrl.searchParams.set('job',job.id);history.replaceState(null,'',savedUrl);$('start').disabled=!!runningJob();$('cancel').hidden=!busy;setEditorLocked(busy);$('contract-version').textContent=`CONTRACT v${job.contractVersion||1}`;
@@ -530,7 +524,7 @@ function renderJob(job){
   else $('connection').textContent='GEMINI · '+(job.provider==='managed'?'MANAGED':'DIRECT');
   const visible=displayed||attempt,sourceId=chosen?.sourceJobId||(visible?.hash===job.baseCandidateHash?job.baseJobId:null),evidenceJob=jobsCache.get(sourceId)||job,inspected=evidenceJob.attempts?.find(item=>item.hash===visible?.hash)||visible;renderChecks(inspected?.checks);renderLatestComparison(evidenceJob,inspected);renderAttemptHistory(job);renderRefinementControls(job);renderSceneEvolution();
   const versionUrl=new URL(location.href);if(chosen?.hash)versionUrl.searchParams.set('version',chosen.hash);else versionUrl.searchParams.delete('version');history.replaceState(null,'',versionUrl);
-  $('error').textContent='';
+  $('error').textContent=displayedError;
 }
 for(const t of Object.values(THEMES)){const option=el('option',t.name+' · '+t.genre);option.value=t.id;$('theme').append(option);}
 $('theme').onchange=()=>{$('use-manual-theme').checked=true;themeChanged();$('theme-draft-note').textContent='MANUAL THEME OVERRIDE · The selected preset will be frozen for this job.';};
