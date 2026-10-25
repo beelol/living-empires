@@ -1,3 +1,4 @@
+import {depositNear,proceduralDeposit} from './minerals.mjs';
 /** Single-player rules v1. Pure JSON state; UI and Foundry cannot mint world effects. */
 export const DEFINITIONS=Object.freeze({
  core:{name:'Landing core',cost:0,seconds:0,power:8,demand:0,description:'Your colony anchor. Supplies 8 power.'},
@@ -28,10 +29,10 @@ export function canBuild(w,kind,x,z){
  if(w.buildings.some(b=>Math.abs(x-b.x)<HALF*2+1.4&&Math.abs(z-b.z)<HALF*2+2.2))return {ok:false,reason:'Building or access overlap. Leave room between foundations.'};
  if(Math.abs(x-w.robot.x)<HALF+ROBOT_RADIUS&&Math.abs(z-w.robot.z)<HALF+ROBOT_RADIUS)return {ok:false,reason:'Move your robot off the construction footprint.'};
  if(!findPath(w,w.robot,{x,z:z+HALF+2},{extra:{x,z}}))return {ok:false,reason:'No accessible route to this site.'};
- const deposit=w.deposits.find(p=>Math.hypot(p.x-x,p.z-z)<=4&&p.remaining>0);
+ const deposit=depositNear(w.deposits,x,z,land);
  if(kind==='extractor'&&!deposit)return {ok:false,reason:'Place the extractor directly on a mineral seam.'};
  if(w.alloy<d.cost)return {ok:false,reason:`Need ${d.cost} alloy; you have ${Math.floor(w.alloy)}.`};
- return {ok:true,x,z,depositId:deposit?.id};
+ return {ok:true,x,z,depositId:deposit?.id,deposit};
 }
 export function blocked(w,x,z,extra){return !land(x,z)||[...w.buildings,...(extra?[extra]:[])].some(b=>Math.abs(x-b.x)<HALF+ROBOT_RADIUS&&Math.abs(z-b.z)<HALF+ROBOT_RADIUS);}
 export function findPath(w,from,to,{extra}={}){
@@ -42,7 +43,7 @@ export function findPath(w,from,to,{extra}={}){
  for(const [dx,dz] of [[2,0],[-2,0],[0,2],[0,-2]]){const next={x:p.x+dx,z:p.z+dz},nextCost=cost.get(key(p))+2;if(blocked(w,next.x,next.z,extra)||nextCost>=(cost.get(key(next))??Infinity))continue;cost.set(key(next),nextCost);came.set(key(next),p);open.push({...next,score:nextCost+heuristic(next)});}
  }return null;
 }
-export function mineralCandidates(w){const candidates=[...w.deposits],tileX=Math.floor(w.robot.x/32),tileZ=Math.floor(w.robot.z/32);for(let dx=-3;dx<=3;dx++)for(let dz=-3;dz<=3;dz++){const x=tileX+dx,z=tileZ+dz,hash=(Math.imul(x+9821,73856093)^Math.imul(z+127,19349663))>>>0,id=`seam-${x}-${z}`;if(w.deposits.some(d=>d.id===id))continue;const deposit={id,x:x*32+((hash%9)-4)*2,z:z*32+(((hash>>>7)%9)-4)*2,remaining:600+hash%900};if(land(deposit.x,deposit.z))candidates.push(deposit);}return candidates.sort((a,b)=>Math.hypot(a.x-w.robot.x,a.z-w.robot.z)-Math.hypot(b.x-w.robot.x,b.z-w.robot.z));}
+export function mineralCandidates(w){const candidates=[...w.deposits],tileX=Math.floor(w.robot.x/32),tileZ=Math.floor(w.robot.z/32);for(let dx=-3;dx<=3;dx++)for(let dz=-3;dz<=3;dz++){const x=tileX+dx,z=tileZ+dz,deposit=proceduralDeposit(x,z),id=deposit.id;if(w.deposits.some(d=>d.id===id))continue;if(land(deposit.x,deposit.z))candidates.push(deposit);}return candidates.sort((a,b)=>Math.hypot(a.x-w.robot.x,a.z-w.robot.z)-Math.hypot(b.x-w.robot.x,b.z-w.robot.z));}
 
 export function command(w,input){
  if(!input||typeof input!=='object'||typeof input.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(input.id)||['__proto__','constructor','prototype'].includes(input.id))throw Error('A stable operation ID is required.');
@@ -57,6 +58,7 @@ export function command(w,input){
  }else if(input.type==='build'){
  if(w.buildings.some(b=>b.id===input.id))throw Error('Building identity already exists.');
  const site=canBuild(w,input.kind,input.x,input.z);if(!site.ok)throw Error(site.reason);
+ if(input.kind==='extractor'&&!w.deposits.some(p=>p.id===site.depositId))w.deposits.push({...site.deposit});
  w.alloy-=DEFINITIONS[input.kind].cost;const b={id:input.id,kind:input.kind,x:site.x,z:site.z,progress:0,created:w.time,...(input.kind==='extractor'?{depositId:site.depositId}:{})};if(creation){b.prompt=creation.userPrompt;b.name=creation.userPrompt.slice(0,70);b.creationStatus='queued';w.foundry.requests.push(creation);}w.buildings.push(b);result.buildingId=b.id;event(w,`${DEFINITIONS[b.kind].name} construction started.`);
  // Recalculate the remaining route when a new foundation crosses it.
  if(w.robot.path.length){const destination=w.robot.path.at(-1);w.robot.path=findPath(w,w.robot,destination)||[];}

@@ -12,7 +12,7 @@ const root=path.dirname(fileURLToPath(import.meta.url)),require=createRequire(im
 function defaultBinary(){const local=path.join(root,'../target/debug/world-check');if(fs.existsSync(local))return local;try{const common=execFileSync('git',['rev-parse','--path-format=absolute','--git-common-dir'],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();return path.join(path.dirname(common),'target/debug/world-check');}catch{return local;}}
 export async function createApp({port=Number(process.env.SOLO_PORT||4320),dataDir=process.env.SOLO_DATA_DIR||path.join(root,'.data'),foundryURL=process.env.SOLO_FOUNDRY_URL||'http://127.0.0.1:4317',foundryEnabled=true,mode=process.env.SOLO_FOUNDRY_MODE||'gemini',binary=process.env.RUST_CORE_BIN||defaultBinary()}={}){
  if(!['gemini','managed'].includes(mode))throw Error('Offline generation is disabled. SOLO_FOUNDRY_MODE must be gemini or managed.');
- const store=openStore(dataDir),w=store.world;const priorMode=w.foundry.mode;w.foundry.mode=mode;if(priorMode==='fixture'&&mode!=='fixture'){w.foundry.round++;w.foundry.enabled=true;for(const request of w.foundry.requests)if(request.provider==='fixture'&&request.status==='queued')request.status='cancelled';}if(!fs.existsSync(path.join(dataDir,'initialized'))){w.foundry.enabled=foundryEnabled;fs.writeFileSync(path.join(dataDir,'initialized'),'1',{mode:0o600});store.save();}
+ const store=openStore(dataDir),w=store.world;if(process.env.SOLO_FOUNDRY_MAINTENANCE==='1')w.foundry.maintenance=true;const priorMode=w.foundry.mode;w.foundry.mode=mode;if(priorMode==='fixture'&&mode!=='fixture'){w.foundry.round++;w.foundry.enabled=true;for(const request of w.foundry.requests)if(request.provider==='fixture'&&request.status==='queued')request.status='cancelled';}if(!fs.existsSync(path.join(dataDir,'initialized'))){w.foundry.enabled=foundryEnabled;fs.writeFileSync(path.join(dataDir,'initialized'),'1',{mode:0o600});store.save();}
  const api=httpAPI(foundryURL),controller=new FoundryController({world:w,save:store.save,api,verifyTyped:typedVerifier(binary),dataDir,mode});let url,closed=false,fatal=null;
  const send=(res,status,body)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(body));};
  const server=http.createServer(async(req,res)=>{try{
@@ -24,9 +24,10 @@ export async function createApp({port=Number(process.env.SOLO_PORT||4320),dataDi
  if(req.headers['content-type']?.split(';')[0]!=='application/json')return send(res,415,{error:'Use application/json.'});
  let body='',size=0;for await(const chunk of req){size+=chunk.length;if(size>16000)return send(res,413,{error:'Command too large.'});body+=chunk;}const input=JSON.parse(body);
  // Work on a transaction copy; acknowledged commands are flushed before reply.
- if(pathname==='/api/v1/command'){if(input.kind==='creation'&&input.provider==='fixture')throw Error('Offline generation is disabled. Select live Asset Foundry.');const candidate=structuredClone(w),result=command(candidate,input);for(const request of candidate.foundry.requests)if(!w.foundry.requests.some(r=>r.id===request.id))w.foundry.requests.push(request);for(const key of ['revision','paused','alloy','robot','buildings','deposits','receipts','events'])w[key]=candidate[key];try{store.save();}catch(e){fatal=e;throw e;}return send(res,200,result);}
+ if(pathname==='/api/v1/command'){if(input.kind==='creation'&&w.foundry.maintenance)throw Error('Foundry connection repair is in progress; your colony is safe.');if(input.kind==='creation'&&input.provider==='fixture')throw Error('Offline generation is disabled. Select live Asset Foundry.');const candidate=structuredClone(w),result=command(candidate,input);for(const request of candidate.foundry.requests)if(!w.foundry.requests.some(r=>r.id===request.id))w.foundry.requests.push(request);for(const key of ['revision','paused','alloy','robot','buildings','deposits','receipts','events'])w[key]=candidate[key];try{store.save();}catch(e){fatal=e;throw e;}return send(res,200,result);}
  if(pathname==='/api/v1/foundry'){
- if(input.action==='toggle'){if(typeof input.enabled!=='boolean')throw Error('enabled must be boolean.');w.foundry.enabled=input.enabled;}
+ if(input.action==='maintenance'){if(typeof input.enabled!=='boolean')throw Error('enabled must be boolean.');w.foundry.maintenance=input.enabled;}
+ else if(input.action==='toggle'){if(typeof input.enabled!=='boolean')throw Error('enabled must be boolean.');w.foundry.enabled=input.enabled;}
  else if(input.action==='next'){if(w.foundry.requests.some(r=>['running','queued','dispatching','unknown'].includes(r.status)))throw Error('Finish or reconcile the current pass first.');w.foundry.round++;w.foundry.enabled=true;}
  else if(input.action==='rollback'){rollback(w,input.kind);w.foundry.enabled=false;for(const r of w.foundry.requests)if(r.kind===input.kind&&!r.targetId&&['queued','dispatching','unknown','running'].includes(r.status)){r.status='cancelled';r.reason='Invalidated by appearance rollback.';}}
  else if(input.action==='regenerate'){
@@ -53,6 +54,7 @@ export async function createApp({port=Number(process.env.SOLO_PORT||4320),dataDi
  if(pathname==='/api/v1/export'){res.setHeader('Content-Disposition','attachment; filename="first-landing-colony.json"');return send(res,200,w);}
  let file;if(pathname==='/vendor/three.js')file=require.resolve('three').replace(/three\.cjs$/,'three.module.js');
  else if(pathname==='/vendor/three.core.js')file=require.resolve('three').replace(/three\.cjs$/,'three.core.js');
+ else if(pathname==='/minerals.mjs')file=path.join(root,'minerals.mjs');
  else if(pathname==='/model.mjs')file=path.join(root,'model.mjs');
  else if(pathname==='/shared/core.mjs')file=path.join(root,'../public/core.mjs');
  else if(pathname==='/shared/themes.mjs')file=path.join(root,'../public/themes.mjs');
@@ -62,7 +64,7 @@ export async function createApp({port=Number(process.env.SOLO_PORT||4320),dataDi
  }catch(e){send(res,400,{error:e.message});}});
  try{await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve);});}catch(e){store.close();throw e;}url=`http://127.0.0.1:${server.address().port}`;
  let previous=performance.now(),lastSave=previous;const tick=setInterval(()=>{if(fatal)return;const now=performance.now();advance(w,Math.min((now-previous)/1000,1));previous=now;if(now-lastSave>1000){try{store.save();lastSave=now;}catch(e){fatal=e;w.paused=true;console.error('Colony save failed:',e.message);}}},100);
- const jobs=setInterval(()=>{if(!fatal)void controller.step();},4000);
+ const jobs=setInterval(()=>{if(!fatal&&!w.foundry.maintenance)void controller.step();},4000);
  return {url,world:w,async close(){if(closed)return;closed=true;clearInterval(tick);clearInterval(jobs);while(controller.busy)await new Promise(r=>setTimeout(r,50));await new Promise(resolve=>server.close(resolve));store.close();}};
 }
 if(process.argv[1]&&pathToFileURL(path.resolve(process.argv[1])).href===import.meta.url){const app=await createApp();console.log(`First Landing — single-player colony\n${app.url}\nSave: ${process.env.SOLO_DATA_DIR||path.join(root,'.data')}\nFoundry mode: ${app.world.foundry.mode} (live Foundry)`);for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{await app.close();process.exit(0);});}

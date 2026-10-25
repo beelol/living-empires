@@ -1,71 +1,53 @@
 # First Landing
 
-A separate, local **single-player robot colony app**. Click to move, place a solar array, mine alloy, build habitats and fabrication labs, then let Pulkit's Asset Foundry improve the actual city's building appearances. There is no multiplayer transport, shared player session, or Bevy build requirement.
+The default single-player robot colony: click to move and build, or **Create something → type a prompt → click a spot**. A standard 8 × 8 metre foundation and fabrication volume appear immediately. Live Asset Foundry generates and independently reviews the requested appearance, then the exact accepted package replaces that object's placeholder. Each prompt is independent; there is no fixed catalog of permitted subjects.
 
-This is the owner's 2026-10-25 alternate direction. It intentionally permits a player robot and manual construction, superseding the root README's camera-only rules **for this app only**. It does not change the other application's contract or claim any v2 acceptance passes.
+## Run
+
+```sh
+npm install
+just dev
+# Equivalent: npm run dev
+```
+
+Game: **http://127.0.0.1:4320**. Foundry: **http://127.0.0.1:4317**. `npm run studio` starts/checks Foundry alone. Both bind loopback. The launcher starts a missing Foundry without creating duplicate workers. It reads the main checkout's `.env.local` from a linked worktree; configuration precedence is explicit environment → `.env.local` → `.env`. `ARGON_ENV_FILE` overrides the local file. Keys stay server-side and are never returned to the browser.
+
+The owner explicitly enabled sponsored credits without a dollar spending cap. Normal startup enables that mode and live theme resolution. Individual Foundry jobs retain their own attempt/call/time accounting. **Offline generation is disabled in the game.** Historical rehearsal receipts remain labeled; they are never relabeled as live evidence.
+
+The stable save is the main checkout's **`.local/solo-colony/`**, shared across this app's branch/main launches, not the old Bevy worlds. The earlier prototype save is migrated once without overwriting an existing colony. Never open two authorities against one save. Foundry's existing `.data/` is separate and preserved.
 
 ## Play
 
-Node.js 22+ with npm:
+Click dry land to move; paths avoid building foundations. Keys 1–4 choose a structure; Esc returns to movement. Right-drag or WASD/arrows pans; scroll / + / − zooms; Q/E rotates; R returns to the robot. Terrain/rocks/foliage stream around the camera with bounded resident geometry. There is no survey fence. Water and invalid/overlapping sites remain invalid.
 
-```sh
-cd solo
-npm install
-npm start
-```
+Solar arrays cost 35 alloy, take 8 seconds and supply 12 power. Extractors cost 60 alloy, take 12 seconds, use 5 power and extract 2 alloy/sec from a finite seam. **Find & build a mineral extractor** chooses an affordable accessible procedural seam and uses the same construction validation. Habitats cost 40 alloy, take 10 seconds, use 3 power and add 8 to the robot capacity. Fabrication labs cost 70 alloy, take 14 seconds, use 4 power and recycle 0.5 alloy/sec. Prompt-created plots cost 25 alloy and take 6 seconds to construct; live generation continues independently.
 
-Open **http://127.0.0.1:4320**. The server binds only to loopback. `SOLO_PORT` selects another port. There is no bundler or compilation step. Everything needed for colony play is local; the renderer uses the isolated Three.js dependency.
+A new colony starts with a core, one robot and 200 alloy. There is no multiplayer, other empire, combat or free model-issued world grant. New robot recruitment/actor packages are not yet implemented; the capacity counter is a real limit, not a claim that extra robots have spawned.
 
-- Click dry land to move your robot. Paths go around all building foundations.
-- Select a structure or use **1–4**, then click a valid footprint. **Esc** returns to movement.
-- **Solar array:** 35 alloy, 8 seconds, +12 power.
-- **Mineral extractor:** 60 alloy, 12 seconds, consumes 5 power, extracts 2 alloy/sec from a finite seam.
-- **Habitat:** 40 alloy, 10 seconds, consumes 3 power, supports 8 settlers.
-- **Fabrication lab:** 70 alloy, 14 seconds, consumes 4 power, recycles 0.5 alloy/sec.
-- Right-drag or WASD/arrows pans. Scroll / + / − zooms. Q/E rotates. R finds the robot.
-- Click a building to inspect construction, power, function, location and asset provenance. Its appearance can be rolled back.
-- Pause stops simulation time. Closing the app server also pauses time; reopening restores progress. Closing only the browser leaves the local simulation running.
+## Live generation and repair
 
-A new colony starts with one authored core, one robot and 200 alloy. There are no other empires, combat or manual spawned grants. Construction is charged once and develops visibly over time. Insufficient power pauses consumers; an array can still be built to recover.
+The adapter resolves a live, prompt-led artistic contract before freezing the generation job, including its palette. Inference is told the actual renderer capabilities: axis-aligned boxes, vertical cylinders/cones, and three flat palette tokens; it must not invent requirements for unsupported rotations or texture maps. Generation is schema-enforced Gemini by default, with managed generation also available. The configured service uses `gemini-4-argon` from `.env.local`.
 
-## Asset Foundry
+Foundry owns generation, actual three-view capture, independent visual judgment, repair and acceptance. The app reruns the first-party Rust package operation, reparses the HTTP package through that typed validator, checks identity/content hashes and every distinct PNG hash, then enforces the actual rendered shape bounds against its fixed plot. Unsupported or changed packages stay blocked. Rehearsal, missing evidence or failed review never becomes a live pass.
 
-The existing Foundry remains a **separate service**, default **http://127.0.0.1:4317**. Start it using the root README if it is not already running. Do not start a second copy against someone else's data directory. Leave its required renderer/Studio worker open. The colony remains playable while Foundry is absent, busy or blocked.
+Appearance changes preserve entity identity, coordinates, construction, resources and function. The fabrication volume does not stretch a generated object. Once accepted, the finished object appears at its true scale. Failed/cancelled jobs remain inspectable. **Regenerate with live Foundry** creates an explicit corrected contract revision for the same funded plot, retaining previous failures and without another alloy construction charge. Automatic family improvements have a separate pause toggle; one explicit prompt does not resume paused automatic work.
 
-The app automatically queues one bounded job per completed building family per refinement pass. Foundry itself owns creation, renderer review, repair, limits and acceptance. The adapter fetches accepted packages and all three distinct PNGs, runs the first-party Rust `package` operation twice (including typed HTTP-package validation), checks exact package and image hashes, and then installs the appearance for that family. Identity, function, collision footprint, cost, construction, inventory and positions stay in the colony simulation.
+Unknown paid dispatch outcomes are reconciled against the original Foundry history before retry. A refused connection is queued without pretending a paid request occurred. Service repair waits for active paid work to finish, retains the previous binary and exact saved outcomes, and never clears the city. A generation failure leaves the last compatible appearance/placeholder intact.
 
-The verifier must match the running Foundry. Build `cargo build -p living-world-core --features live-provider` in the Foundry checkout. The app looks in this checkout's `target/debug/world-check`, then the main linked-worktree checkout. Override with **RUST_CORE_BIN=/absolute/path/to/world-check** if necessary.
+The adapter expects the current Foundry package contract and a matching `world-check` binary. Build `cargo build -p living-world-core --features live-provider` in the service checkout, or set `RUST_CORE_BIN` explicitly. Do not replace a running service's binary mid-job. No Foundry API or acceptance gate is weakened by the colony adapter.
 
-Default **fixture** mode has **no paid model calls**. It is explicitly **offline rehearsal**: actual renderer images and deterministic checks, simulated visual judgment. Fixture passes can return identical geometry; identical bytes are not counted as new upgrades. This proves plumbing, not a claim that an AI independently improved the art.
+## HTTP integration
 
-To use real generation, the operator must deliberately launch with `SOLO_FOUNDRY_MODE=managed` (or `gemini`) and configure credentials and spending permissions in the **Foundry service**, never the browser. The app does not load keys or weaken Foundry's limits. Live generation/review was not part of the shipped verification; no live paid calls were made for this app.
+All boundaries use versioned JSON/HTTP, so another language or engine can replace the app. `GET /api/v1/world` returns the current render snapshot; `GET /api/v1/health` identifies API/save v1. `POST /api/v1/command` accepts a stable `id`, `type` (`move`, `build`, `pause`, `prospect`) and validated arguments. Builds accept `kind`, x/z; `creation` additionally requires a free-form `prompt` and live `provider`. Exact semantic retries return the prior result; changed operation reuse fails without spending.
 
-Use **Pause** to stop new Foundry work; an already-running job may finish. **Cancel job** invalidates local activation before asking Foundry to cancel. **Refine again** starts another explicit pass after existing work finishes. At most twelve jobs are retained per colony session; each individual Foundry job retains its own three-candidate / twenty-minute limits. Unknown dispatch outcomes are reconciled by the exact frozen prompt and provider; they are never blindly retried. **Recheck job** re-reads an existing job and does not create a paid retry.
-
-One fixture job during acceptance was blocked because the upstream native renderer returned non-distinct views. Its failure is retained. The app did not install that package. Other actual fixture packages completed and installed successfully.
-
-## Durable, independent integration
-
-`SOLO_DATA_DIR=/private/path` chooses a separate colony; default `solo/.data/`. This directory is ignored, private and contains an atomically written, flushed `world.json`, a single-writer lock and retained `assets/<content hash>/` packages, job records and exact reviewed PNGs. Preserve it when switching revisions. Invalid saves fail visibly instead of resetting. An unexpected process death can lose at most the last periodic background simulation tick (one second); acknowledged commands are flushed before success. Unknown paid dispatch is saved before HTTP. Host downtime is paused simulation time.
-
-`SOLO_FOUNDRY_URL` selects a loopback Foundry. This app does not write the Bevy save, protocol, Lua policies or Foundry implementation. It interprets checked Foundry recipes as **visuals** inside a fixed authoritative foundation envelope. Robot traversal treats that whole envelope as solid, including during construction; it does not claim native/Studio interior-traversal parity. Authored starters and reviewed generated appearances remain distinguishable in inspection.
-
-All integration uses ordinary JSON over HTTP, so another language or engine can replace either side:
-
-| Method and route | Contract |
-| --- | --- |
-| `GET /api/v1/health` | API/save version, app identity, configured Foundry mode. |
-| `GET /api/v1/world` | Read-only current render snapshot, resources, robot route, buildings, assets, Foundry outcomes. |
-| `POST /api/v1/command` | `{"id":"stable-operation-id","type":"build","kind":"solar","x":12,"z":8}`; also `move` with x/z and `pause` with boolean `paused`. Replaying the exact semantic request returns its original result. Changed reuse fails. |
-| `POST /api/v1/foundry` | `toggle` with `enabled`, `next`, `rollback` with `kind`, or `retry` / `cancel` with `requestId`. Only the server has activation authority. |
-| `GET /api/v1/export` | Download the complete colony save, including command receipts. |
-
-Requests use `Content-Type: application/json`; the browser Origin must match the printed loopback URL. The API rejects unknown/oversized commands, invalid kinds, unsafe sites, duplicate entity IDs and unaffordable builds. A local trusted CLI can omit Origin. This is one local player's app, not an exposed multi-user service.
+`POST /api/v1/foundry` handles scheduling, cancellation, reconciliation, rollback and explicit regeneration. Only the local authority can install an approved package. `GET /api/v1/export` downloads the complete colony. Requests require JSON and a matching browser Origin. Private state, keys and provider responses are not exposed as empire knowledge or public content.
 
 ## Verify
 
 ```sh
+node --test solo/test/*.test.mjs
 npm test
+cargo test -p living-world-core
 ```
 
-The tests cover durable HTTP actions, exact-once costs, restart, invalid terrain, finite resources/power, pathing, concurrent Foundry work and player commands, cancellation during review, changed packages/images, unknown dispatch reconciliation and rollback preserving gameplay. See `evidence/acceptance.md` for actual browser steps and screenshots. Tests do not establish the other application's world milestone criteria.
+Tests cover costs/idempotency, finite resources, power, site/collision/pathing, save recovery, cross-origin rejection, correct configuration precedence, camera streaming, live inferred palette propagation, per-object activation, paused scheduling, exact packages/images, cancellation races and fixed plot bounds. Actual live generation outcomes and retained failures are recorded in `docs/work/solo-colony.md`; code tests alone do not pass game acceptance criteria.
