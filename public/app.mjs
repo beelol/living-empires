@@ -372,12 +372,21 @@ function renderRoleProgress(job){
   if(!job.artDirection&&!calls.length)host.append(el('p',job.provider==='fixture'?'Offline rehearsal · no model calls were recorded.':'No model calls have been recorded yet.','empty-event'));
   if(job.agent)host.append(el('p',`Managed agent · ${job.agent}`,'role-model-note'));
 }
+function renderSavedScenes(){
+  const selector=$('saved-scene');selector.replaceChildren();
+  for(const job of jobsCache.values()){
+    const attempt=job.attempts?.at(-1),label=attempt?.recipe?.name||job.prompt?.slice(0,70)||job.id;
+    const option=el('option',`${label} · ${job.status} · ${job.id}`);option.value=job.id;selector.append(option);
+  }
+  selector.value=currentJob?.id||'';
+  selector.disabled=busy||!jobsCache.size;
+}
 function renderJob(job){
   const newJob=currentJob?.id!==job.id;
   if(newJob&&typeof job.prompt==='string'){$('prompt').value=job.prompt;displayedBrief=Object.values(briefs).includes(job.prompt)?job.prompt:'';$('inject').checked=job.injectDefect===true;$('user-feedback').value=job.userFeedback||'';$('refinement-preview-result').replaceChildren();$('refinement-error').textContent='';}
   if(job.inferTheme!==undefined)$('use-manual-theme').checked=job.inferTheme===false;
   jobsCache.set(job.id,job);
-  currentJob=job;busy=!terminal.includes(job.status);$('start').disabled=busy;$('cancel').hidden=!busy;setEditorLocked(busy);$('contract-version').textContent=`CONTRACT v${job.contractVersion||1}`;
+  currentJob=job;busy=!terminal.includes(job.status);renderSavedScenes();const savedUrl=new URL(location.href);savedUrl.searchParams.set('job',job.id);history.replaceState(null,'',savedUrl);$('start').disabled=busy;$('cancel').hidden=!busy;setEditorLocked(busy);$('contract-version').textContent=`CONTRACT v${job.contractVersion||1}`;
   const editorContract=editorTheme(job.theme,job.themeId);
   if(JSON.stringify(themeContract)!==JSON.stringify(editorContract))renderThemeContract(editorContract,{selectPreset:true,preview:false});
   $('run-status').textContent=job.status.toUpperCase();
@@ -440,7 +449,14 @@ $('start').onclick=async()=>{
 };
 $('cancel').onclick=async()=>{try{renderJob(await api(`/api/jobs/${currentJob.id}/cancel`,{}));}catch(e){error(e);}};
 $('activate').onclick=async()=>{try{const r=await api(`/api/jobs/${currentJob.id}/activate`,{});$('release-label').textContent=(r.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+r.hash.slice(0,10);renderJob(await api('/api/jobs/'+currentJob.id));}catch(e){error(e);}};
-$('base-version').onchange=()=>{if(currentJob)renderRefinementControls(currentJob);};
+$('base-version').onchange=()=>{if(currentJob){renderRefinementControls(currentJob);const selected=currentJob.attempts.find(attempt=>attempt.hash===$('base-version').value);if(selected?.recipe){world.load(selected.recipe,currentJob.theme);lastHash=selected.hash;$('scene-name').textContent=selected.recipe.name.toUpperCase();$('version-label').textContent=`SAVED VERSION ${selected.number}`;}}};
+$('saved-scene').onchange=async()=>{
+  if(busy)return;
+  try{releasePinned=false;sceneRevision++;lastHash='';$('error').textContent='';const job=await api('/api/jobs/'+encodeURIComponent($('saved-scene').value));$('provider').value=job.provider;modeNote();renderJob(job);}catch(e){error(e);}
+};
+$('refresh-scenes').onclick=async()=>{
+  try{const jobs=await api('/api/jobs');jobsCache=new Map(jobs.map(job=>[job.id,job]));renderSavedScenes();}catch(e){error(e);}
+};
 $('user-feedback').addEventListener('input',()=>{if(currentJob)renderRefinementControls(currentJob);});
 $('component-scope').addEventListener('change',()=>{if(currentJob)renderRefinementControls(currentJob);});
 $('component-target').addEventListener('change',()=>{if(currentJob)renderRefinementControls(currentJob);});
@@ -497,7 +513,7 @@ $('refine-version').onclick=async()=>{
 window.addEventListener('beforeunload',()=>{if(referenceObjectUrl)URL.revokeObjectURL(referenceObjectUrl);});
 $('rollback').onclick=async()=>{releasePinned=true;sceneRevision++;try{const r=await api('/api/rollback',{});renderThemeContract(editorTheme(r.theme,r.theme?.id),{selectPreset:true,preview:false});releasePinned=true;world.load(r.recipe,r.theme);lastHash='';$('scene-name').textContent=r.recipe.name.toUpperCase();$('scene-theme').textContent=r.theme.name.toUpperCase();$('version-label').textContent='RESTORED RELEASE';$('release-label').textContent='RESTORED · '+r.hash.slice(0,10);$('error').textContent='';}catch(e){releasePinned=false;error(e);}};
 try{
-  config=await api('/api/config');$('connection').textContent=config.keyConfigured?'GEMINI · CONFIGURED':'OFFLINE REHEARSAL';if(!config.keyConfigured)$('provider').value='fixture';
+  config=await api('/api/config');$('connection').textContent=config.keyConfigured?'GEMINI · CONFIGURED':'OFFLINE REHEARSAL';$('provider').value=config.keyConfigured?'gemini':'fixture';
   $('resolve-theme').disabled=config.themeInferenceEnabled!==true;$('theme-draft-note').textContent=config.themeInferenceEnabled?'GEMINI RESOLUTION AVAILABLE · Costs one request. Review recorded assumptions before use.':'Gemini theme resolution is disabled until an explicit spending cap is enabled. Local keyword drafts use the selected preset fallback.';modeNote();
   const jobs=await api('/api/jobs');jobsCache=new Map(jobs.map(job=>[job.id,job]));if(jobs.length){const requestedId=new URLSearchParams(location.search).get('job'),selected=jobs.find(job=>job.id===requestedId)||jobs[0];if(selected.theme)renderThemeContract(selected.theme,{selectPreset:true,preview:false});$('provider').value=selected.provider;modeNote();renderJob(selected);}
   const release=await api('/api/release');if(release){$('release-label').textContent=(release.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+release.hash.slice(0,10);if(!currentJob){renderThemeContract(editorTheme(release.theme,release.theme?.id),{selectPreset:true,preview:false});world.load(release.recipe,release.theme);$('scene-name').textContent=release.recipe.name.toUpperCase();$('scene-theme').textContent=release.theme.name.toUpperCase();$('version-label').textContent='ACTIVE RELEASE';}}

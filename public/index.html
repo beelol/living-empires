@@ -5,6 +5,7 @@
 <main>
 <header><div class="breadcrumb">LIVING EMPIRES <span>/</span> ASSET FOUNDRY</div><div id="connection" class="pill">CONNECTING</div></header>
 <div class="title-row"><div><div class="eyebrow">THEMED ASSETS FOR LIVING WORLDS</div><h1>Create. Test. Refine<span>.</span></h1><p>Generate a game asset, then test it in its themed scene before accepting it.</p></div><button id="rollback" class="quiet">↶ &nbsp; Roll back release</button></div>
+<div class="saved-scene-bar"><label for="saved-scene">Saved scenes &amp; runs</label><select id="saved-scene"><option value="">No saved runs</option></select><button id="refresh-scenes" class="quiet" type="button">Refresh</button></div>
 <div class="workspace">
 <section class="viewport-card"><div class="scene-top"><div><span class="live-dot"></span><span id="scene-name">ASTER RELAY</span><span class="scene-tag" id="version-label">STARTER SCENE</span></div><span id="scene-theme">ARGONAUT FRONTIER</span></div>
 <div id="world" aria-label="Interactive 3D asset testing scene"></div><div class="scene-caption"><div><span class="crosshair">⌖</span> <span>TEST SCENE · click terrain to move the commander</span></div><div class="views" aria-label="Camera view"><button data-view="0" class="selected" aria-label="Overview view">01</button><button data-view="1" aria-label="Reverse view">02</button><button data-view="2" aria-label="Entrance view">03</button></div></div>
@@ -36,7 +37,7 @@
 <p class="render-limit-note">Current renderer supports primitive shapes, basic palette materials, seeded terrain, and the three terrain types above. Architecture selects basic roughness/metalness family defaults. Free-text weathering, fine surface wear, decals, and custom textures remain metadata; this renderer does not draw them.</p>
 </div></details><p id="theme-error" role="alert"></p>
 <label for="provider">Generation engine</label><select id="provider"><option value="managed">Gemini managed agent</option><option value="gemini">Gemini direct · faster recipe generation</option><option value="fixture">Offline rehearsal · simulated generation & review</option></select>
-<label class="toggle"><input id="inject" type="checkbox" checked><span>Challenge the loop with a hidden entrance defect</span></label>
+<label class="toggle"><input id="inject" type="checkbox"><span>Challenge the loop with a hidden entrance defect</span></label>
 <label class="toggle manual-theme-toggle"><input id="use-manual-theme" type="checkbox"><span>Use this manual theme contract instead of prompt-based art direction</span></label><div class="limits"><span>3 candidates</span><span>6 API calls max</span><span>20 minute limit</span></div><p id="mode-note" class="mode-note"></p></div></details>
 <section id="refinement-panel" class="refinement-panel" aria-labelledby="refinement-heading"><div class="section-heading"><h2 id="refinement-heading">Improve a saved version</h2><span id="refinement-state" class="tiny">Select a finished candidate</span></div>
 <p class="refinement-intro">Keep the saved brief and theme fixed. Choose the exact version to refine, then describe the change you want.</p>
