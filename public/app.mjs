@@ -248,7 +248,7 @@ function renderAttemptHistory(job){
 }
 function renderRefinementControls(job){
   const selector=$('base-version'),attempts=(job.attempts||[]).filter(attempt=>attempt.recipe&&attempt.hash),signature=attempts.map(attempt=>`${attempt.number}:${attempt.hash}`).join('|');
-  $('refinement-panel').hidden=!attempts.length;
+  $('refinement-panel').hidden=!attempts.length;$('generation-panel').hidden=!!attempts.length;$('new-scene').hidden=!attempts.length;$('new-scene').disabled=busy;
   if(selector.dataset.job!==job.id){$('generation-panel').open=!attempts.length;$('generation-panel').classList.toggle('has-scene',!!attempts.length);}
   const oldSelection=selector.value;
   if(selector.dataset.job!==job.id||selector.dataset.signature!==signature){
@@ -451,6 +451,9 @@ $('start').onclick=async()=>{
 $('cancel').onclick=async()=>{try{renderJob(await api(`/api/jobs/${currentJob.id}/cancel`,{}));}catch(e){error(e);}};
 $('activate').onclick=async()=>{try{const r=await api(`/api/jobs/${currentJob.id}/activate`,{});$('release-label').textContent=(r.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+r.hash.slice(0,10);renderJob(await api('/api/jobs/'+currentJob.id));}catch(e){error(e);}};
 $('base-version').onchange=()=>{if(currentJob){renderRefinementControls(currentJob);const selected=currentJob.attempts.find(attempt=>attempt.hash===$('base-version').value);if(selected?.recipe){world.load(selected.recipe,currentJob.theme);lastHash=selected.hash;$('scene-name').textContent=selected.recipe.name.toUpperCase();$('version-label').textContent=`SAVED VERSION ${selected.number}`;}}};
+$('new-scene').onclick=()=>{
+  if(busy)return;currentJob=null;releasePinned=false;sceneRevision++;setEditorLocked(false);$('generation-panel').hidden=false;$('generation-panel').open=true;$('generation-panel').classList.remove('has-scene');$('refinement-panel').hidden=true;$('new-scene').hidden=true;$('prompt').value='';$('error').textContent='';$('use-manual-theme').checked=false;$('inject').checked=false;$('provider').value=config?.keyConfigured?'gemini':'fixture';modeNote();clearLocalReference();const url=new URL(location.href);url.searchParams.delete('job');history.replaceState(null,'',url);renderSavedScenes();$('prompt').focus();
+};
 $('saved-scene').onchange=async()=>{
   if(busy)return;
   try{releasePinned=false;sceneRevision++;lastHash='';$('error').textContent='';const job=await api('/api/jobs/'+encodeURIComponent($('saved-scene').value));$('provider').value=job.provider;modeNote();renderJob(job);}catch(e){error(e);}
@@ -516,7 +519,7 @@ $('rollback').onclick=async()=>{releasePinned=true;sceneRevision++;try{const r=a
 try{
   config=await api('/api/config');$('connection').textContent=config.keyConfigured?'GEMINI · CONFIGURED':'OFFLINE REHEARSAL';$('provider').value=config.keyConfigured?'gemini':'fixture';
   $('resolve-theme').disabled=config.themeInferenceEnabled!==true;$('theme-draft-note').textContent=config.themeInferenceEnabled?'GEMINI RESOLUTION AVAILABLE · Costs one request. Review recorded assumptions before use.':'Gemini theme resolution is disabled until an explicit spending cap is enabled. Local keyword drafts use the selected preset fallback.';modeNote();
-  const jobs=await api('/api/jobs');jobsCache=new Map(jobs.map(job=>[job.id,job]));if(jobs.length){const requestedId=new URLSearchParams(location.search).get('job'),selected=jobs.find(job=>job.id===requestedId)||jobs[0];if(selected.theme)renderThemeContract(selected.theme,{selectPreset:true,preview:false});$('provider').value=selected.provider;modeNote();renderJob(selected);}
+  const jobs=await api('/api/jobs');jobsCache=new Map(jobs.map(job=>[job.id,job]));if(jobs.length){const requestedId=new URLSearchParams(location.search).get('job'),selected=jobs.find(job=>job.id===requestedId);if(selected?.theme)renderThemeContract(selected.theme,{selectPreset:true,preview:false});if(selected){$('provider').value=selected.provider;modeNote();renderJob(selected);}else renderSavedScenes();}
   const release=await api('/api/release');if(release){$('release-label').textContent=(release.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+release.hash.slice(0,10);if(!currentJob){renderThemeContract(editorTheme(release.theme,release.theme?.id),{selectPreset:true,preview:false});world.load(release.recipe,release.theme);$('scene-name').textContent=release.recipe.name.toUpperCase();$('scene-theme').textContent=release.theme.name.toUpperCase();$('version-label').textContent='ACTIVE RELEASE';}}
 }catch(e){error(e);}
 setInterval(async()=>{if(currentJob&&busy&&!releasePinned&&!pollInFlight){pollInFlight=true;const revision=sceneRevision,jobId=currentJob.id;try{const job=await api('/api/jobs/'+jobId);if(revision===sceneRevision&&!releasePinned)renderJob(job);}catch(e){if(revision===sceneRevision)error(e);}finally{pollInFlight=false;}}},900);
