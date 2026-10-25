@@ -91,3 +91,33 @@ Combined Solo suite after reconciliation: 85/85 passed, zero skips. Log:
 `/tmp/foundry-combined-solo.log`. These are prototype implementation checks,
 not canonical world acceptance. Core/provider schema port and combined live
 verification remain pending until evidence below.
+
+
+## Combined pre-live gates
+
+Final reconciled upstream is `eabf17e`; merge `ad05815` retains live faction
+progress/critique and approved building direction adoption. The final diff against
+that upstream contains only 34 owned paths. The full-source review approved core
+completion and the combined port; a second review approved the newer-main merge.
+A discovered launcher edge case (game survives while Foundry is absent) now refuses
+to replace its verifier in both normal and Studio-only modes. Its regression went
+red then green; actual CLI probes passed both modes.
+
+- Private live-provider build and Rust suite: 70 passed, 0 failed.
+- Full Foundry Node suite: 72 passed, 0 failed/skipped.
+- Final reconciled Solo suite: 102 passed, 0 failed/skipped.
+- Isolated offline renderer rehearsal at port 4352: repair with six PNGs, exact
+  activation, rollback, cancellation and frozen custom contract all passed.
+  No paid calls; this is explicitly rehearsal.
+- All eight historical installed package receipts validate with the new binary.
+- Actual legacy world migration rehearsal preserves 34 buildings, exact existing
+  assets, coordinates, alloy, deposits, identity, time, receipts and request history.
+- Logs: /tmp/foundry-combined-{build,core,npm,e2e}.log and
+  /tmp/foundry-combined-adf-solo.log. Migration evidence:
+  /Users/bilal/.codex/visualizations/2026/10/25/01a17516-69a6-7702-97bb-659e93b4282d/foundry-completion-main/migration-proof.json.
+
+Live pair upgrade/recovered windmill is still pending. The user asked us to stop
+raising browser windows while they record; all further checks stay in background.
+The newly requested distant autonomous colony is additional main-only work after
+the completion port, with its own resources and reachable location; no such AI
+feature is claimed as implemented by this port.
