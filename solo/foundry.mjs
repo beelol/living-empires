@@ -5,6 +5,7 @@ import {isDeepStrictEqual} from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import {validateRecipe,validateTheme,THEMES} from '../public/core.mjs';
+import {adoptFactionDirection} from './model.mjs';
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const requireThat=(value,message)=>{if(!value)throw Error(message);};
 export function httpAPI(base){
@@ -70,7 +71,9 @@ export class FoundryController{
   const numbers=attempts.map(a=>progressCount(a?.number));for(const event of events){if(['generating','repairing','validating'].includes(event?.state)){const number=typeof event.message==='string'?event.message.match(/candidate\s+(\d+)/i)?.[1]:null;if(number)numbers.push(progressCount(Number(number)));}}
   const known=numbers.filter(n=>n!==null),terminal=['installed','blocked','failed','cancelled','exhausted','unknown'].includes(request.status);
   const stage=terminal?request.status:job?.status||(request.status==='running'?(old.stage||request.stage||request.status):request.status);
-  const summary=detail??(terminal?(request.reason||(request.status==='installed'?'Accepted design installed on its current targets.':null)):null)??latestEvent?.message??old.detail;
+  const latestAttempt=attempts.at(-1),failedCheck=Array.isArray(latestAttempt?.checks)?latestAttempt.checks.filter(check=>check?.status==='fail').map(check=>check.detail):[];
+  const observedFailure=['blocked','failed','cancelled','exhausted'].includes(job?.status)?progressText(latestAttempt?.validationError)||progressText(failedCheck):'';
+  const summary=detail??(observedFailure||null)??(terminal?(old.stage===request.status&&old.detail?old.detail:request.reason||(request.status==='installed'?'Accepted design installed on its current targets.':null)):null)??latestEvent?.message??old.detail;
   request.progress={jobId:progressText(request.jobId||job?.id||old.jobId)||null,stage:progressText(stage),attempt:known.length?Math.max(...known):progressCount(old.attempt),calls:progressCount(job?.calls)??progressCount(old.calls),startedAt:request.startedAt,observedAt:now,detail:progressText(summary),critique:progressText(review?.comparison?.summary)||progressText(review?.findings)||progressText(old.critique),repair:progressText(events.findLast(e=>e?.state==='repairing')?.message)||progressText(old.repair),acceptedHash:[request.hash,job?.acceptedHash,old.acceptedHash].find(hash=>typeof hash==='string'&&/^[a-f0-9]{64}$/.test(hash))||null};
  }
  scope(request){
@@ -87,10 +90,10 @@ export class FoundryController{
   if(this.scope(request).length)return true;
   request.status='cancelled';request.reason='Superseded: faction direction or building assignment changed.';this.save();return false;
  }
- sameFamily(a,b){return a!==b&&a.kind===b.kind&&(a.factionId||'landing')===(b.factionId||'landing')&&a.factionRevision===b.factionRevision;}
+ sameFamily(a,b){return a!==b&&a.kind===b.kind&&(a.factionId||'landing')===(b.factionId||'landing')&&(a.adoptedFactionRevision??a.factionRevision)===(b.adoptedFactionRevision??b.factionRevision);}
  reusableSource(request,source){
   if(!source||source.reuseFromRequestId||source.status!=='installed'||!this.sameFamily(request,source)||typeof source.jobId!=='string'||!/^[a-f0-9]{64}$/.test(source.hash||''))return false;
-  if(factionOf(this.world,request.factionId)?.revision!==source.factionRevision)return false;
+  if(factionOf(this.world,request.factionId)?.revision!==(source.adoptedFactionRevision??source.factionRevision))return false;
   if(this.world.assetHistory.some(entry=>entry.kind===source.kind&&(entry.factionId||'landing')===source.factionId&&entry.hash===source.hash&&Object.hasOwn(entry,'rolledBackAt')))return false;
   return this.world.buildings.some(b=>b.kind===source.kind&&factionIdOf(b)===source.factionId&&b.asset?.hash===source.hash&&b.asset?.jobId===source.jobId);
  }
@@ -111,9 +114,17 @@ export class FoundryController{
  guard(request){if(!this.current(request))throw new SupersededRequest('Request was superseded.');if(request.reuseFromRequestId)this.reuseSource(request);}
  async read(request,operation){this.guard(request);try{const result=await operation();this.guard(request);return result;}catch(e){this.guard(request);throw e;}}
  async cancelRemote(request){if(!request.jobId||request.reuseFromRequestId)return;try{await this.api(`/api/jobs/${request.jobId}/cancel`,{});request.remoteCancelled=true;}catch(e){request.remoteCancelError=e.message;}this.save();}
+ async backfillProgress(){
+  const request=this.world.foundry.requests.findLast(r=>['installed','blocked','failed','cancelled','exhausted'].includes(r.status)&&typeof r.jobId==='string'&&/^[a-z0-9-]{1,128}$/.test(r.jobId));
+  if(!request||request.progress)return false;
+  // One read for the latest finished job when upgrading an older save; never replay its work.
+  const jobId=request.jobId;this.progress(request);this.save();
+  try{const job=await this.api(`/api/jobs/${jobId}`);const prompt=request.reuseFromRequestId?request.sourcePrompt:request.prompt,provider=request.reuseFromRequestId?request.sourceProvider:request.provider;requireThat(job.id===jobId&&job.prompt===prompt&&job.provider===provider,'Saved Foundry job contract changed.');if(this.world.foundry.requests.includes(request)&&request.jobId===jobId){this.progress(request,job);this.save();}}
+  catch{if(this.world.foundry.requests.includes(request)&&request.jobId===jobId){this.progress(request,null,request.reason||'Saved job details are unavailable.');this.save();}}return true;
+ }
  async step(){if(this.busy)return;this.busy=true;const f=this.world.foundry;let request;
  try{
- request=f.requests.find(r=>['dispatching','unknown','running'].includes(r.status))||f.requests.find(r=>r.status==='queued'&&(r.explicit||r.targetId))||f.requests.find(r=>r.status==='queued'&&f.enabled);if(!request&&!f.enabled)return;
+ request=f.requests.find(r=>['dispatching','unknown','running'].includes(r.status))||f.requests.find(r=>r.status==='queued'&&(r.explicit||r.targetId))||f.requests.find(r=>r.status==='queued'&&f.enabled);if(!request&&await this.backfillProgress())return;if(!request&&!f.enabled)return;
  if(!request){
  const building=this.world.buildings.find(b=>b.kind!=='creation'&&b.progress===1&&!f.requests.some(r=>r.kind===b.kind&&(r.factionId||'landing')===factionIdOf(b)&&r.round===f.round&&(r.factionRevision??1)===(factionOf(this.world,factionIdOf(b))?.revision??1)));if(!building)return;
  const faction=factionOf(this.world,factionIdOf(building));requireThat(faction,'Building faction is missing.');
@@ -128,10 +139,10 @@ export class FoundryController{
  if(request.status==='queued'){
  if(!request.theme){
  const faction=factionOf(this.world,request.factionId);
- if(faction.theme&&!(request.targetId&&!this.world.factions)){request.theme=structuredClone(faction.theme);request.themeDraftId=faction.themeDraftId;}
+ if(!request.drivesFactionDirection&&faction.theme&&!(request.targetId&&!this.world.factions)){request.theme=structuredClone(faction.theme);request.themeDraftId=faction.themeDraftId;}
  else{
  request.status='preparing-theme';this.progress(request,null,'Resolving the faction art direction.');this.save();
- try{const draft=await this.read(request,()=>this.api('/api/themes/resolve',{prompt:`Create a reusable architectural family style for the following art direction. Describe common shape language, materials, construction details and visual quality across different building purposes.\n${request.artDirection||faction.artDirection||request.userPrompt}\n${capabilityContract}`}));request.theme=validateTheme(draft.theme);request.themeDraftId=draft.draftId;if(this.world.factions){const currentFaction=factionOf(this.world,request.factionId);currentFaction.theme=structuredClone(request.theme);currentFaction.themeDraftId=draft.draftId;}request.status='queued';this.save();}
+ try{const draft=await this.read(request,()=>this.api('/api/themes/resolve',{prompt:`Create a reusable architectural family style for the following art direction. Describe common shape language, materials, construction details and visual quality across different building purposes.\n${request.drivesFactionDirection?(request.userPrompt||request.artDirection):(request.artDirection||faction.artDirection||request.userPrompt)}\n${capabilityContract}`}));request.theme=validateTheme(draft.theme);request.themeDraftId=draft.draftId;if(this.world.factions&&!request.drivesFactionDirection){const currentFaction=factionOf(this.world,request.factionId);currentFaction.theme=structuredClone(request.theme);currentFaction.themeDraftId=draft.draftId;}request.status='queued';this.save();}
  catch(e){if(e instanceof SupersededRequest)throw e;request.status='blocked';request.reason='Live artistic contract could not be resolved: '+e.message;f.error=request.reason;this.save();return;}
  }
  }
@@ -148,7 +159,7 @@ export class FoundryController{
  const checked=await verifyPackage({job,api:this.api,verifyTyped:this.verifyTyped,guard:()=>this.guard(request)});
  this.guard(request);
  if(this.dataDir){const folder=path.join(this.dataDir,'assets',checked.package.manifest.contentSha256);fs.mkdirSync(folder,{recursive:true,mode:0o700});for(const image of checked.images)fs.writeFileSync(path.join(folder,image.sha256+'.png'),image.bytes,{mode:0o600});fs.writeFileSync(path.join(folder,'package.json'),JSON.stringify(checked.package),{mode:0o600});fs.writeFileSync(path.join(folder,'job.json'),JSON.stringify(job),{mode:0o600});}
- if(this.scope(request).some(b=>b.asset?.hash!==checked.package.manifest.contentSha256))activatePackage(this.world,request.kind,checked.package,request);request.status='installed';request.hash=checked.package.manifest.contentSha256;request.rehearsal=checked.package.manifest.rehearsal;request.installedTargets=this.scope(request).map(b=>b.id);if(request.reuseFromRequestId)request.reason='Approved existing faction design reused after exact package and image verification; no new generation call.';f.error=null;
+ if(this.scope(request).some(b=>b.asset?.hash!==checked.package.manifest.contentSha256))activatePackage(this.world,request.kind,checked.package,request);request.status='installed';request.hash=checked.package.manifest.contentSha256;request.rehearsal=checked.package.manifest.rehearsal;request.installedTargets=this.scope(request).map(b=>b.id);adoptFactionDirection(this.world,request,checked.package.theme,checked.package.manifest.contentSha256);if(request.reuseFromRequestId)request.reason='Approved existing faction design reused after exact package and image verification; no new generation call.';f.error=null;
  }else if(['failed','blocked','cancelled','exhausted'].includes(job.status)){request.status=job.status;request.reason=job.stopReason;f.error=job.stopReason||`Foundry job ${job.status}.`;}
  for(const target of this.scope(request))if(target.kind==='creation')target.creationStatus=request.status;this.save();
  }
