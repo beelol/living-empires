@@ -26,7 +26,7 @@ fn theme() -> ThemeContract {
 
 fn request(managed: bool) -> GenerationRequest {
     GenerationRequest {
-        theme: theme(), prompt: "Build a forest relay".into(), user_feedback: None, scene_half_extent: Some(12.0), previous: None, component_edit: None,
+        theme: theme(), prompt: "Build a forest relay".into(), user_feedback: None, scene_half_extent: Some(12.0), previous: None, component_baseline: None, component_edit: None,
         findings: Some(vec!["clear front path".into()]), model: "gemini-test".into(),
         agent: "antigravity-preview-09-2026".into(), managed,
         interaction_id: None, environment_id: None, reference_images: vec![], reference_consent:false,
@@ -281,7 +281,7 @@ fn malformed_or_invalid_provider_recipes_are_rejected_without_retry() {
 #[test]
 fn reviewer_request_uses_three_actual_inline_pngs_and_checks_verdicts() {
     let views: Vec<_> = [b"a".as_slice(),b"b".as_slice(),b"c".as_slice()].iter().map(|label| png_view(label)).collect();
-    let request=ReviewRequest {theme:theme(),prompt:"Forest relay".into(),user_feedback:None,scene_half_extent:Some(12.0),images:views.iter().map(|view|view.0.clone()).collect(),candidate_hash:"d".repeat(64),image_hashes:views.iter().map(|view|view.1.clone()).collect(),previous:None,baseline:None,model:"gemini-review".into()};
+    let request=ReviewRequest {theme:theme(),prompt:"Forest relay".into(),user_feedback:None,scene_half_extent:Some(12.0),images:views.iter().map(|view|view.0.clone()).collect(),candidate_hash:"d".repeat(64),image_hashes:views.iter().map(|view|view.1.clone()).collect(),previous:None,baseline:None,retained_baseline:None,component_edit:None,model:"gemini-review".into()};
     let (url,body)=build_review_request(&request).unwrap();
     assert!(url.ends_with(":generateContent"));
     assert_eq!(body["contents"][0]["parts"].as_array().unwrap().len(),7);
@@ -307,7 +307,7 @@ fn reviewer_hashes_decoded_png_bytes_and_binds_matched_previous_views() {
     let previous: Vec<_> = [b"old-a".as_slice(),b"old-b".as_slice(),b"old-c".as_slice()].iter().map(|label| png_view(label)).collect();
     let mut request = ReviewRequest { theme: theme(), prompt: "Forest relay".into(), user_feedback:Some("Keep the open arch; make the roof less repetitive".into()), scene_half_extent:Some(12.0), images: current.iter().map(|v|v.0.clone()).collect(),
         candidate_hash: "a".repeat(64), image_hashes: current.iter().map(|v|v.1.clone()).collect(),
-        previous: Some(PreviousReviewEvidence { candidate_hash:"b".repeat(64), image_hashes:previous.iter().map(|v|v.1.clone()).collect(), images:previous.iter().map(|v|v.0.clone()).collect(), strengths:vec!["Open entry".into()] }), baseline:None, model:"gemini-review".into() };
+        previous: Some(PreviousReviewEvidence { candidate_hash:"b".repeat(64), image_hashes:previous.iter().map(|v|v.1.clone()).collect(), images:previous.iter().map(|v|v.0.clone()).collect(), strengths:vec!["Open entry".into()] }), baseline:None, retained_baseline:None, component_edit:None, model:"gemini-review".into() };
     let (_, body) = build_review_request(&request).unwrap();
     let parts = body["contents"][0]["parts"].as_array().unwrap();
     assert!(parts.iter().any(|part|part["text"]=="PREVIOUS VIEW 1"));
@@ -332,7 +332,7 @@ fn refinement_reviewer_receives_frozen_user_feedback_and_labeled_accepted_baseli
         previous:None, baseline:Some(PreviousReviewEvidence {
             candidate_hash:"b".repeat(64), image_hashes:baseline.iter().map(|v|v.1.clone()).collect(),
             images:baseline.iter().map(|v|v.0.clone()).collect(), strengths:vec!["Entrance is already readable".into()],
-        }), model:"gemini-review".into(),
+        }), retained_baseline:None, component_edit:None, model:"gemini-review".into(),
     };
     let (_,body)=build_review_request(&request).unwrap();
     let parts=body["contents"][0]["parts"].as_array().unwrap();
@@ -430,3 +430,61 @@ fn direct_argon_generation_gets_low_thinking_and_larger_json_budget_only() {
     assert!(flash_body["generationConfig"].get("thinkingConfig").is_none());
 }
 
+
+#[test]
+fn add_component_repair_uses_original_baseline_after_target_already_exists() {
+    let mut req=request(false);
+    let mut original=fixture_recipe(&req.theme).unwrap();
+    original.scene=Some(RecipeScene { half_extent:12.0, components:vec![SceneComponent {
+        id:"original-building".into(),name:"Original building".into(),role:"existing structure".into(),
+        part_ids:original.parts.iter().map(|part|part.id.clone()).collect(),
+    }] });
+    let mut current=original.clone();
+    let mut addition=current.parts[0].clone(); addition.id="new-canopy-part".into();
+    current.parts.push(addition);
+    current.scene.as_mut().unwrap().components.push(SceneComponent {id:"new-canopy".into(),name:"Canopy".into(),role:"entrance cover".into(),part_ids:vec!["new-canopy-part".into()]});
+    req.previous=Some(current);
+    req.component_edit=Some(ComponentEdit {mode:ComponentEditMode::Add,component_id:"new-canopy".into()});
+    assert!(build_generation_request(&req).is_err());
+    let mut wire=serde_json::to_value(&req).unwrap();
+    wire["componentBaseline"]=serde_json::to_value(&original).unwrap();
+    let req:GenerationRequest=serde_json::from_value(wire).unwrap();
+    let (_,body)=build_generation_request(&req).unwrap();
+    let prompt=body["contents"][0]["parts"][0]["text"].as_str().unwrap();
+    assert!(prompt.contains("repair that target in place rather than adding a duplicate"));
+    let scope=prompt.split("Baseline identity/parts/components are: ").nth(1).unwrap();
+    let frozen:living_world_core::Recipe=serde_json::Deserializer::from_str(scope).into_iter().next().unwrap().unwrap();
+    assert_eq!(frozen,original);
+}
+
+#[test]
+fn serde_scoped_review_keeps_retained_baseline_separate_from_comparison_hashes() {
+    let views:Vec<_>=[b"now-a".as_slice(),b"now-b".as_slice(),b"now-c".as_slice()].iter().map(|v|png_view(v)).collect();
+    let previous:Vec<_>=[b"prior-a".as_slice(),b"prior-b".as_slice(),b"prior-c".as_slice()].iter().map(|v|png_view(v)).collect();
+    let retained:Vec<_>=[b"original-a".as_slice(),b"original-b".as_slice(),b"original-c".as_slice()].iter().map(|v|png_view(v)).collect();
+    let evidence=|hash:&str, items:&Vec<(String,String)>|json!({"candidateHash":hash.repeat(64),"imageHashes":items.iter().map(|v|v.1.clone()).collect::<Vec<_>>(),"images":items.iter().map(|v|v.0.clone()).collect::<Vec<_>>(),"strengths":["Clear original entrance"]});
+    let wire=json!({"theme":theme(),"prompt":"Forest entrance","userFeedback":"Give the canopy a readable layered edge", "sceneHalfExtent":12,
+        "images":views.iter().map(|v|v.0.clone()).collect::<Vec<_>>(),"imageHashes":views.iter().map(|v|v.1.clone()).collect::<Vec<_>>(),"candidateHash":"a".repeat(64),
+        "previous":evidence("b",&previous),"retainedBaseline":evidence("c",&retained),"componentEdit":{"mode":"modify","componentId":"entrance-canopy"},"model":"gemini-3.8-flash"});
+    let mut req:ReviewRequest=serde_json::from_value(wire).unwrap();
+    let (_,body)=build_review_request(&req).unwrap();
+    let parts=body["contents"][0]["parts"].as_array().unwrap();
+    assert_eq!(parts.iter().filter(|part|part["inlineData"].is_object()).count(),9);
+    for label in ["RETAINED BASELINE VIEW 1","PREVIOUS VIEW 1","CURRENT VIEW 1"] { assert!(parts.iter().any(|part|part["text"]==label)); }
+    let prompt=parts[0]["text"].as_str().unwrap();
+    assert!(prompt.contains("FROZEN REVIEW SCOPE: modify componentId 'entrance-canopy'"));
+    assert!(prompt.contains("no regression against this original baseline"));
+    assert!(prompt.contains("unrelated polish or added clutter cannot justify improved"));
+    let mut comparison=json!({"candidateHash":req.candidate_hash,"imageHashes":req.image_hashes,"previousCandidateHash":"c".repeat(64),"previousImageHashes":req.retained_baseline.as_ref().unwrap().image_hashes,
+        "status":"improved","summary":"Canopy edge reads in matched views.","strengths":["Original entrance preserved"],"defects":[],"improvements":["Requested canopy layering is visible"],"regressions":[],"simulated":false});
+    let transport=MockTransport::default();
+    *transport.response.lock().unwrap()=Some(text_response(json!({"themeStatus":"pass","renderStatus":"pass","findings":"Requested change is visible","comparison":comparison}).to_string()));
+    assert!(review_with_transport(&req,"test-key",&transport).unwrap_err().to_string().contains("does not bind"));
+    comparison["previousCandidateHash"]=json!("b".repeat(64));comparison["previousImageHashes"]=json!(req.previous.as_ref().unwrap().image_hashes);
+    *transport.response.lock().unwrap()=Some(text_response(json!({"themeStatus":"pass","renderStatus":"pass","findings":"Requested change is visible","comparison":comparison}).to_string()));
+    assert!(review_with_transport(&req,"test-key",&transport).is_ok());
+    req.retained_baseline.as_mut().unwrap().image_hashes[0]="d".repeat(64);
+    assert!(build_review_request(&req).unwrap_err().to_string().contains("hash does not match"));
+    req.retained_baseline=None;req.previous=None;
+    assert!(build_review_request(&req).unwrap_err().to_string().contains("requires baseline or previous"));
+}
