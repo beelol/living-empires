@@ -27,7 +27,7 @@ async function check(url){
 const binary=path.join(runtimeDir,'foundry-world-check');config.binaryPath=binary;
 if(fs.existsSync(binary))config.binaryHash=createHash('sha256').update(fs.readFileSync(binary)).digest('hex');
 let foundry=await check(foundryURL+'/api/config');
-let existing=process.argv.includes('--studio')?null:await check(appURL+'/api/v1/health');
+let existing=await check(appURL+'/api/v1/health');
 verifyPair(config,foundry,existing);
 fs.mkdirSync(runtimeDir,{recursive:true,mode:0o700});
 
@@ -59,6 +59,7 @@ if(process.argv.includes('--studio')){
  process.exit(0);
 }
 if(existing){
+ verifyPair(config,foundry,existing);
  console.log(`First Landing is running: ${appURL}\nLive Asset Foundry: ${foundryURL}`);
  process.exit(0);
 }

@@ -26,6 +26,7 @@ export function launchConfiguration({repo,canonical,environment}){
 }
 
 export function verifyPair(config,foundry,app){
+ if(app&&!foundry)throw Error('The game is still running while Foundry is unavailable. Stop the game when idle before rebuilding its verifier.');
  if(foundry&&(foundry.service!=='asset-foundry'||foundry.sourceRoot!==config.repo))throw Error('Foundry is running from a different checkout. Preserve that service; stop it when idle or choose FOUNDRY_PORT for this branch.');
  if(foundry){
   if(config.foundrySourceHash&&foundry.sourceSha256!==config.foundrySourceHash)throw Error('Foundry has stale loaded server source. Restart it when idle.');
