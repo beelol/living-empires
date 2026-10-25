@@ -11,7 +11,7 @@ use std::{
 };
 
 pub const FACTION_IDS: [&str; 3] = ["helios", "tide", "cinder"];
-const LIMIT: usize = 1024;
+pub(crate) const LIMIT: usize = 1024;
 const MAX_SAVE: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]

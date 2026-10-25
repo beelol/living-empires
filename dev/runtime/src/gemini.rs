@@ -93,7 +93,7 @@ fn load_with_env(path: &Path, env: impl Fn(&str) -> Option<String>) -> Result<Ge
     Ok(GeminiConfig {
         model,
         interval: Duration::from_secs(bounded_integer("DIPLOMACY_INTERVAL_SECONDS", 10, 300)?),
-        max_calls: bounded_integer("DIPLOMACY_MAX_CALLS", 120, 10000)?,
+        max_calls: bounded_integer("DIPLOMACY_MAX_CALLS", 120, crate::diplomacy::LIMIT as u64)?,
         key,
     })
 }
@@ -348,6 +348,12 @@ mod tests {
                 .expect("invalid config must fail");
             assert!(!format!("{error:#?}").contains("private-secret"));
         }
+    }
+
+    #[test]
+    fn rejects_call_budget_larger_than_durable_ledger() {
+        assert!(config_file("DIPLOMACY_MAX_CALLS=1025\n", &[]).is_err());
+        assert!(config_file("DIPLOMACY_MAX_CALLS=1024\n", &[]).is_ok());
     }
 
     fn test_config() -> GeminiConfig {

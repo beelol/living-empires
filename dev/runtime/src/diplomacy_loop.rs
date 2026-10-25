@@ -317,6 +317,38 @@ mod tests {
     }
 
     #[test]
+    fn corrected_budget_resumes_next_faction_without_restarting() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = dir.path().join(".env.local");
+        let state = dir.path().join("diplomacy.json");
+        config(&env, "test-only-key", 1025);
+        let worker =
+            DiplomacyLoop::start_with(state.clone(), env.clone(), None, |_, _| Ok(proposal()))
+                .unwrap();
+        wait_until(|| worker.status.read().unwrap()["phase"] == "error");
+        assert_eq!(worker.status.read().unwrap()["world"]["attempt_count"], 0);
+
+        config(&env, "test-only-key", 1);
+        wait_until(|| worker.status.read().unwrap()["phase"] == "paused");
+        assert_eq!(worker.status.read().unwrap()["world"]["attempt_count"], 1);
+        config(&env, "test-only-key", 2);
+        wait_until(|| {
+            let status = worker.status.read().unwrap();
+            status["phase"] == "paused" && status["world"]["attempt_count"] == 2
+        });
+        drop(worker);
+
+        let saved = Diplomacy::load(state).unwrap().snapshot(now());
+        let decisions = saved["decisions"].as_array().unwrap();
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[0]["actor"], "helios");
+        assert_eq!(decisions[1]["actor"], "tide");
+        assert!(decisions
+            .iter()
+            .all(|decision| decision["accepted"] == true));
+    }
+
+    #[test]
     fn pending_model_keeps_status_readable_and_stop_discards_late_proposal() {
         let dir = tempfile::tempdir().unwrap();
         let env = dir.path().join(".env.local");

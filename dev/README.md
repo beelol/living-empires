@@ -74,7 +74,10 @@ success. Model calls run off the game loop. No key means waiting, not fake repli
 The host picks up a newly saved key, model, interval or call limit between calls.
 Argon is the default; `GEMINI_MODEL=gemini-3.8-flash` can select Flash. Each HTTP attempt
 counts toward the durable call limit, including failures; after the limit, the
-loop pauses until you increase it. Calls time out after 20 seconds, failures
+loop pauses until you increase it. The supported limit is 1–1024 attempts per
+saved demo; preserve its history and start a separate demo world after 1024.
+Invalid settings pause requests and recover automatically when corrected.
+Calls time out after 20 seconds, failures
 back off, and native movement continues. Removing the key pauses new requests.
 
 The local operator page shows private observations and decision evidence, so
