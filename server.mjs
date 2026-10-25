@@ -300,7 +300,7 @@ async function run(job){
         event(job,state==='blocked'?'blocked':state==='cancelled'?'cancelled':'exhausted',job.stopReason);return;
       }
       const attempt={number:job.pipeline.attemptCount+1,checks:[],images:[],imageHashes:[],repairRequested:[...findings],previousHash:job.attempts.at(-1)?.hash||null,createdAt:new Date().toISOString()};
-      event(job,'generating',`${attempt.number===1?'Generating':'Repairing'} candidate ${attempt.number}/3 in the frozen ${job.theme.name} theme.`);
+      event(job,'generating',`${attempt.number===1?'Generating':'Repairing'} candidate ${attempt.number}/${job.pipeline.contract.limits.maxAttempts} in the frozen ${job.theme.name} theme.`);
       let candidate=await generate(job,previous,findings);ensureCurrent(job);
       if(job.injectDefect&&attempt.number===1)candidate=injectDefect(candidate);
       const record=syncPipeline(job,'submit',{recipe:candidate});
@@ -487,7 +487,7 @@ const server=http.createServer(async(req,res)=>{
       lastRendererSeen=Date.now();const task=renderTasks.values().next().value;
       return json(res,200,task?{token:task.token,jobId:task.jobId,attemptNumber:task.attemptNumber,candidateHash:task.candidateHash,recipe:task.recipe,theme:task.theme,sceneHalfExtent:task.sceneHalfExtent}:null);
     }
-    if(pathname==='/api/jobs')return json(res,200,[...jobs.values()].sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).map(({providerResponses,lastCreatorPrompt,...job})=>job));
+    if(pathname==='/api/jobs')return json(res,200,[...jobs.values()].sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).map(({providerResponses,lastCreatorPrompt,...job})=>({...job,spending:spending.summary()})));
     if(pathname==='/api/release')return json(res,200,releases.at(-1)||null);
     const packageMatch=pathname.match(/^\/api\/jobs\/([\da-z-]{1,128})\/package$/);
     if(packageMatch){
@@ -499,7 +499,7 @@ const server=http.createServer(async(req,res)=>{
       res.writeHead(200,{'Content-Type':'application/json','Content-Disposition':`attachment; filename="asset-${job.id}.json"`,'Cache-Control':'no-store'});res.end(JSON.stringify(value,null,2));return;
     }
     const match=pathname.match(/^\/api\/jobs\/([\da-z-]{1,128})$/);
-    if(match){const job=jobs.get(match[1]);return json(res,job?200:404,job||{error:'Unknown job'});}
+    if(match){const job=jobs.get(match[1]);return json(res,job?200:404,job?{...job,spending:spending.summary()}:{error:'Unknown job'});}
     let file;
     if(pathname==='/vendor/three.js')file=path.join(root,'node_modules/three/build/three.module.js');
     else if(pathname==='/vendor/three.core.js')file=path.join(root,'node_modules/three/build/three.core.js');
