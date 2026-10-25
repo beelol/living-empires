@@ -25,6 +25,7 @@ const jobs=new Map(), controllers=new Map();
 const renderTasks=new Map();
 let lastRendererSeen=0;
 let lastPipelineTime=0;
+let inferenceStarting=false;
 let browser;
 const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const rustBinary=process.env.RUST_CORE_BIN||path.join(root,'target/debug/world-check');
@@ -165,21 +166,31 @@ function redactPrepared(value){
   return value;
 }
 function refinementSource(input,theme){
-  if(!input.baseJobId)return null;
+  if(!input.baseJobId){if(input.componentEdit)throw new Error('Component edits require an exact saved baseline.');return null;}
   const baseJob=jobs.get(input.baseJobId),number=Number(input.baseAttemptNumber),attempt=baseJob?.attempts.find(a=>a.number===number);
   if(!attempt?.recipe||attempt.hash!==input.baseCandidateHash||attempt.images?.length!==3||attempt.imageHashes?.length!==3)throw new Error('Select an existing captured baseline version and its exact candidate hash.');
   if(stableJSON(baseJob.theme)!==stableJSON(theme))throw new Error('Refinement preserves the selected version’s frozen artistic direction. Start a new scene to change that contract.');
   if(typeof input.userFeedback!=='string'||input.userFeedback.trim().length<3||input.userFeedback.length>2000)throw new Error('Describe the requested improvement in 3–2000 characters.');
   for(let i=0;i<3;i++){const file=imagePath(baseJob,attempt.images[i]);if(!file||!fs.existsSync(file)||createHash('sha256').update(fs.readFileSync(file)).digest('hex')!==attempt.imageHashes[i])throw new Error('The selected baseline evidence is missing or changed.');}
+  let componentEdit=null,feedback=input.userFeedback.trim();
+  if(input.componentEdit){
+    const edit=input.componentEdit,components=attempt.recipe.scene?.components;
+    if(!edit||typeof edit!=='object'||Object.keys(edit).some(k=>!['mode','componentId'].includes(k))||!['add','modify'].includes(edit.mode)||typeof edit.componentId!=='string'||!(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/).test(edit.componentId)||edit.componentId.length>64||!components)throw new Error('Choose one valid component edit and a scene baseline.');
+    const exists=components.some(c=>c.id===edit.componentId);
+    if((edit.mode==='add'&&exists)||(edit.mode==='modify'&&!exists))throw new Error('Added IDs must be new; modified IDs must exist in the baseline.');
+    componentEdit={mode:edit.mode,componentId:edit.componentId};
+    const name=input.componentName;if(edit.mode==='add'&&(typeof name!=='string'||!name.trim()||name.length>100))throw new Error('Name the new component in at most 100 characters.');
+    feedback+=`\nFrozen scope: ${edit.mode} only component ${edit.componentId}${edit.mode==='add'?` named ${name.trim()}`:''}. Preserve all untargeted components and parts exactly, and preserve the baseline name, description, theme, sensor radius and scene extent. A visual variation must change silhouette, layout, proportions, materials or a signature feature meaningfully; palette-only edits are insufficient.`;
+  }
   const record=baseJob.pipeline?.candidates.find(c=>c.candidateHash===attempt.hash);
   if(baseJob.pipeline&&(!record||stableJSON(record.recipe)!==stableJSON(attempt.recipe)))throw new Error('Baseline recipe does not match its Rust candidate record.');
-  return {jobId:baseJob.id,number,hash:attempt.hash,recipe:structuredClone(attempt.recipe),images:[...attempt.images],imageHashes:[...attempt.imageHashes],userFeedback:input.userFeedback.trim(),findings:[...attempt.checks.filter(c=>c.status!=='pass').map(c=>`${c.id}: ${c.detail}`),...(attempt.review?.comparison?.defects||[]).map(d=>`View ${d.view}, ${d.location}: ${d.issue}. Repair: ${d.repair}`),...(attempt.review?.comparison?.strengths||[]).map(s=>`Preserve: ${s}`)]};
+  return {jobId:baseJob.id,number,hash:attempt.hash,recipe:structuredClone(attempt.recipe),images:[...attempt.images],imageHashes:[...attempt.imageHashes],componentEdit,userFeedback:feedback,findings:[...attempt.checks.filter(c=>c.status!=='pass').map(c=>`${c.id}: ${c.detail}`),...(attempt.review?.comparison?.defects||[]).map(d=>`View ${d.view}, ${d.location}: ${d.issue}. Repair: ${d.repair}`),...(attempt.review?.comparison?.strengths||[]).map(s=>`Preserve: ${s}`)]};
 }
 function generationRequest(job,previous,findings){
   const models=job.roleModels||{creator:job.model||roleModels.creator,repair:job.model||roleModels.repair};
   const selectedModel=(job.pipeline?.attemptCount||0)===0?models.creator:models.repair;
   if(job.pipeline&&stableJSON(job.reference||null)!==stableJSON(job.pipeline.contract.reference||null))throw new Error('The frozen reference image consent or identity changed; create a new job.');
-  return {theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,sceneHalfExtent:job.sceneHalfExtent??job.pipeline?.contract.sceneHalfExtent??null,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),referenceImages:job.referenceImages||[],referenceConsent:job.reference?.consent===true,referenceSha256:job.reference?.sha256||null,referenceMimeType:job.reference?.mimeType||null,model:selectedModel,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};
+  return {theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,componentEdit:job.componentEdit||null,sceneHalfExtent:job.sceneHalfExtent??job.pipeline?.contract.sceneHalfExtent??null,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),referenceImages:job.referenceImages||[],referenceConsent:job.reference?.consent===true,referenceSha256:job.reference?.sha256||null,referenceMimeType:job.reference?.mimeType||null,model:selectedModel,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};
 }
 async function generate(job,previous,findings){
   if(job.provider==='fixture'){
@@ -255,7 +266,7 @@ async function review(job,attempt){
   });
   const prior=job.attempts.at(-2)||job.baseline;
   const previous=prior?{candidateHash:prior.hash,imageHashes:prior.imageHashes,images:imageInputs(prior),strengths:prior.review?.comparison?.strengths||[]}:null;
-  const request={theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,sceneHalfExtent:job.sceneHalfExtent,candidateHash:attempt.hash,imageHashes:attempt.imageHashes,images:imageInputs(attempt),previous,model:job.roleModels?.reviewer||job.model||roleModels.reviewer};
+  const request={theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,componentEdit:job.componentEdit||null,sceneHalfExtent:job.sceneHalfExtent,candidateHash:attempt.hash,imageHashes:attempt.imageHashes,images:imageInputs(attempt),previous,model:job.roleModels?.reviewer||job.model||roleModels.reviewer};
   const result=await providerCall(job,'independent comparative visual reviewer',{op:'review',request});
   job.providerResponses.push({kind:'reviewer',model:request.model,agent:null,response:result.response,usage:result.usage||null});save(job);return result;
 }
@@ -272,7 +283,7 @@ async function prepareAndRun(job,baseSource){
     job.baseline=baseline;save(job);
     const captured=await capture(job,baseline);ensureCurrent(job);baseline.images=captured.images;baseline.movement=captured.movement;
     baseline.imageHashes=baseline.images.map(url=>createHash('sha256').update(fs.readFileSync(imagePath(job,url))).digest('hex'));
-    const refinement={userFeedback:job.userFeedback,baselineRecipe:baseline.recipe,baselineEvidence:{candidateHash:baseline.hash,imageHashes:baseline.imageHashes,imageUrls:baseline.images}};
+    const refinement={userFeedback:job.userFeedback,...(job.componentEdit?{componentEdit:job.componentEdit}:{}),baselineRecipe:baseline.recipe,baselineEvidence:{candidateHash:baseline.hash,imageHashes:baseline.imageHashes,imageUrls:baseline.images}};
     job.pipeline=rustSync({...job.createInput,refinement}).pipeline;job.baseline=baseline;
     event(job,'queued','Artistic direction, feedback, selected baseline and matched-camera evidence frozen.');
     return run(job);
@@ -363,10 +374,10 @@ const server=http.createServer(async(req,res)=>{
         if(!baseline)throw new Error('Choose a saved baseline version before previewing a refinement.');
         if(input.provider==='fixture')return json(res,200,{summary:'Offline fixtures do not use artistic feedback. Select Gemini managed agent to inspect the real refinement request; this preview makes no API call.',request:{provider:'fixture',baseCandidateHash:baseline.hash,userFeedback:baseline.userFeedback,referenceImages:'local only; not included'}});
         if(!['managed','gemini'].includes(input.provider))throw new Error('Select a generation engine.');
-        const sceneHalfExtent=Number(input.sceneHalfExtent??Math.max(12,baseline.recipe.scene?.halfExtent||4));
-        const request=generationRequest({theme,prompt:input.prompt||jobs.get(baseline.jobId).prompt,provider:input.provider,userFeedback:baseline.userFeedback,sceneHalfExtent,roleModels,reference:reference.reference,referenceImages:reference.images},baseline.recipe,baseline.findings);
+        const sceneHalfExtent=Number(baseline.recipe.scene?.halfExtent??jobs.get(baseline.jobId).sceneHalfExtent??4);
+        const request=generationRequest({theme,prompt:input.prompt||jobs.get(baseline.jobId).prompt,provider:input.provider,userFeedback:baseline.userFeedback,componentEdit:baseline.componentEdit,sceneHalfExtent,roleModels,reference:reference.reference,referenceImages:reference.images},baseline.recipe,baseline.findings);
         const prepared=redactPrepared(rustSync({op:'prepare-generation',request}));
-        return json(res,200,{summary:'Prepared locally only: the selected baseline recipe, your feedback, critic targets and frozen scene extent reach the creator request. No API call or reference-image transmission occurred.',request:{baseJobId:baseline.jobId,baseAttemptNumber:baseline.number,baseCandidateHash:baseline.hash,userFeedback:baseline.userFeedback,sceneHalfExtent,reference:reference.reference,...prepared}});
+        return json(res,200,{summary:'Prepared locally only: the selected baseline recipe, your feedback, critic targets and frozen scene extent reach the creator request. No API call or reference-image transmission occurred.',request:{baseJobId:baseline.jobId,baseAttemptNumber:baseline.number,baseCandidateHash:baseline.hash,userFeedback:baseline.userFeedback,componentEdit:baseline.componentEdit,sceneHalfExtent,reference:reference.reference,...prepared}});
       }
       if(pathname==='/api/themes/resolve'){
         if(!themeInferenceEnabled)return json(res,403,{error:'Live theme inference is prepared but disabled pending an operator-approved spending ceiling. Use the editable contract or labeled local draft.'});
@@ -392,18 +403,39 @@ const server=http.createServer(async(req,res)=>{
         task.finish({images,movement:input.movement});return json(res,200,{received:true});
       }
       if(pathname==='/api/jobs'){
+        if(inferenceStarting)return json(res,409,{error:'Art direction is already being inferred. Wait for that brief to freeze.'});
         if([...jobs.values()].some(j=>!['accepted','active','failed','blocked','cancelled','exhausted'].includes(j.status)))return json(res,409,{error:'A run is already in progress. Cancel it first.'});
         const reference=referenceInput(input);
         if(reference.images.length&&input.provider==='fixture')throw new Error('Reference images require a Gemini engine; clear the image to run an offline fixture.');
-        const theme=validateTheme(structuredClone(input.theme||THEMES[input.themeId]));
-        if((input.themeId&&input.themeId!==theme.id)||!['fixture','gemini','managed'].includes(input.provider)||typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)return json(res,400,{error:'Provide a matching theme contract, provider, and 5–3000 character prompt.'});
+        if(!['fixture','gemini','managed'].includes(input.provider)||typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)return json(res,400,{error:'Provide a generation engine and a 5–3000 character creative brief.'});
+        let theme=validateTheme(structuredClone(input.theme||THEMES[input.themeId]||(input.inferTheme===true?THEMES.argonaut:null)));
+        let artDirection=null;
+        if(input.inferTheme===true){
+          if(input.baseJobId)throw new Error('Saved-version refinement preserves its existing frozen art direction.');
+          if(!themeInferenceEnabled)throw new Error('Automatic Gemini art direction is disabled in this runtime.');
+          if(input.provider==='fixture'||!apiKey)throw new Error('Automatic art direction requires a configured Gemini engine.');
+          if(typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)throw new Error('Provide a 5–3000 character creative brief.');
+          const id=randomUUID(),startedAt=Date.now(),spendId=spending.reserve({jobId:`art-direction-${id}`,label:'prompt art direction',model,managed:false});
+          const draftFile=path.join(data,`theme-draft-${id}.json`);
+          atomic(draftFile,{id,status:'dispatched',model,prompt:input.prompt,startedAt,spendId});
+          inferenceStarting=true;
+          try{
+            const draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});
+            spending.settle(spendId,draft.usage);theme=validateTheme(draft.theme);
+            artDirection={id,model,spendId,startedAt,usage:draft.usage||null,themeSha256:digest(theme)};
+            atomic(draftFile,{...artDirection,status:'returned',prompt:input.prompt,theme,response:draft.response});
+          }catch(error){if(error.themeInference){spending.settle(spendId,error.themeInference.usage);}else spending.unknown(spendId);atomic(draftFile,{id,status:'failed_or_unknown',model,prompt:input.prompt,startedAt,spendId,error:error.message});throw error;}
+          finally{inferenceStarting=false;}
+        }
+        if((input.inferTheme!==true&&input.themeId&&input.themeId!==theme.id)||!['fixture','gemini','managed'].includes(input.provider)||typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)return json(res,400,{error:'Provide a matching theme contract, provider, and 5–3000 character prompt.'});
         if(input.provider!=='fixture'&&!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY in .env and restart the server. Offline rehearsal is available now.'});
         const baseSource=refinementSource(input,theme);
         if(baseSource&&input.provider==='fixture')return json(res,400,{error:'Offline fixtures only demonstrate the known obstruction repair; they cannot apply artistic feedback. Select a live engine after the specific paid request is approved.'});
-        const sceneHalfExtent=input.provider==='fixture'?(input.previewRecipe?.scene?.halfExtent??null):Number(input.sceneHalfExtent??Math.max(12,baseSource?.recipe.scene?.halfExtent||4));
+        const sceneHalfExtent=input.provider==='fixture'?(input.previewRecipe?.scene?.halfExtent??null):Number(baseSource?(baseSource.recipe.scene?.halfExtent??jobs.get(baseSource.jobId).sceneHalfExtent??4):(input.sceneHalfExtent??12));
         if(sceneHalfExtent!==null&&(!Number.isFinite(sceneHalfExtent)||sceneHalfExtent<4||sceneHalfExtent>16))throw new Error('Scene half extent must be 4–16 metres.');
         const now=Math.max(Date.now(),lastPipelineTime+1);lastPipelineTime=now;
-        let retryGroupId=null,limits=null;
+        let retryGroupId=null,limits=input.limits||null;
+        if(artDirection){limits={maxAttempts:3,maxProviderCalls:6,timeBudgetMs:1200000,requiredImageHashes:3,...(limits||{})};limits.timeBudgetMs=Math.max(1,Math.min(1200000,limits.timeBudgetMs)-(now-artDirection.startedAt));}
         if(input.retryOf){
           const prior=jobs.get(input.retryOf);
           if(!prior||prior.status!=='blocked'||!prior.callLog?.length||prior.callLog.some(call=>!['returned','returned_error'].includes(call.status))||prior.callLog.at(-1).responseStatus!=='incomplete')throw new Error('A retry requires a reconciled incomplete provider response; unknown calls cannot be retried.');
@@ -417,10 +449,14 @@ const server=http.createServer(async(req,res)=>{
         }
         const createInput={op:'create',theme,prompt:input.prompt,now,...(limits?{limits}:{}),...(input.provider!=='fixture'?{roleModels}:{}),...(reference.reference?{reference:reference.reference}:{}),...(sceneHalfExtent!==null?{sceneHalfExtent}:{}),provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':roleModels.creator,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}};
         const pipeline=rustSync(createInput).pipeline;
-        const job={id:pipeline.contract.jobId,pipeline,createInput,sceneHalfExtent,retryOf:input.retryOf||null,retryGroupId,roleModels:input.provider==='fixture'?null:roleModels,reference:reference.reference,baseJobId:baseSource?.jobId||null,baseAttemptNumber:baseSource?.number||null,baseCandidateHash:baseSource?.hash||null,userFeedback:baseSource?.userFeedback||null,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':roleModels.creator,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:baseSource?'preparing':'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
+        const job={id:pipeline.contract.jobId,pipeline,createInput,sceneHalfExtent,artDirection,inferTheme:input.inferTheme===true,retryOf:input.retryOf||null,retryGroupId,roleModels:input.provider==='fixture'?null:roleModels,reference:reference.reference,baseJobId:baseSource?.jobId||null,baseAttemptNumber:baseSource?.number||null,baseCandidateHash:baseSource?.hash||null,userFeedback:baseSource?.userFeedback||null,componentEdit:baseSource?.componentEdit||null,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':roleModels.creator,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:baseSource?'preparing':'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
         Object.defineProperty(job,'referenceImages',{value:reference.images,enumerable:false});
         if(input.previewRecipe){if(input.provider!=='fixture')throw new Error('Authored recipe previews are offline only.');rustChecks(input.previewRecipe,theme.id,theme);job.previewRecipe=structuredClone(input.previewRecipe);job.previewKind='authored_scene';job.sceneHalfExtent=input.previewRecipe.scene?.halfExtent||4;}
-        jobs.set(job.id,job);controllers.set(job.id,new AbortController());event(job,job.status,baseSource?'Preparing matched baseline evidence; no generation dispatched yet.':'Brief and theme contract frozen. Job limit: three candidates, six paid calls, twenty minutes.');
+        jobs.set(job.id,job);
+        if(artDirection){
+          syncPipeline(job,'charge');job.callLog.push({number:1,label:'prompt art direction',role:'art_director',model:artDirection.model,agent:null,managed:false,spendId:artDirection.spendId,status:'returned',usage:artDirection.usage,at:new Date(artDirection.startedAt).toISOString()});job.spending=spending.summary();
+        }
+        controllers.set(job.id,new AbortController());event(job,job.status,baseSource?'Preparing matched baseline evidence; no generation dispatched yet.':`Brief and theme contract frozen. Job limit: ${pipeline.contract.limits.maxAttempts} candidates, ${pipeline.contract.limits.maxProviderCalls} paid calls, ${Math.ceil(pipeline.contract.limits.timeBudgetMs/60000)} minutes.`);
         json(res,201,job);void prepareAndRun(job,baseSource);return;
       }
       const match=pathname.match(/^\/api\/jobs\/([\da-z-]{1,128})\/(cancel|activate)$/);
