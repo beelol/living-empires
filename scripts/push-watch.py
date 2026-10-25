@@ -85,7 +85,7 @@ def once():
                              '--tick'], text=True, capture_output=True)
     if result.returncode:
         detail = result.stderr.strip()
-        busy = 'lock' in detail.lower() and ('held' in detail.lower() or 'busy' in detail.lower() or 'temporarily unavailable' in detail.lower())
+        busy = 'lock' in detail.lower() and any(word in detail.lower() for word in ('held', 'holds', 'busy', 'temporarily unavailable'))
         record('skipped' if busy else 'blocked', reason=detail[-2000:] or 'Integration command failed')
     elif result.stdout:
         print(result.stdout.strip(), flush=True)
