@@ -6,6 +6,8 @@ import {randomUUID,createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {chromium} from 'playwright';
 import {createCandidate,reviewCandidate} from './lib/gemini.mjs';
+import {inferTheme} from './lib/theme-inference.mjs';
+import {validateTheme} from './public/themes.mjs';
 import {THEMES,fixtureRecipe,injectDefect,recipeSchema,eligible,canAccept} from './public/core.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
@@ -14,23 +16,25 @@ const port=Number(process.env.PORT||4317), base=`http://127.0.0.1:${port}`;
 const apiKey=process.env.GEMINI_API_KEY||process.env.GOOGLE_API_KEY;
 const model=process.env.GEMINI_MODEL||'gemini-3.8-flash';
 const agent=process.env.GEMINI_AGENT||'antigravity-preview-09-2026';
+const themeInferenceEnabled=process.env.THEME_INFERENCE_ENABLED==='1';
 const jobs=new Map(), controllers=new Map();
 const renderTasks=new Map();
 let lastRendererSeen=0;
 let browser;
 const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const sourceRevision=spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).stdout?.trim()||'unknown';
-const sourceFingerprint=digest(['server.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/gemini.mjs','crates/living-world-core/src/lib.rs','Cargo.lock','package-lock.json'].map(file=>[file,fs.existsSync(path.join(root,file))?fs.readFileSync(path.join(root,file),'utf8'):null]));
+const sourceFingerprint=digest(['server.mjs','public/themes.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/gemini.mjs','lib/theme-inference.mjs','crates/living-world-core/src/lib.rs','Cargo.lock','package-lock.json'].map(file=>[file,fs.existsSync(path.join(root,file))?fs.readFileSync(path.join(root,file),'utf8'):null]));
 const rustBinary=process.env.RUST_CORE_BIN||path.join(root,'target/debug/world-check');
 function verifiedAttempt(job){
   const attempt=job?.attempts.at(-1);
+  if(job?.themeHash&&digest(job.theme)!==job.themeHash)return null;
   if(!job||!['accepted','active'].includes(job.status)||job.cancelled||!attempt||digest(attempt.recipe)!==job.acceptedHash||!canAccept(attempt.checks,attempt.images.length))return null;
   if(attempt.imageHashes?.length!==3||!attempt.imageHashes.every((hash,i)=>hash===createHash('sha256').update(fs.readFileSync(path.join(data,...attempt.images[i].split('/').slice(2)))).digest('hex')))return null;
   return attempt;
 }
-function rustChecks(recipe,themeId){
+function rustChecks(recipe,themeId,theme){
   if(!fs.existsSync(rustBinary))throw new Error('Rust core is not built. Run cargo build -p living-world-core before starting a run.');
-  const result=spawnSync(rustBinary,[],{input:JSON.stringify({recipe,themeId}),encoding:'utf8',timeout:5000});
+  const result=spawnSync(rustBinary,[],{input:JSON.stringify({recipe,themeId,theme}),encoding:'utf8',timeout:5000});
   if(result.error)throw result.error;
   const value=JSON.parse(result.stdout||'{}');
   if(result.status!==0)throw new Error(value.error||'Rust validation failed');
@@ -50,7 +54,7 @@ for(const file of fs.readdirSync(data).filter(f=>/^[\da-f-]+\.json$/.test(f))){
   }
   jobs.set(job.id,job);
 }
-function ensureCurrent(job){if(job.cancelled)throw new Error('Cancelled');if(Date.now()>=job.deadline)throw new Error('Job deadline exhausted');}
+function ensureCurrent(job){if(job.cancelled)throw new Error('Cancelled');if(Date.now()>=job.deadline)throw new Error('Job deadline exhausted');if(job.themeHash&&digest(job.theme)!==job.themeHash)throw new Error('Frozen theme contract changed; create a new job.');}
 async function charge(job,label,fn){
   ensureCurrent(job);
   if(job.calls>=6)throw new Error('Six-call job ceiling reached');
@@ -62,9 +66,9 @@ async function charge(job,label,fn){
 async function generate(job,previous,findings){
   if(job.provider==='fixture'){
     await new Promise(r=>setTimeout(r,350));ensureCurrent(job);
-    return previous?{...structuredClone(previous),parts:previous.parts.filter(p=>p.id!=='audit-obstruction')}:fixtureRecipe(job.themeId);
+    return previous?{...structuredClone(previous),parts:previous.parts.filter(p=>p.id!=='audit-obstruction')}:fixtureRecipe(job.theme);
   }
-  const prompt=`Generate a complete JSON recipe for a playable 3D sensor outpost in this game world. Output ONLY JSON, no markdown.\nFrozen world theme: ${JSON.stringify(job.theme)}\nUser brief: ${job.prompt}\nContract: ${JSON.stringify(recipeSchema)}\nGeometry uses metres: y up, all dimensions full extents. Ground y=0. Commander starts at (0,0,9), walks straight toward (0,0,0), height 1.5m, radius .28m. Leave an open corridor at least 1.2m wide along x=0,z=0..9. Supports/walls meet ground. Building stays within x/z +-4. Sensor radius 8..20. Use 4..48 parts. Materials are palette tokens ONLY; shape box/cylinder/cone; no arbitrary code. A roof, walls, posts, sensor mast and visual accents should form a coherent outpost. Preserve the same theme, identity, and gameplay role when repairing.\nReference format: ${JSON.stringify(fixtureRecipe(job.themeId))}\nPrevious candidate: ${JSON.stringify(previous||null)}\nIndependent failures to repair: ${JSON.stringify(findings||[])}\nDo not add props that contradict the theme. Change the reference geometry to fit the user's request while respecting the corridor.`;
+  const prompt=`Generate a complete JSON recipe for a playable 3D sensor outpost in this game world. Output ONLY JSON, no markdown.\nFrozen world theme: ${JSON.stringify(job.theme)}\nUser brief: ${job.prompt}\nContract: ${JSON.stringify(recipeSchema)}\nGeometry uses metres: y up, all dimensions full extents. Ground y=0. Commander starts at (0,0,9), walks straight toward (0,0,0), height 1.5m, radius .28m. Leave an open corridor at least 1.2m wide along x=0,z=0..9. Supports/walls meet ground. Building stays within x/z +-4. Sensor radius 8..20. Use 4..48 parts. Materials are palette tokens ONLY; shape box/cylinder/cone; no arbitrary code. A roof, walls, posts, sensor mast and visual accents should form a coherent outpost. Preserve the same theme, identity, and gameplay role when repairing.\nReference format: ${JSON.stringify(fixtureRecipe(job.theme))}\nPrevious candidate: ${JSON.stringify(previous||null)}\nIndependent failures to repair: ${JSON.stringify(findings||[])}\nDo not add props that contradict the theme. Change the reference geometry to fit the user's request while respecting the corridor.`;
   job.lastCreatorPrompt=prompt;save(job);
   const result=await charge(job,'Gemini creator',()=>createCandidate({provider:job.provider,apiKey,model,agent,prompt,recipeSchema,interactionId:job.interactionId,environmentId:job.environmentId,signal:controllers.get(job.id).signal}));
   job.interactionId=result.interactionId;job.environmentId=result.environmentId;
@@ -127,7 +131,7 @@ async function run(job){
       if(job.injectDefect&&attempt.number===1)candidate=injectDefect(candidate);
       attempt.recipe=candidate;attempt.hash=digest(candidate);previous=candidate;save(job);
       event(job,'validating',`Checking candidate ${attempt.number}: palette, geometry, collision, supports and sensor range.`);
-      try{const evaluation=rustChecks(candidate,job.themeId);attempt.checks=evaluation.checks;attempt.rustMovement=evaluation.movement;attempt.engine=evaluation.engine;}
+      try{const evaluation=rustChecks(candidate,job.themeId,job.theme);attempt.checks=evaluation.checks;attempt.rustMovement=evaluation.movement;attempt.engine=evaluation.engine;}
       catch(e){attempt.checks=[{id:'PACKAGE-01',status:'fail',label:'Valid package and frozen theme',detail:e.message}];findings=attempt.checks;save(job);continue;}
       event(job,'rendering','Capturing three actual game views and running the commander through the client movement path.');
       const evidence=await capture(job,attempt);ensureCurrent(job);attempt.images=evidence.images;attempt.movement=evidence.movement;
@@ -157,7 +161,14 @@ const server=http.createServer(async(req,res)=>{
     const url=new URL(req.url,base), pathname=decodeURIComponent(url.pathname);
     if(req.method==='POST'){
       if(req.headers.origin && ![base,`http://localhost:${port}`].includes(req.headers.origin))return json(res,403,{error:'Origin rejected'});
-      const input=await body(req,pathname==='/api/render-task'?8_000_000:12000);
+      const input=await body(req,pathname==='/api/render-task'?8_000_000:50000);
+      if(pathname==='/api/themes/resolve'){
+        if(!themeInferenceEnabled)return json(res,403,{error:'Live theme inference is prepared but disabled pending an operator-approved spending ceiling. Use the editable contract or labeled local draft.'});
+        if(!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY to resolve a theme with Gemini.'});
+        const draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});
+        const id=randomUUID();atomic(path.join(data,`theme-draft-${id}.json`),{id,sourceRevision,model,prompt:input.prompt,theme:draft.theme,usage:draft.usage,response:draft.response});
+        return json(res,200,{theme:draft.theme,usage:draft.usage,draftId:id,requiresReview:true});
+      }
       if(pathname==='/api/render-task'){
         const task=renderTasks.get(input.token);
         if(!task||task.jobId!==input.jobId||task.attemptNumber!==input.attemptNumber||task.candidateHash!==input.candidateHash)return json(res,409,{error:'Render task is no longer current.'});
@@ -175,9 +186,10 @@ const server=http.createServer(async(req,res)=>{
       }
       if(pathname==='/api/jobs'){
         if([...jobs.values()].some(j=>!['accepted','active','failed','blocked','cancelled','exhausted'].includes(j.status)))return json(res,409,{error:'A run is already in progress. Cancel it first.'});
-        if(!THEMES[input.themeId]||!['fixture','gemini','managed'].includes(input.provider)||typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)return json(res,400,{error:'Provide a theme, provider, and 5–3000 character prompt.'});
+        const theme=validateTheme(structuredClone(input.theme||THEMES[input.themeId]));
+        if((input.themeId&&input.themeId!==theme.id)||!['fixture','gemini','managed'].includes(input.provider)||typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)return json(res,400,{error:'Provide a matching theme contract, provider, and 5–3000 character prompt.'});
         if(input.provider!=='fixture'&&!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY in .env and restart the server. Offline rehearsal is available now.'});
-        const job={id:randomUUID(),sourceRevision,sourceFingerprint,prompt:input.prompt,themeId:input.themeId,theme:structuredClone(THEMES[input.themeId]),provider:input.provider,model,agent,injectDefect:input.injectDefect===true,contractVersion:1,createdAt:new Date().toISOString(),deadline:Date.now()+20*60*1000,status:'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
+        const job={id:randomUUID(),sourceRevision,sourceFingerprint,prompt:input.prompt,themeId:theme.id,theme,themeHash:digest(theme),provider:input.provider,model,agent,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date().toISOString(),deadline:Date.now()+20*60*1000,status:'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
         jobs.set(job.id,job);controllers.set(job.id,new AbortController());event(job,'queued','Brief and theme contract frozen. Job limit: three candidates, six paid calls, twenty minutes.');
         json(res,201,job);void run(job);return;
       }
@@ -202,7 +214,7 @@ const server=http.createServer(async(req,res)=>{
       return json(res,404,{error:'Unknown action'});
     }
     if(req.method!=='GET')return json(res,405,{error:'Method not allowed'});
-    if(pathname==='/api/config')return json(res,200,{keyConfigured:!!apiKey,model,agent,themes:THEMES});
+    if(pathname==='/api/config')return json(res,200,{keyConfigured:!!apiKey,model,agent,themes:THEMES,themeInferenceEnabled});
     if(pathname==='/api/render-task'){
       lastRendererSeen=Date.now();const task=renderTasks.values().next().value;
       return json(res,200,task?{token:task.token,jobId:task.jobId,attemptNumber:task.attemptNumber,candidateHash:task.candidateHash,recipe:task.recipe,theme:task.theme}:null);

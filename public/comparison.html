@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Asset Foundry — Theme Examples</title><link rel="stylesheet" href="/style.css"><style>
+body{padding:32px;color:#243831}header{height:auto;padding-bottom:20px}h1{font-size:36px}p{max-width:850px;line-height:1.7;color:#74806e}.examples{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;margin-top:28px}.example{background:#fffef9;border:1px solid #dce1d7;border-radius:9px;overflow:hidden}.example h2{margin:20px 20px 8px}.render{height:360px}.copy{padding:0 20px 20px}.copy p{font-size:11px}.metric{font:10px ui-monospace,monospace;color:#52714b;margin:12px 0}.note{font-size:10px;color:#8c957e}a{color:#315b44}ul{font-size:11px;line-height:1.8;padding-left:16px}@media(max-width:950px){.examples{grid-template-columns:1fr}.render{height:380px}}</style></head>
+<body><header><span class="eyebrow">ASSET FOUNDRY / AUTHORED PRESET REHEARSALS</span><a href="/">Back to generator ↗</a></header><h1>Three worlds. Three structural languages.</h1><p>These are procedural fixture examples authored for the test harness. Their geometry and material response differ; this comparison is not proof of live Gemini generation or agent-driven visual refinement.</p><div id="examples" class="examples"></div><p class="note">The current renderer supports primitive meshes, palette colors and family-level roughness/metalness. Fine scratches, moss textures, heat cracks and other surface weathering are design metadata unless separately implemented. Every preview below uses the same camera and movement check.</p>
+<script type="module">
+import {THEMES,fixtureRecipe,accessScenario} from './core.mjs';import {createWorld} from './scene.mjs';
+const host=document.querySelector('#examples');
+const make=(tag,text,className)=>{const e=document.createElement(tag);if(text)e.textContent=text;if(className)e.className=className;return e;};
+for(const theme of Object.values(THEMES)){
+ const recipe=fixtureRecipe(theme),card=make('section',null,'example'),viewport=make('div',null,'render'),copy=make('div',null,'copy');
+ card.append(viewport,make('h2',theme.name),copy);host.append(card);
+ const world=createWorld(viewport,{audit:true});world.load(recipe,theme);world.view(0);
+ const counts=recipe.parts.reduce((r,p)=>(r[p.shape]=(r[p.shape]||0)+1,r),{});
+ copy.append(make('div',`${recipe.parts.length} parts · ${Object.entries(counts).map(([k,v])=>v+' '+k).join(' / ')} · access ${accessScenario(recipe).pass?'PASS':'FAIL'}`,'metric'),make('p',theme.shapeLanguage));
+ const motifs=make('ul');theme.motifs.forEach(m=>motifs.append(make('li',m)));copy.append(motifs,make('p',theme.materialFinish));
+}
+</script></body></html>

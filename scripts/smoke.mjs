@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {THEMES} from '../public/core.mjs';
 
 const base = (process.env.BASE_URL || 'http://127.0.0.1:4317').replace(/\/$/, '');
 const terminal = new Set(['accepted', 'active', 'failed', 'blocked', 'cancelled', 'exhausted']);
@@ -120,6 +122,33 @@ async function main() {
   assert.equal(activeAfterCancel.response.status, 200);
   assert.equal(activeAfterCancel.value?.hash, activeBeforeCancel.value?.hash, 'Cancelled work must leave the active release unchanged');
   console.log('PASS: immediate cancellation left the third job cancelled and ineligible for activation.');
+
+  const custom=structuredClone(THEMES.ember);custom.id='custom-tidal-foundry';custom.name='Tidal Foundry';
+  custom.biome='Black-stone tidal shelf';custom.palette.accent='#75cadb';
+  custom.assumptions=['This rehearsal uses the Ember structural family; it does not semantically generate from arbitrary text.'];
+  const invalid=structuredClone(custom);delete invalid.shapeLanguage;
+  const invalidResult=await request('/api/jobs',{method:'POST',body:{themeId:custom.id,theme:invalid,provider:'fixture',prompt:'A tidal lookout'}});
+  assert.equal(invalidResult.response.status,400,'A malformed custom contract cannot bypass validation');
+  const mismatch=await request('/api/jobs',{method:'POST',body:{themeId:'argonaut',theme:custom,provider:'fixture',prompt:'A tidal lookout'}});
+  assert.equal(mismatch.response.status,400,'Theme ID mismatch must fail');
+  const customCreated=await request('/api/jobs',{method:'POST',body:{themeId:custom.id,theme:custom,provider:'fixture',prompt:'Rehearse the explicit custom tidal building contract',injectDefect:true}});
+  assert.equal(customCreated.response.status,201);
+  const customJob=await expectFixtureSuccess(customCreated.value,2);
+  assert.deepEqual(customJob.theme,custom,'Full edited contract must remain frozen through repair');
+  const customPackage=await request(`/api/jobs/${customJob.id}/package`);
+  assert.equal(customPackage.response.status,200);
+  assert.deepEqual(customPackage.value.theme,custom,'Export must preserve every custom field');
+  const themeHash=createHash('sha256').update(JSON.stringify(custom)).digest('hex');
+  assert.equal(customJob.themeHash,themeHash);
+  assert.equal(customPackage.value.manifest.themeSha256,themeHash);
+  assert.equal(customPackage.value.recipe.themeId,custom.id);
+  console.log('PASS: malformed/mismatched custom themes rejected; edited Ember-family contract stayed frozen through repair and export.');
+  const settings=await request('/api/config');
+  if(!settings.value.themeInferenceEnabled){
+    const inference=await request('/api/themes/resolve',{method:'POST',body:{prompt:'An ancient forest observatory'}});
+    assert.equal(inference.response.status,403,'Disabled inference must not dispatch paid requests');
+    console.log('PASS: live theme inference remains explicitly disabled; no paid calls dispatched.');
+  }
   console.log('All offline rehearsal smoke checks passed.');
 }
 
