@@ -1,21 +1,23 @@
 import {createWorld} from './scene.mjs';
+import {createRenderDelivery} from './render-delivery.mjs';
 
 const taskUrl='/api/render-task';
 const frame=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 
 export function startRenderWorker({interval=700}={}){
   let stopped=false,inFlight=false;
-  const submitted=new Set();
+  const delivery=createRenderDelivery(post);
   async function post(payload){
-    const response=await fetch(taskUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    if(!response.ok)throw new Error(`Render result rejected (${response.status})`);
+    const response=await fetch(taskUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
+    if(!response.ok){const error=new Error(`Render result rejected (${response.status})`);error.status=response.status;throw error;}
     return response;
   }
   async function processTask(task){
     const {token,jobId,attemptNumber,candidateHash,recipe,theme,sceneHalfExtent}=task;
     const key=String(token);
-    if(submitted.has(key))return;
-    let host,world;
+    if(delivery.has(key))return;
+    if(delivery.pending(key)){await delivery.send(key);return;}
+    let host,world,payload;
     try{
       host=document.createElement('div');
       Object.assign(host.style,{position:'fixed',left:'-20000px',top:'0',width:'1000px',height:'740px',overflow:'hidden',pointerEvents:'none'});
@@ -31,16 +33,15 @@ export function startRenderWorker({interval=700}={}){
       }
       if(images.some(image=>typeof image!=='string'||!image.startsWith('data:image/png;base64,')))throw new Error('Could not capture all three PNG views');
       const movement=world.traverse();
-      submitted.add(key);
-      await post({token,jobId,attemptNumber,candidateHash,images,movement});
+      payload={token,jobId,attemptNumber,candidateHash,images,movement};
     }catch(error){
       const message=String(error?.message||'Browser renderer failed').replace(/[\r\n\t]+/g,' ').slice(0,400);
-      submitted.add(key);
-      try{await post({token,jobId,attemptNumber,candidateHash,error:message});}catch{}
+      payload={token,jobId,attemptNumber,candidateHash,error:message};
     }finally{
       try{world?.dispose();}catch{}
       host?.remove();
     }
+    await delivery.send(key,payload);
   }
   async function poll(){
     if(stopped||inFlight)return;
@@ -49,7 +50,7 @@ export function startRenderWorker({interval=700}={}){
       const response=await fetch(taskUrl,{cache:'no-store'});
       if(!response.ok)return;
       const task=await response.json();
-      if(task&&task.token&&!submitted.has(String(task.token)))await processTask(task);
+      if(task&&task.token&&!delivery.has(String(task.token)))await processTask(task);
     }catch{}
     finally{inFlight=false;}
   }
