@@ -2,7 +2,35 @@
 
 A game that agents build, inspect, play, and improve against explicit acceptance criteria. A user describes what they want; Gemini produces a candidate; independent reviewers examine the running game; failures become bounded repair jobs; only verified versions reach players.
 
-**Current status:** specification only. This repository does not yet implement the runtime, agents, test harness, or Studio described below. The architecture and hackathon milestones in this section are proposed implementation decisions. The full game checklist remains the completion contract.
+**Current status:** local prototype in progress. The repo now includes a Three.js world preview, frozen world-theme contracts, a first-party Rust acceptance core, Gemini generation/review adapters, bounded job orchestration, and a Studio. This is a single-player outpost-generation slice; the complete multiplayer game and checklist below remain unimplemented unless supported by specific evidence. Offline rehearsal uses explicitly simulated generation and visual verdicts.
+
+## Run the prototype
+
+Requires Node.js 22+, npm, a stable Rust toolchain, and a Gemini API key for live generation. The local server binds only to loopback; no public deployment is configured.
+
+```sh
+npm install
+npm run build:core
+cp .env.example .env
+# Set GEMINI_API_KEY in .env. Never commit this file.
+PLAYWRIGHT_BROWSERS_PATH=.data/browsers npx playwright install chromium
+npm run dev
+```
+
+Open the printed local URL (default `http://127.0.0.1:4317`). Choose a theme and edit the brief. Use **Gemini managed agent** for the intended managed workflow, **Gemini direct** for the smaller recipe-generation path, or **Offline rehearsal** for a clearly labeled fixture demonstration without API calls. Both live modes use a separate Gemini image review. The theme freezes when a job starts; generated geometry must use its saved material palette, and visual review also checks architectural/biome consistency.
+
+The optional challenge checkbox inserts a blocked entrance after initial generation. The runner records three actual rendered views, the Rust core rejects blocked traversal, and the repair receives the observed failure. Click **Activate** only after the candidate passes all six demo gates. Rollback becomes available after two releases. Run limits are three candidates, six live API calls, and twenty minutes per job; this is a call ceiling, not a guaranteed monetary spending cap. There are no hidden request retries.
+
+```sh
+npm run test:core
+npm test
+# With the local server running; uses fixture generation/review, real Rust checks and game renders:
+npm run test:e2e
+```
+
+Our [`living-world-core`](crates/living-world-core/README.md) crate owns recipe validation, theme/material constraints, collision-aware simulation, and deterministic acceptance gates. The backend invokes its `world-check` binary and compares movement outcomes with the browser implementation before accepting. This keeps the browser simulation honest while avoiding a WASM build step for the first demo. Build output goes in ignored `target/`; the crate and Cargo lockfile stay in this repository. `RUST_CORE_BIN` can override the binary path.
+
+Runs, rejected versions, provider responses, screenshots, and release manifests persist under ignored `.data/`. On restart, an unfinished paid operation is marked blocked for reconciliation. Credentials stay in ignored `.env` and are sent only from the backend to Google's API. The first demo does not yet implement free-form terrain generation, unit manufacture/economy, multiplayer, automatic production deployment, or the full long-run acceptance audit.
 
 [Original concept document](https://docs.google.com/document/d/1mqgO7fSls-Rl7Pj60cTtoMFihdOzq9y89seT2yHz0bA/edit?tab=t.0) · [Full game acceptance criteria](#living-empires-game-acceptance-criteria)
 

@@ -1,0 +1,19 @@
+{
+  "name": "living-empires-loop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:core": "cargo build -p living-world-core",
+    "test:core": "cargo test -p living-world-core",
+    "dev": "node --env-file-if-exists=.env server.mjs",
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "playwright": "^1.50.0",
+    "three": "^0.180.0"
+  }
+}
