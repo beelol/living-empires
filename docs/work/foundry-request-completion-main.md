@@ -66,3 +66,28 @@ termination and evidence behavior are unchanged.
 
 Combined integration, renderer rehearsal and recovery of the failed user plots
 remain not_run until recorded below. Do not infer acceptance from worker tests.
+
+## Integration reconciliation and independent review
+
+Integration moved to `foundry-completion-main`, based on fetched `86bacde`.
+Parent/renderer/adapter owners explicitly handed off immutable commits and
+released claims; only handed-off paths are edited. Incoming faction areas,
+per-building design progress, exact verified design reuse and shared-job
+cancellation protection are retained. Conflicts in the adapter were combined,
+not replaced with the older branch files. Model, scene, area UI and saved-world
+schema remain upstream-owned and unchanged by this stream.
+
+Independent scoped reviews accepted renderer delivery and parent inference/UI
+repairs. Adapter review requested stronger loaded Node source and game verifier
+identity checks, plus blocking regeneration of uncertain paid theme requests.
+Three regressions failed before repair and passed after it. The launcher now
+compares the loaded Foundry Node fingerprint, and game health exposes its private
+verifier path/hash. Transport uncertainty is distinguished from returned invalid
+theme contracts; uncertain paid work remains blocked for reconciliation. Explicit
+regeneration of known terminal failures preserves prior outcomes and charges no
+second construction fee. Cancelling during inference also preserves uncertainty.
+
+Combined Solo suite after reconciliation: 85/85 passed, zero skips. Log:
+`/tmp/foundry-combined-solo.log`. These are prototype implementation checks,
+not canonical world acceptance. Core/provider schema port and combined live
+verification remain pending until evidence below.

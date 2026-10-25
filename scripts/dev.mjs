@@ -14,6 +14,7 @@ const local=localConfiguration({repo,canonical,environment:process.env});
 const config=launchConfiguration({repo,canonical,environment:{...local.environment,SOLO_FOUNDRY_MODE:'gemini',THEME_INFERENCE_ENABLED:'1'}});
 const {environment:env,appURL,foundryURL,runtimeDir}=config,data=env.SOLO_DATA_DIR;
 config.appSourceHash=createHash('sha256').update(['server.mjs','foundry.mjs','model.mjs','store.mjs'].map(file=>fs.readFileSync(path.join(repo,'solo',file),'utf8')).join('')).digest('hex');
+config.foundrySourceHash=createHash('sha256').update(JSON.stringify(['server.mjs',...fs.readdirSync(path.join(repo,'lib')).filter(name=>name.endsWith('.mjs')).sort().map(name=>'lib/'+name)].map(file=>[file,fs.readFileSync(path.join(repo,file),'utf8')]))).digest('hex');
 config.sourceHash=createHash('sha256').update(['provider.rs','pipeline.rs','main.rs'].map(file=>fs.readFileSync(path.join(repo,'crates/living-world-core/src',file),'utf8')).join('')).digest('hex');
 const defaultModel=env.GEMINI_MODEL||'gemini-3.8-flash';
 config.models={creator:env.CREATOR_MODEL||defaultModel,repair:env.REPAIR_MODEL||defaultModel,reviewer:env.REVIEWER_MODEL||defaultModel};
@@ -23,7 +24,7 @@ async function check(url){
  catch{return null;}
 }
 
-const binary=path.join(runtimeDir,'foundry-world-check');
+const binary=path.join(runtimeDir,'foundry-world-check');config.binaryPath=binary;
 if(fs.existsSync(binary))config.binaryHash=createHash('sha256').update(fs.readFileSync(binary)).digest('hex');
 let foundry=await check(foundryURL+'/api/config');
 let existing=process.argv.includes('--studio')?null:await check(appURL+'/api/v1/health');

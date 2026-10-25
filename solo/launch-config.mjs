@@ -28,6 +28,7 @@ export function launchConfiguration({repo,canonical,environment}){
 export function verifyPair(config,foundry,app){
  if(foundry&&(foundry.service!=='asset-foundry'||foundry.sourceRoot!==config.repo))throw Error('Foundry is running from a different checkout. Preserve that service; stop it when idle or choose FOUNDRY_PORT for this branch.');
  if(foundry){
+  if(config.foundrySourceHash&&foundry.sourceSha256!==config.foundrySourceHash)throw Error('Foundry has stale loaded server source. Restart it when idle.');
   const cap=foundry.capabilities;
   if(foundry.protocolVersion!==1||foundry.packageVersion!==1||!cap?.nativeProvider||cap.pipelineVersion!==1||cap.providerFormat!=='response-format-json-v1'||cap.maxAttempts!==30||cap.maxProviderCalls!==60||cap.noDeadline!==true||cap.styleCompletion!==true)throw Error('Foundry binary capabilities are incompatible or live transport is disabled. Rebuild this checkout before playing.');
   if(!/^[a-f0-9]{64}$/.test(foundry.rustBinarySha256||'')||(config.binaryHash&&foundry.rustBinarySha256!==config.binaryHash))throw Error('Foundry binary hash does not match the verified local binary.');
@@ -37,6 +38,7 @@ export function verifyPair(config,foundry,app){
  if(app){
   if(app.app!=='first-landing'||app.sourceRoot!==config.repo)throw Error('The game port belongs to a different checkout. Use SOLO_PORT for this branch.');
   if(app.apiVersion!==1||app.saveVersion!==2||(config.appSourceHash&&app.sourceSha256!==config.appSourceHash))throw Error('The running game has stale source or an incompatible protocol. Restart that game when idle.');
+  if((config.binaryHash&&app.rustBinarySha256!==config.binaryHash)||(config.binaryPath&&app.rustBinaryPath!==config.binaryPath))throw Error('The running game verifier does not match the private Foundry binary. Restart it when idle.');
   if(app.foundryURL!==config.foundryURL)throw Error('The running game points to a different Foundry. Use a separate game port or restart that game.');
  }
 }
