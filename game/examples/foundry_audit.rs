@@ -58,6 +58,24 @@ struct Recipe {
     description: String,
     sensor_radius: f64,
     parts: Vec<Part>,
+    #[serde(default)]
+    scene: Option<RecipeScene>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecipeScene {
+    half_extent: f64,
+    components: Vec<SceneComponent>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SceneComponent {
+    id: String,
+    name: String,
+    role: String,
+    part_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +95,8 @@ struct Manifest {
     rehearsal: bool,
     provider: String,
     model: String,
+    #[serde(default)]
+    review_half_extent: Option<f64>,
 }
 
 #[derive(Resource)]
@@ -86,13 +106,41 @@ struct AuditState {
     view: usize,
     completed: usize,
     outcome: Arc<AtomicUsize>,
+    views: [(&'static str, Vec3); 3],
+    camera_target_y: f32,
 }
 
-const VIEWS: [(&str, Vec3); 3] = [
+const LEGACY_VIEWS: [(&str, Vec3); 3] = [
     ("front", Vec3::new(0.0, 7.5, 15.5)),
     ("three-quarter", Vec3::new(13.0, 10.0, 13.0)),
     ("rear", Vec3::new(-4.0, 8.0, -16.0)),
 ];
+
+fn scene_views(extent: f64) -> [(&'static str, Vec3); 3] {
+    let scale = extent as f32 / 4.0;
+    LEGACY_VIEWS.map(|(name, position)| (name, position * scale))
+}
+
+fn camera_extent(package: &Package) -> Result<(f64, bool)> {
+    let recipe_extent = package.recipe.scene.as_ref().map(|scene| scene.half_extent);
+    let review_extent = package.manifest.review_half_extent;
+    for extent in [recipe_extent, review_extent].into_iter().flatten() {
+        ensure!(
+            extent.is_finite() && (4.0..=16.0).contains(&extent),
+            "scene/review halfExtent must be 4–16 metres"
+        );
+    }
+    if let (Some(recipe), Some(review)) = (recipe_extent, review_extent) {
+        ensure!(
+            (recipe - review).abs() <= 0.001,
+            "manifest reviewHalfExtent differs from recipe scene halfExtent"
+        );
+    }
+    Ok((
+        review_extent.or(recipe_extent).unwrap_or(4.0),
+        recipe_extent.is_some() || review_extent.is_some(),
+    ))
+}
 
 fn parse_hex(value: &str, label: &str) -> Result<Color> {
     let bytes = value.as_bytes();
@@ -138,10 +186,67 @@ fn validate(package: &Package) -> Result<()> {
             && (1.0..=20.0).contains(&package.recipe.sensor_radius),
         "invalid sensorRadius"
     );
-    ensure!(
-        (4..=48).contains(&package.recipe.parts.len()),
-        "recipe must contain 4–48 parts"
-    );
+    let geometry_extent = if let Some(scene) = &package.recipe.scene {
+        ensure!(
+            scene.half_extent.is_finite() && (4.0..=16.0).contains(&scene.half_extent),
+            "scene halfExtent must be 4–16 metres"
+        );
+        ensure!(
+            (4..=128).contains(&package.recipe.parts.len()),
+            "scene recipe must contain 4–128 parts"
+        );
+        ensure!(
+            (1..=32).contains(&scene.components.len()),
+            "scene must contain 1–32 components"
+        );
+        let mut component_ids = std::collections::HashSet::new();
+        let mut assigned_parts = std::collections::HashSet::new();
+        for component in &scene.components {
+            let slug = component.id.as_bytes();
+            ensure!(
+                !slug.is_empty()
+                    && slug.len() <= 64
+                    && slug[0].is_ascii_lowercase()
+                    && slug
+                        .iter()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+                    && !component.id.ends_with('-')
+                    && !component.id.contains("--")
+                    && component_ids.insert(&component.id),
+                "scene component IDs must be unique lowercase slugs"
+            );
+            ensure!(
+                !component.name.trim().is_empty()
+                    && component.name.len() <= 100
+                    && !component.role.trim().is_empty()
+                    && component.role.len() <= 80
+                    && !component.part_ids.is_empty(),
+                "scene component name, role, and part membership must be bounded and non-empty"
+            );
+            for part_id in &component.part_ids {
+                ensure!(
+                    assigned_parts.insert(part_id),
+                    "each part must belong to exactly one scene component"
+                );
+            }
+        }
+        ensure!(
+            assigned_parts.len() == package.recipe.parts.len()
+                && package
+                    .recipe
+                    .parts
+                    .iter()
+                    .all(|part| assigned_parts.contains(&part.id)),
+            "scene components must cover every part exactly once"
+        );
+        scene.half_extent
+    } else {
+        ensure!(
+            (4..=48).contains(&package.recipe.parts.len()),
+            "legacy recipe must contain 4–48 parts"
+        );
+        4.0
+    };
     for (label, color) in [
         ("shell", &package.theme.palette.shell),
         ("frame", &package.theme.palette.frame),
@@ -183,9 +288,10 @@ fn validate(package: &Package) -> Result<()> {
             part.id
         );
         ensure!(
-            part.position
-                .iter()
-                .all(|v| v.is_finite() && v.abs() <= 10.0),
+            part.position.iter().all(|v| v.is_finite())
+                && part.position[0].abs() <= 28.0
+                && part.position[1].abs() <= 10.0
+                && part.position[2].abs() <= 28.0,
             "invalid position for part {}",
             part.id
         );
@@ -195,6 +301,13 @@ fn validate(package: &Package) -> Result<()> {
                 .all(|v| v.is_finite() && *v > 0.0 && *v <= 12.0),
             "invalid size for part {}",
             part.id
+        );
+        ensure!(
+            part.position[0].abs() + part.size[0] / 2.0 <= geometry_extent + 0.05
+                && part.position[2].abs() + part.size[2] / 2.0 <= geometry_extent + 0.05,
+            "part {} exceeds scene halfExtent {}",
+            part.id,
+            geometry_extent
         );
         ensure!(
             part.position[1] - part.size[1] / 2.0 >= -0.05,
@@ -227,13 +340,24 @@ fn setup(
     state: Res<AuditState>,
 ) {
     let package = &package.0;
+    let (extent, scalable) = camera_extent(package).expect("validated scene extent");
     commands.insert_resource(ClearColor(
         parse_hex(&package.theme.sky, "sky").expect("validated"),
     ));
     let ground_color = parse_hex(&package.theme.palette.ground, "ground").expect("validated");
     let rock_color = parse_hex(&package.theme.palette.rock, "rock").expect("validated");
+    let ground_size = if scalable {
+        ((extent + 10.0) * 2.0) as f32
+    } else {
+        32.0
+    };
+    let edge = if scalable {
+        (extent + 8.0) as f32
+    } else {
+        12.0
+    };
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(32.0, 32.0))),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(ground_size, ground_size))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: ground_color,
             perceptual_roughness: 0.92,
@@ -247,10 +371,22 @@ fn setup(
         ..default()
     });
     for (pos, size) in [
-        (Vec3::new(0.0, -0.12, -12.0), Vec3::new(26.0, 0.24, 0.5)),
-        (Vec3::new(0.0, -0.12, 12.0), Vec3::new(26.0, 0.24, 0.5)),
-        (Vec3::new(-12.0, -0.12, 0.0), Vec3::new(0.5, 0.24, 24.0)),
-        (Vec3::new(12.0, -0.12, 0.0), Vec3::new(0.5, 0.24, 24.0)),
+        (
+            Vec3::new(0.0, -0.12, -edge),
+            Vec3::new(edge * 2.0 + 2.0, 0.24, 0.5),
+        ),
+        (
+            Vec3::new(0.0, -0.12, edge),
+            Vec3::new(edge * 2.0 + 2.0, 0.24, 0.5),
+        ),
+        (
+            Vec3::new(-edge, -0.12, 0.0),
+            Vec3::new(0.5, 0.24, edge * 2.0),
+        ),
+        (
+            Vec3::new(edge, -0.12, 0.0),
+            Vec3::new(0.5, 0.24, edge * 2.0),
+        ),
     ] {
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::from_size(size))),
@@ -305,7 +441,8 @@ fn setup(
     ));
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 7.5, 15.5).looking_at(Vec3::new(0.0, 1.5, 0.0), Vec3::Y),
+        Transform::from_translation(state.views[0].1)
+            .looking_at(Vec3::new(0.0, state.camera_target_y, 0.0), Vec3::Y),
     ));
     let _ = state.out.as_path();
 }
@@ -318,7 +455,7 @@ fn capture_views(
     mut state: ResMut<AuditState>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
-    if state.completed == VIEWS.len() {
+    if state.completed == state.views.len() {
         let exit = if state.outcome.load(Ordering::Acquire) == 1 {
             AppExit::Success
         } else {
@@ -328,13 +465,13 @@ fn capture_views(
         return;
     }
     state.frame += 1;
-    if state.view >= VIEWS.len() || state.frame < 18 {
+    if state.view >= state.views.len() || state.frame < 18 {
         return;
     }
-    let (name, offset) = VIEWS[state.view];
+    let (name, offset) = state.views[state.view];
     for mut transform in &mut camera {
-        *transform =
-            Transform::from_translation(offset).looking_at(Vec3::new(0.0, 1.5, 0.0), Vec3::Y);
+        *transform = Transform::from_translation(offset)
+            .looking_at(Vec3::new(0.0, state.camera_target_y, 0.0), Vec3::Y);
     }
     if state.frame == 18 {
         let path = state
@@ -360,9 +497,9 @@ fn save_and_mark(
         // for the same capture have no ordering guarantee.
         save(event);
         state.completed += 1;
-        if state.completed == VIEWS.len() {
+        if state.completed == state.views.len() {
             let result = (|| -> Result<()> {
-                for (index, (name, _)) in VIEWS.iter().enumerate() {
+                for (index, (name, _)) in state.views.iter().enumerate() {
                     let image = state.out.join(format!("view-{}-{name}.png", index + 1));
                     ensure!(
                         image.is_file() && fs::metadata(&image)?.len() > 0,
@@ -370,7 +507,12 @@ fn save_and_mark(
                         image.display()
                     );
                 }
-                write_manifest(&state.out, &package.0)
+                write_manifest(
+                    &state.out,
+                    &package.0,
+                    &state.views,
+                    camera_extent(&package.0)?.0,
+                )
             })();
             match result {
                 Ok(()) => state.outcome.store(1, Ordering::Release),
@@ -383,7 +525,12 @@ fn save_and_mark(
     }
 }
 
-fn write_manifest(path: &Path, package: &Package) -> Result<()> {
+fn write_manifest(
+    path: &Path,
+    package: &Package,
+    views: &[(&str, Vec3); 3],
+    review_half_extent: f64,
+) -> Result<()> {
     let mut meta = BTreeMap::new();
     meta.insert("format", package.format.as_str());
     meta.insert("assetId", package.asset_id.as_str());
@@ -396,8 +543,9 @@ fn write_manifest(path: &Path, package: &Package) -> Result<()> {
         "package": meta,
         "rehearsal": package.manifest.rehearsal,
         "renderer": "Bevy 0.20 native",
+        "reviewHalfExtent": review_half_extent,
         "coordinateMapping": "recipe +Y up/+Z front; recipe x/y/z maps directly to Bevy x/y/z; x/z form horizontal footprint",
-        "views": VIEWS.iter().enumerate().map(|(i, (name, _))| serde_json::json!({"index": i + 1, "name": name, "file": format!("view-{}-{name}.png", i + 1)})).collect::<Vec<_>>(),
+        "views": views.iter().enumerate().map(|(i, (name, position))| serde_json::json!({"index": i + 1, "name": name, "file": format!("view-{}-{name}.png", i + 1), "cameraPosition": [position.x, position.y, position.z]})).collect::<Vec<_>>(),
         "claims": ["actual native renderer captures", "no collision or gameplay result", "no approval result"]
     });
     fs::write(
@@ -424,9 +572,15 @@ fn run() -> Result<()> {
     let package: Package =
         AnyhowContext::context(serde_json::from_slice(&raw), "parse Asset Foundry package")?;
     validate(&package)?;
+    let (review_extent, scalable_cameras) = camera_extent(&package)?;
+    let views = if scalable_cameras {
+        scene_views(review_extent)
+    } else {
+        LEGACY_VIEWS
+    };
     ensure!(
         !out.join("capture-manifest.json").exists()
-            && VIEWS.iter().enumerate().all(|(index, (name, _))| {
+            && views.iter().enumerate().all(|(index, (name, _))| {
                 !out.join(format!("view-{}-{name}.png", index + 1)).exists()
             }),
         "output directory already contains evidence; choose a fresh directory"
@@ -438,6 +592,8 @@ fn run() -> Result<()> {
         view: 0,
         completed: 0,
         outcome: Arc::clone(&outcome),
+        views,
+        camera_target_y: 1.5,
     };
     let mut app = App::new();
     app.insert_resource(PackageResource(package))
@@ -473,10 +629,49 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::cylinder_radii;
+    use super::{LEGACY_VIEWS, camera_extent, cylinder_radii, scene_views};
+    use bevy::prelude::Vec3;
+    use serde_json::json;
 
     #[test]
     fn cylinder_uses_distinct_top_and_bottom_recipe_dimensions() {
         assert_eq!(cylinder_radii([2.0, 4.0, 6.0]), (1.0, 3.0));
+    }
+
+    #[test]
+    fn scene_camera_positions_scale_with_frozen_half_extent() {
+        assert_eq!(
+            scene_views(8.0),
+            [
+                ("front", Vec3::new(0.0, 15.0, 31.0)),
+                ("three-quarter", Vec3::new(26.0, 20.0, 26.0)),
+                ("rear", Vec3::new(-8.0, 16.0, -32.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_camera_layout_is_preserved_without_scene_or_review_extent() {
+        let package: super::Package = serde_json::from_value(json!({
+            "format":"living-empires.asset", "schemaVersion":1,
+            "assetType":"building", "assetId":"legacy", "themeId":"argonaut",
+            "theme":{"palette":{"shell":"#ffffff","frame":"#ffffff","accent":"#ffffff","ground":"#ffffff","rock":"#ffffff"},"sky":"#ffffff"},
+            "recipe":{"themeId":"argonaut","name":"Outpost","description":"Legacy","sensorRadius":12,"parts":[]},
+            "manifest":{"contentSha256":"0".repeat(64),"rehearsal":true,"provider":"fixture","model":"fixture"}
+        })).unwrap();
+        assert_eq!(camera_extent(&package).unwrap(), (4.0, false));
+        assert_eq!(LEGACY_VIEWS[0].1, Vec3::new(0.0, 7.5, 15.5));
+    }
+
+    #[test]
+    fn legacy_baseline_can_use_frozen_review_extent_for_camera_only() {
+        let package: super::Package = serde_json::from_value(json!({
+            "format":"living-empires.asset", "schemaVersion":1,
+            "assetType":"building", "assetId":"legacy", "themeId":"argonaut",
+            "theme":{"palette":{"shell":"#ffffff","frame":"#ffffff","accent":"#ffffff","ground":"#ffffff","rock":"#ffffff"},"sky":"#ffffff"},
+            "recipe":{"themeId":"argonaut","name":"Outpost","description":"Legacy","sensorRadius":12,"parts":[]},
+            "manifest":{"contentSha256":"0".repeat(64),"rehearsal":true,"provider":"fixture","model":"fixture","reviewHalfExtent":12}
+        })).unwrap();
+        assert_eq!(camera_extent(&package).unwrap(), (12.0, true));
     }
 }

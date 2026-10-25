@@ -41,3 +41,23 @@ test('wrong native candidate identity never replaces public evidence',async t=>{
   await assert.rejects(captureNative(input),/candidate/);
   assert.equal(fs.existsSync(path.join(input.root,'.data',input.job.id,'1-0.png')),false);
 });
+
+test('baseline capture uses attempt zero and the frozen wider review extent',async t=>{
+ const input=setup(t);input.attempt.number=0;input.job.sceneHalfExtent=12;
+ const result=await captureNative(input);assert.match(result.images[0],/0-0.png$/);
+});
+test('scene extent drift is rejected before native capture',async t=>{
+ const input=setup(t);input.job.sceneHalfExtent=12;input.attempt.recipe.scene={halfExtent:8};
+ await assert.rejects(captureNative(input),/frozen native review extent/);
+});
+
+test('configured data directory receives native evidence and preserves its browser frames',async t=>{
+ const input=setup(t);input.dataDir=path.join(input.root,'custom-data');
+ const folder=path.join(input.dataDir,input.job.id);fs.mkdirSync(folder,{recursive:true});
+ fs.writeFileSync(path.join(folder,'1-0.png'),'browser-frame');
+ const result=await captureNative(input);
+ assert.equal(fs.existsSync(path.join(input.root,'.data',input.job.id,'1-0.png')),false);
+ assert.equal(fs.readFileSync(path.join(folder,'1-0.png')).subarray(0,8).toString('hex'),'89504e470d0a1a0a');
+ const evidenceFolder=path.dirname(path.dirname(path.join(folder,result.nativeEvidence.views[0].sourceFile)));
+ assert.equal(fs.readFileSync(path.join(evidenceFolder,'browser-1.png'),'utf8'),'browser-frame');
+});

@@ -191,7 +191,7 @@ async function capture(job,attempt){
   if(process.env.AUDIT_RENDERER==='bevy'){
     const functional=await captureHeadless(job,attempt);
     ensureCurrent(job);
-    const native=await captureNative({root,job,attempt,movement:functional.movement,
+    const native=await captureNative({root,dataDir:data,job,attempt,movement:functional.movement,
       binary:process.env.NATIVE_AUDIT_BIN||path.join(root,'target/debug/examples/foundry_audit'),
       signal:controllers.get(job.id)?.signal,
       timeoutMs:Math.min(90000,Math.max(1,job.deadline-Date.now()))});

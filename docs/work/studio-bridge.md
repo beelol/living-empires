@@ -245,3 +245,12 @@ Rust and downloaded/checked all3 nativePNGs successfully. 28Node+36Python tests
 pass; actualserver runtime explicitly enables sponsoredcredits. Hourly existing
 heartbeat updated from obsolete absent-Studio state to actualcurrentintegration
 with source-needs/units blockers and authorizedsponsoredmode. No duplicateworker.
+
+Publication race: a93f8d6 normalpush rejected after Pulkit published boundedscene
+refinement ab0ecfb/10d1f56. Fetched and inspected exactremotechanges, merged
+withoutdiscardingotherstreamdirt, currentRust rebuilt. CombinedcoreRust tests
+34pass. IndependentreviewcaughtcustomASSET_DATA_DIR couldmislabelbrowserimages
+asnative; fixed bypassingconfigureddata intoadapter, regressiontest verifies
+customnativebytesandpreservedbrowserframe. Newrefinementbaselineattempt0 and
+frozenextent checks added. Nativeexample extended forboundedscenegeometry and
+consistentfrozenextent cameras; nofront-onlyviewclaimedasrear.
