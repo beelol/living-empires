@@ -19,3 +19,4 @@
 .delta-heading{margin:12px 0 7px;color:#71806e;font:8px var(--mono);letter-spacing:.5px}.recipe-delta{margin:6px 0;padding:8px 10px;border-left:2px solid #bdc9ad;background:#f6f8f1}.recipe-delta h4{margin:0 0 5px;color:#65755f;font:8px var(--mono);letter-spacing:.3px}.recipe-delta ul{margin:0;padding-left:15px}.recipe-delta li{font-size:9px;line-height:1.55;color:#687664;overflow-wrap:anywhere}
 .status-no-visible-change{color:#766a45;border-color:#e8dfc6;background:#f8f3e3}
 .viewport-card{align-self:start;height:600px;min-height:570px}@media(max-width:850px){.viewport-card{height:470px;min-height:470px}}@media(max-width:520px){.viewport-card{height:420px;min-height:420px}}
+.brief-card .reference-picker .reference-consent{display:flex;align-items:flex-start;gap:8px;margin:10px 0 6px;color:#566850;font-size:9px;line-height:1.55;font-weight:550}.reference-consent input{flex:none;margin:2px 0 0;accent-color:#426a47}.reference-consent span{min-width:0}

@@ -39,7 +39,20 @@ pub struct FrozenJobContract {
     /// User-directed refinement starts from a previously accepted asset and its actual captures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refinement: Option<RefinementContract>,
+    /// Explicitly consented reference metadata; raw reference bytes are never frozen in the job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<ReferenceContract>,
     pub frozen_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReferenceContract {
+    pub sha256: String,
+    pub mime_type: String,
+    pub bytes: usize,
+    pub destination: String,
+    pub consent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,7 +234,7 @@ impl AssetPipeline {
         let mut contract = FrozenJobContract {
             job_id, prompt, prompt_sha256, theme, theme_sha256, created_at_ms: now_ms, deadline_ms, limits,
             provenance: Provenance::default(), frozen_sha256: String::new(),
-            scene_half_extent: None, refinement: None,
+            scene_half_extent: None, refinement: None, reference: None,
         };
         contract.frozen_sha256 = contract_hash(&contract)?;
         let mut pipeline = Self {
@@ -292,6 +305,16 @@ impl AssetPipeline {
             }
         }
         self.contract.refinement = Some(refinement);
+        self.contract.frozen_sha256 = contract_hash(&self.contract)?;
+        self.refresh_state_hash()?;
+        Ok(())
+    }
+
+    pub fn set_reference(&mut self, reference: ReferenceContract) -> Result<(), String> {
+        self.check_integrity()?;
+        self.ensure_unstarted()?;
+        validate_reference(&reference)?;
+        self.contract.reference = Some(reference);
         self.contract.frozen_sha256 = contract_hash(&self.contract)?;
         self.refresh_state_hash()?;
         Ok(())
@@ -501,6 +524,7 @@ impl AssetPipeline {
             return Err("Frozen scene halfExtent is invalid".into());
         }
         if let Some(refinement) = &self.contract.refinement { validate_refinement(refinement, &self.contract.theme)?; }
+        if let Some(reference) = &self.contract.reference { validate_reference(reference)?; }
         if let (Some(extent), Some(refinement)) = (self.contract.scene_half_extent, self.contract.refinement.as_ref()) {
             if refinement.baseline_recipe.scene.as_ref().is_some_and(|scene| scene.half_extent.to_bits() != extent.to_bits()) {
                 return Err("Refinement baseline scene extent differs from frozen renderer extent".into());
@@ -628,6 +652,15 @@ fn validate_refinement(refinement: &RefinementContract, theme: &ThemeContract) -
     hashes.sort();
     hashes.dedup();
     if hashes.len() != 3 { return Err("Refinement baseline image hashes must be distinct".into()); }
+    Ok(())
+}
+
+fn validate_reference(reference: &ReferenceContract) -> Result<(), String> {
+    if !valid_sha256(&reference.sha256) || !(1..=2 * 1024 * 1024).contains(&reference.bytes)
+        || !["image/png", "image/jpeg"].contains(&reference.mime_type.as_str())
+        || reference.destination != "Google Gemini" || !reference.consent {
+        return Err("Frozen reference requires explicit consent, a supported image, valid SHA-256, 1–2 MiB, and destination Google Gemini".into());
+    }
     Ok(())
 }
 

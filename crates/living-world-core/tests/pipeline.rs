@@ -332,6 +332,29 @@ fn live_candidate_must_have_frozen_coherent_scene_extent() {
 }
 
 #[test]
+fn reference_consent_metadata_is_validated_and_frozen_before_provider_work() {
+    let theme=theme();
+    let mut pipeline=AssetPipeline::create(theme.clone(),"Build an orchard relay".into(),0).unwrap();
+    let reference=living_world_core::pipeline::ReferenceContract {
+        sha256:"a".repeat(64),mime_type:"image/png".into(),bytes:1_024,destination:"Google Gemini".into(),consent:true,
+    };
+    pipeline.set_reference(reference.clone()).unwrap();
+    assert_eq!(pipeline.contract.reference.as_ref(),Some(&reference));
+    pipeline.charge_call(1).unwrap();
+    assert!(pipeline.set_reference(reference).unwrap_err().contains("frozen"));
+
+    let mut tampered:AssetPipeline=serde_json::from_value(serde_json::to_value(&pipeline).unwrap()).unwrap();
+    tampered.contract.reference.as_mut().unwrap().consent=false;
+    assert!(tampered.can_work(2).unwrap_err().contains("reference"));
+
+    let mut no_consent=AssetPipeline::create(theme,"Build".into(),0).unwrap();
+    let rejected=living_world_core::pipeline::ReferenceContract {
+        sha256:"b".repeat(64),mime_type:"image/jpeg".into(),bytes:100,destination:"Google Gemini".into(),consent:false,
+    };
+    assert!(no_consent.set_reference(rejected).unwrap_err().contains("explicit consent"));
+}
+
+#[test]
 fn live_improvement_claim_is_rejected_for_identical_geometry_or_identical_rendered_views() {
     let theme=theme();
     let mut pipeline=AssetPipeline::create(theme.clone(),"Build an orchard relay".into(),0).unwrap();

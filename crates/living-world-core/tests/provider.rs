@@ -1,7 +1,7 @@
 use living_world_core::{
     access_scenario,
     evaluate_with_theme,
-    provider::{build_generation_request, build_review_request, fixture_recipe, generate_with_transport, repair_fixture, review_with_transport, GenerationRequest, PreviousReviewEvidence, ProviderError, ProviderTransport, ReviewRequest},
+    provider::{build_generation_request, build_review_request, fixture_recipe, generate_with_transport, repair_fixture, review_with_transport, GenerationRequest, PreviousReviewEvidence, ProviderError, ProviderTransport, ReferenceImage, ReviewRequest},
     Part,
     Architecture, Flora, Palette, ReferencePreset, ThemeContract,
 };
@@ -28,7 +28,8 @@ fn request(managed: bool) -> GenerationRequest {
         theme: theme(), prompt: "Build a forest relay".into(), user_feedback: None, scene_half_extent: Some(12.0), previous: None,
         findings: Some(vec!["clear front path".into()]), model: "gemini-test".into(),
         agent: "antigravity-preview-09-2026".into(), managed,
-        interaction_id: None, environment_id: None,
+        interaction_id: None, environment_id: None, reference_images: vec![], reference_consent:false,
+        reference_sha256:None, reference_mime_type:None,
     }
 }
 
@@ -50,6 +51,18 @@ fn png_view(label: &[u8]) -> (String, String) {
     let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
     bytes.extend_from_slice(label);
     (base64::engine::general_purpose::STANDARD.encode(&bytes), living_world_core::pipeline::sha256(&bytes))
+}
+
+fn reference_image(mime_type:&str, bytes:&[u8])->ReferenceImage {
+    use base64::Engine as _;
+    ReferenceImage { mime_type:mime_type.into(), data:base64::engine::general_purpose::STANDARD.encode(bytes) }
+}
+
+fn attach_reference(req:&mut GenerationRequest,mime_type:&str,bytes:&[u8]) {
+    req.reference_images=vec![reference_image(mime_type,bytes)];
+    req.reference_consent=true;
+    req.reference_sha256=Some(living_world_core::pipeline::sha256(bytes));
+    req.reference_mime_type=Some(mime_type.into());
 }
 
 #[test]
@@ -102,6 +115,60 @@ fn managed_generation_resumes_context_and_environment_and_extracts_final_text() 
     assert_eq!(call.2["environment"],"sandbox-2");
     assert_eq!(call.2["agent_config"]["model"],"gemini-test");
     assert_eq!(call.2["agent_config"]["max_total_tokens"],50_000);
+}
+
+#[test]
+fn direct_and_managed_creator_payloads_include_opt_in_inline_image_in_provider_native_format() {
+    let png=b"\x89PNG\r\n\x1a\ncreated-scene-reference";
+    let mut direct=request(false);
+    attach_reference(&mut direct,"image/png",png);
+    let (_,direct_body)=build_generation_request(&direct).unwrap();
+    let direct_parts=direct_body["contents"][0]["parts"].as_array().unwrap();
+    assert_eq!(direct_parts.len(),2);
+    assert_eq!(direct_parts[1]["inlineData"]["mimeType"],"image/png");
+    assert_eq!(direct_parts[1]["inlineData"]["data"],direct.reference_images[0].data);
+
+    let mut managed=request(true);
+    managed.reference_images=direct.reference_images.clone();
+    managed.reference_consent=direct.reference_consent;
+    managed.reference_sha256=direct.reference_sha256.clone();
+    managed.reference_mime_type=direct.reference_mime_type.clone();
+    let (_,managed_body)=build_generation_request(&managed).unwrap();
+    let managed_input=managed_body["input"].as_array().unwrap();
+    assert_eq!(managed_input.len(),2);
+    assert_eq!(managed_input[1]["type"],"image");
+    assert_eq!(managed_input[1]["mime_type"],"image/png");
+    assert_eq!(managed_input[1]["data"],managed.reference_images[0].data);
+
+    let text_only=build_generation_request(&request(true)).unwrap().1;
+    assert_eq!(text_only["input"].as_array().unwrap().len(),1);
+}
+
+#[test]
+fn creator_reference_image_limits_and_magic_bytes_fail_closed() {
+    let mut req=request(false);
+    let png=b"\x89PNG\r\n\x1a\ncreated-scene-reference";
+    attach_reference(&mut req,"image/png",png);
+    req.reference_images[0].mime_type="image/jpeg".into();
+    assert!(build_generation_request(&req).unwrap_err().to_string().contains("does not match"));
+    req.reference_images=vec![reference_image("image/webp",png)];
+    req.reference_mime_type=Some("image/webp".into());
+    assert!(build_generation_request(&req).unwrap_err().to_string().contains("MIME type"));
+    req.reference_images=vec![reference_image("image/png",png),reference_image("image/png",png)];
+    assert!(build_generation_request(&req).unwrap_err().to_string().contains("At most one"));
+
+    use base64::Engine as _;
+    let mut oversized=b"\x89PNG\r\n\x1a\n".to_vec();
+    oversized.resize(2*1024*1024+1,0);
+    req.reference_images=vec![ReferenceImage { mime_type:"image/png".into(), data:base64::engine::general_purpose::STANDARD.encode(oversized) }];
+    assert!(build_generation_request(&req).unwrap_err().to_string().contains("exceeds 2 MiB"));
+
+    let mut no_consent=request(false);
+    no_consent.reference_images=vec![reference_image("image/png",png)];
+    assert!(build_generation_request(&no_consent).unwrap_err().to_string().contains("explicit frozen user consent"));
+    attach_reference(&mut no_consent,"image/png",png);
+    no_consent.reference_sha256=Some("0".repeat(64));
+    assert!(build_generation_request(&no_consent).unwrap_err().to_string().contains("do not match frozen consent"));
 }
 
 #[test]
