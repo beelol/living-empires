@@ -13,11 +13,17 @@ npm install
 npm run build:core
 cp .env.example .env
 # Set GEMINI_API_KEY in .env. Never commit this file.
-PLAYWRIGHT_BROWSERS_PATH=.data/browsers npx playwright install chromium
 npm run dev
 ```
 
-Open the printed local URL (default `http://127.0.0.1:4317`). Choose a theme and edit the brief. Use **Gemini managed agent** for the intended managed workflow, **Gemini direct** for the smaller recipe-generation path, or **Offline rehearsal** for a clearly labeled fixture demonstration without API calls. Both live modes use a separate Gemini image review. The theme freezes when a job starts; generated geometry must use its saved material palette, and visual review also checks architectural/biome consistency.
+Open the printed local URL (default `http://127.0.0.1:4317`) in the in-app browser and keep it open: the Studio browser is the primary asset renderer. **Chromium installation is optional** and only needed to capture without an open Studio. Choose a theme and edit the brief. Use **Gemini managed agent** for the intended managed workflow, **Gemini direct** for the smaller recipe-generation path, or **Offline rehearsal** for a clearly labeled fixture demonstration without API calls. Both live modes use a separate Gemini image review. The theme freezes when a job starts; generated geometry must use its saved material palette, and visual review also checks architectural/biome consistency.
+
+Optional headless-renderer setup:
+
+```sh
+PLAYWRIGHT_BROWSERS_PATH=.data/browsers npx playwright install chromium
+# AUDIT_RENDERER=headless npm run dev
+```
 
 The optional challenge checkbox inserts a blocked entrance after initial generation. The runner records three actual rendered views, the Rust core rejects blocked traversal, and the repair receives the observed failure. Click **Activate** only after the candidate passes all six demo gates. Download the approved asset package for game consumption: `GET /api/jobs/{id}/package` returns a versioned recipe, frozen theme, manifest, required checks, content hash, and evidence hashes. Rehearsal packages carry `manifest.rehearsal: true`. Rollback becomes available after two releases. Run limits are three candidates, six live API calls, and twenty minutes per job; this is a call ceiling, not a guaranteed monetary spending cap. There are no hidden request retries.
 

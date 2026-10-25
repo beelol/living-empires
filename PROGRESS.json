@@ -1,0 +1,90 @@
+{
+  "milestone": "Themed asset generator: one outpost generation-review-repair-export lifecycle",
+  "scope": "Living Empires is downstream context; the scene is an asset-validation harness.",
+  "integrationOwner": "Sol manager",
+  "testedSourceRevision": "d204b7035afd07938703b780f4cfc0adbef99634",
+  "workers": [
+    {
+      "owner": "Luna UI",
+      "commits": [
+        "58433e7",
+        "9830b93",
+        "39041ee",
+        "071513f"
+      ]
+    },
+    {
+      "owner": "Luna Rust core",
+      "commits": [
+        "99b1a71"
+      ]
+    },
+    {
+      "owner": "Luna Gemini adapter",
+      "commits": [
+        "ec7f905"
+      ],
+      "note": "Manager performed scoped commit after worker Git sandbox denial."
+    }
+  ],
+  "gates": [
+    {
+      "name": "Rust build and tests",
+      "status": "pass",
+      "command": "cargo build -p living-world-core && cargo test -p living-world-core",
+      "tests": 6
+    },
+    {
+      "name": "Node adapter, contract and parity tests",
+      "status": "pass",
+      "command": "npm test",
+      "tests": 13
+    },
+    {
+      "name": "Offline end-to-end asset lifecycle and export",
+      "status": "pass",
+      "command": "npm run test:e2e",
+      "jobId": "f12c76d0-ecf6-4f67-8e36-fd45b92ab27a",
+      "artifact": ".data/f12c76d0-ecf6-4f67-8e36-fd45b92ab27a/approved-asset.json",
+      "hash": "1f889d92a822371925aa117b2b48d570af7224748f6ba92cbbac826699658f8c",
+      "evidence": {
+        "before": "/evidence/f12c76d0-ecf6-4f67-8e36-fd45b92ab27a/1-2.png",
+        "after": "/evidence/f12c76d0-ecf6-4f67-8e36-fd45b92ab27a/2-2.png"
+      },
+      "checks": [
+        "two-attempt obstruction repair",
+        "three real PNG views per candidate",
+        "Rust/browser parity",
+        "approved package export",
+        "stale render rejection",
+        "exact-hash activation",
+        "duplicate activation rejection",
+        "second-theme release and rollback",
+        "delayed cancellation and activation rejection"
+      ],
+      "fixtureGenerationAndReview": true
+    },
+    {
+      "name": "Live managed creator probe",
+      "status": "pass",
+      "evidence": ".data/managed-probe.json",
+      "note": "Recipe, session IDs and usage retained locally. This does not prove live visual review."
+    },
+    {
+      "name": "Live independent visual review and repair",
+      "status": "not_run",
+      "blocker": "Pending explicit total API spending ceiling; no additional paid calls dispatched."
+    },
+    {
+      "name": "Optional headless renderer",
+      "status": "not_run",
+      "note": "Slow Chromium download stopped after in-app Studio renderer passed; no headless installation required for current milestone."
+    }
+  ],
+  "nextGate": "Run bounded live creator -> actual renderer -> independent image reviewer -> repair -> approved package after spending ceiling is selected.",
+  "fullGameCriteria": {
+    "count": 122,
+    "status": "not_run",
+    "note": "Six demo gates do not complete the full game checklist."
+  }
+}
