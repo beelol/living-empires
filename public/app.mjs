@@ -249,6 +249,7 @@ function renderAttemptHistory(job){
 function renderRefinementControls(job){
   const selector=$('base-version'),attempts=(job.attempts||[]).filter(attempt=>attempt.recipe&&attempt.hash),signature=attempts.map(attempt=>`${attempt.number}:${attempt.hash}`).join('|');
   $('refinement-panel').hidden=!attempts.length;
+  if(selector.dataset.job!==job.id){$('generation-panel').open=!attempts.length;$('generation-panel').classList.toggle('has-scene',!!attempts.length);}
   const oldSelection=selector.value;
   if(selector.dataset.job!==job.id||selector.dataset.signature!==signature){
     selector.replaceChildren();

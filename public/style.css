@@ -26,3 +26,5 @@
 .saved-scene-bar{display:flex;align-items:center;gap:12px;margin:0 0 18px}.saved-scene-bar label{margin:0;white-space:nowrap}.saved-scene-bar select{flex:1;min-width:0;margin:0}.saved-scene-bar button{white-space:nowrap}@media(max-width:700px){.saved-scene-bar{flex-wrap:wrap}.saved-scene-bar select{flex-basis:100%}}
 
 .scene-history,.run-details{margin:0 0 18px}.scene-history>summary,.run-details>summary,.reference-attachment>summary{cursor:pointer;color:#63755f;font-size:11px;padding:10px 0}.scene-history[open]>.saved-scene-bar{margin-top:10px}.reference-attachment{margin:12px 0}.brief-card>.section-heading,.refinement-panel .tiny,.refinement-panel>.section-heading>.tiny{display:none}.refinement-panel h2{font-size:17px}.refinement-panel .component-edit-advanced{margin:10px 0}.run-details{margin-top:20px}
+
+.generation-panel:not(.has-scene)>summary{display:none}.generation-panel>summary{cursor:pointer;color:#63755f;font-size:11px;padding:8px 0}.refinement-actions{grid-template-columns:1fr}
