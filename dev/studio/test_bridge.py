@@ -1,5 +1,6 @@
 """Real persistence tests; all worlds, render bytes and releases here are fixtures."""
 import concurrent.futures
+from contextlib import closing
 import copy
 import json
 import os
@@ -9,6 +10,9 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import hashlib
+
+import verifier
 from pathlib import Path
 
 import bridge
@@ -64,7 +68,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(record['event']['evidence'], [evidence])
         with self.assertRaises(ValueError):
             self.journal.append(self.event('bad-render', evidence=['0' * 64]))
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute('UPDATE blobs SET data=?', (b'changed',))
         with self.assertRaises(ValueError):
             self.journal.verify()
@@ -72,14 +76,14 @@ class BridgeTests(unittest.TestCase):
     def test_tampering_missing_parent_and_tail_deletion_are_detected(self):
         self.journal.append(self.event('genesis', kind='snapshot', action=None))
         self.journal.append(self.event())
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute('DELETE FROM events WHERE seq=2')
         with self.assertRaises(ValueError):
             self.journal.verify()
 
     def test_payload_tamper_detected(self):
         self.journal.append(self.event())
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("UPDATE events SET record='{}'")
         with self.assertRaises(ValueError):
             self.journal.records()
@@ -181,7 +185,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_failed_append_does_not_acknowledge_or_change_head(self):
         self.journal.append(self.event('start', kind='snapshot', action=None))
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("CREATE TRIGGER fail BEFORE INSERT ON events BEGIN "
                        "SELECT RAISE(ABORT, 'disk fixture unavailable'); END")
         with self.assertRaises(sqlite3.IntegrityError):
@@ -216,6 +220,131 @@ class BridgeTests(unittest.TestCase):
         os.chmod(self.path, 0o644)
         with self.assertRaises(ValueError):
             bridge.Journal(self.path)
+
+    def archive(self):
+        self.journal.append(self.event('genesis', kind='snapshot', action=None,
+                                      tick=0, state={'x': 0}))
+        image = self.journal.store_evidence(b'fixture-render',
+            dict(media_type='image/png', view='front', client='fixture-client',
+                 assets='b' * 64, at=1792950000, tick=1))
+        self.journal.append(self.event(evidence=[image]))
+        target = Path(self.tmp.name) / 'delivery.zip'
+        digest = self.journal.export_studio(target)
+        return target, digest, image
+
+    def test_receiver_verifies_complete_archive_without_creating_database(self):
+        target, digest, image = self.archive()
+        result = verifier.verify_archive(target, digest)
+        self.assertEqual(result['events'], 2)
+        self.assertEqual(result['images'], 1)
+        self.assertEqual(result['head'], self.journal.records()[-1]['hash'])
+        with self.assertRaises(ValueError):
+            verifier.verify_archive(target, '0' * 64)
+
+    def test_receiver_rejects_changed_image_manifest_diff_or_missing_member(self):
+        target, digest, image = self.archive()
+        with zipfile.ZipFile(target) as source:
+            original = {n: source.read(n) for n in source.namelist()}
+        for defect in ('image', 'diff', 'record', 'missing', 'extra'):
+            entries = dict(original)
+            if defect == 'image':
+                entries['evidence/' + image] = b'changed'
+            elif defect == 'missing':
+                del entries['evidence/' + image]
+            elif defect == 'extra':
+                entries['../unexpected'] = b'not extracted'
+            else:
+                manifest = json.loads(entries['manifest.json'])
+                if defect == 'diff':
+                    manifest['records'][1]['diff']['set']['x'] = 999
+                else:
+                    manifest['records'][1]['event']['at'] += 1
+                entries['manifest.json'] = json.dumps(manifest).encode()
+            broken = Path(self.tmp.name) / (defect + '.zip')
+            with zipfile.ZipFile(broken, 'w') as archive:
+                for filename, data in entries.items():
+                    archive.writestr(filename, data)
+            with self.subTest(defect=defect), self.assertRaises(ValueError):
+                verifier.verify_archive(broken, hashlib.sha256(broken.read_bytes()).hexdigest())
+
+    def test_receiver_rejects_invalid_provenance_even_when_hashes_are_consistent(self):
+        target, digest, image = self.archive()
+        with zipfile.ZipFile(target) as source:
+            original = json.loads(source.read('manifest.json'))
+            data = source.read('evidence/' + image)
+        for field, value in [('media_type', 'application/javascript'), ('view', None),
+                             ('client', []), ('tick', True), ('at', True)]:
+            manifest = copy.deepcopy(original)
+            meta = manifest['evidence'].pop(image)
+            meta[field] = value
+            replacement = bridge.fingerprint(dict(
+                bytes_hash=hashlib.sha256(data).hexdigest(), metadata=meta))
+            manifest['evidence'][replacement] = meta
+            last = manifest['records'][-1]
+            last['event']['evidence'] = [replacement]
+            last['hash'] = bridge.fingerprint({k: v for k, v in last.items()
+                                               if k not in ('hash', 'diff')})
+            broken = Path(self.tmp.name) / (field + '.zip')
+            with zipfile.ZipFile(broken, 'w') as archive:
+                archive.writestr('manifest.json', bridge.canonical(manifest))
+                archive.writestr('evidence/' + replacement, data)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                verifier.verify_archive(broken, hashlib.sha256(broken.read_bytes()).hexdigest())
+
+    def test_atomic_gm_inbox_unions_only_named_factions_and_survives_retry(self):
+        self.journal.append(self.event('secret', allowed_recipients=['unknown'],
+                                      payload={'secret': 'hidden'}))
+        first = self.journal.append(self.event())
+        self.journal.append(self.event('operator', allowed_recipients=[]))
+        second = self.journal.append(self.event('shared', allowed_recipients=['helios', 'tide']))
+        inbox = Path(self.tmp.name) / 'world.json.gm-inbox.json'
+        self.journal.publish_gm(inbox, ['helios', 'tide'])
+        events = json.loads(inbox.read_bytes())
+        self.assertEqual([e['id'] for e in events], [first, second])
+        self.assertEqual(events[1]['allowed_recipients'], ['helios', 'tide'])
+        self.assertNotIn('hidden', inbox.read_text())
+        self.assertEqual(inbox.stat().st_mode & 0o777, 0o600)
+        self.journal.publish_gm(inbox, ['helios', 'tide'])
+        self.assertEqual(json.loads(inbox.read_bytes()), events)
+        with self.assertRaises(ValueError):
+            self.journal.publish_gm(self.path, ['helios'])
+        self.assertEqual(self.journal.verify(), 4)
+
+    def test_cli_publishes_live_gm_intake_contract(self):
+        self.journal.append(self.event())
+        inbox = Path(self.tmp.name) / 'world.json.gm-inbox.json'
+        result = subprocess.run([sys.executable, str(Path(bridge.__file__)), str(self.path),
+            'export-gm', '--recipient', 'helios', '--recipient', 'tide',
+            '--output', str(inbox)], check=True, capture_output=True, text=True)
+        self.assertEqual(json.loads(result.stdout)['events'], 1)
+        self.assertEqual(json.loads(inbox.read_bytes())[0]['kind'], 'action.completed')
+
+    def test_gm_pages_obey_settled_importer_limit_and_resume_without_loss(self):
+        envelopes = [dict(id=format(n, '064x'), source='authority', at=1,
+            kind='action.completed', payload={}, allowed_recipients=['helios'])
+            for n in range(1025)]
+        page, more = bridge.gm_page(envelopes)
+        self.assertEqual(len(page), 1024)
+        self.assertTrue(more)
+        tail, more = bridge.gm_page(envelopes, page[-1]['id'])
+        self.assertEqual([e['id'] for e in tail], [format(1024, '064x')])
+        self.assertFalse(more)
+        with self.assertRaises(ValueError):
+            bridge.gm_page(envelopes, 'f' * 64)
+
+    def test_gm_pages_obey_byte_cap_and_reject_incompatible_source_data(self):
+        event = dict(id='a' * 64, source='authority', at=1,
+            kind='action.completed', payload={'text': 'x' * 16000},
+            allowed_recipients=['helios'])
+        envelopes = [dict(event, id=format(n, '064x')) for n in range(100)]
+        page, more = bridge.gm_page(envelopes)
+        self.assertLessEqual(len(bridge.canonical(page)), 1048576)
+        self.assertTrue(more)
+        for changed in (dict(event, source='x' * 161), dict(event, source='秘密'),
+                        dict(event, payload={'text': 'x' * 16384}),
+                        dict(event, allowed_recipients=['f-' + str(n) for n in range(65)])):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                bridge.gm_page([changed])
 
 
 if __name__ == '__main__':

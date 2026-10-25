@@ -328,6 +328,37 @@ shutil.copyfile(p/'dev/runtime/host.py',t);t.chmod(0o755)
         self.assertEqual(self.runner.health()['content_version'], 'v1')
         self.assertEqual(self.runner.active.commit, self.first)
 
+    def test_recovery_marker_failure_stops_gated_host_and_retries(self):
+        self.deploy_first()
+        self.runner.host.kill()
+        self.runner.host.wait(timeout=3)
+        original_touch = Path.touch
+        failed_hosts = []
+        def touch(path, *args, **kwargs):
+            if path.parent.name == 'activation' and not failed_hosts:
+                failed_hosts.append(self.runner.host)
+                raise OSError('Injected recovery marker failure')
+            return original_touch(path, *args, **kwargs)
+        with mock.patch.object(Path, 'touch', new=touch):
+            self.runner.tick()
+        self.assertEqual(len(failed_hosts), 1)
+        self.assertIsNone(self.runner.host, 'A failed recovery must not strand a gated live process')
+        self.assertIsNotNone(failed_hosts[0].poll(), 'Failed recovery process must be stopped')
+        self.assertEqual(self.runner.phase, 'blocked')
+        self.assertIn('Injected recovery marker failure', self.runner.last_error)
+        self.assertEqual(json.loads((self.config.deploy_dir/'world.json').read_text()), {'world':42})
+        deadline = time.monotonic() + 4
+        while self.runner.host is None and time.monotonic() < deadline:
+            self.runner.tick()
+            time.sleep(.05)
+        self.assertIsNotNone(self.runner.host, 'The next bounded recovery attempt must run')
+        self.assertTrue(self.runner.health()['accepting_commands'])
+        self.assertEqual(self.runner.active.commit, self.first)
+        request = urllib.request.Request(f'http://127.0.0.1:{self.port}/mutate', data=b'{}')
+        with urllib.request.urlopen(request, timeout=2) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads((self.config.deploy_dir/'world.json').read_text()), {'world':43})
+
     def test_crashed_host_recovers_even_when_heads_diverge(self):
         self.deploy_first()
         self.commit('remote')

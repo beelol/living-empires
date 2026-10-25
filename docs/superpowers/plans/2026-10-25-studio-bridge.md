@@ -30,10 +30,25 @@ malformed/tampered event order; private images; stale replan acknowledgment.
 ## Task 3: integration and follow-up
 
 - [x] Record actual checks and unresolved live dependencies in work record.
-- [ ] Coordinate consuming hooks with named owners; review exact owned diff.
-- [ ] Commit and push verified checkpoint to main under whole integration lock.
-- [ ] Create thread heartbeat for Pulkit Studio integration; notify meaningful
+- [x] Coordinate consuming hooks with named owners; review exact owned diff.
+- [x] Commit and push verified checkpoint a8984a6 to main under integration lock.
+- [x] Create thread heartbeat for Pulkit Studio integration; notify meaningful
   changes only. Keep goal active until full live loop has required evidence.
 
 Ruling: user explicitly chose continued autonomous implementation (“up to you”,
 “continue”), so native execution without further design approval questions.
+
+## Receiver integrity follow-up
+
+- [x] Write failing tests for archive verification and tamper/missing-member cases.
+- [x] Implement dev/studio/verifier.py for bounded, read-only receiver verification.
+- [x] Run 21 bridge tests; independent reviewer provenance fix verified RED/GREEN.
+- [ ] Review and publish this receiver increment under the same integration lock.
+
+## Settled GM intake follow-up
+
+- [x] Test and implement atomic scoped-union file publication to GM-owned
+  `<world-state>.gm-inbox.json`, preserving ACL and stable event IDs.
+- [x] Verify 23 tests including CLI producer; GM owns host importer/live wiring.
+- [x] Enforce GM owner's exact batch/payload/identity caps and receipt-driven
+  paging; 25 tests pass, including 1024-event resume and 1MiB delivery boundary.

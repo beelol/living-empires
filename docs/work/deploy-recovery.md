@@ -1,0 +1,23 @@
+# Deployment recovery
+
+Owner: Bilal / content-deploy-checks chat. Baseline a8984a631a52e54dac8e50812218748084d2ca32.
+Primary AC WORLD-05; affected WORLD-03, LIVE-11, UX-02.
+Owned: dev/runner.py, dev/test_runner.py, this record.
+
+Small delivery: stop a failed gated recovery host after an activation filesystem error, so the existing bounded retry policy can make the world playable again. Preserve saved state and existing release metadata/activation commit semantics.
+
+Dependencies: terrain-integration owns native server/protocol/world v1; Gemini/diplomacy-limits owns its separate ledger/sole scheduler and env settings; Studio owns replay bridge v1. No changes to their contracts, schemas, assets or scheduler. The main README is unchanged since the fully read 347c860 checklist; studio a8984a6 adds only its own bridge. Active claims inspected before reserving the runner files.
+
+Plan/checks: inject activation marker failure only during recovery after a real child host crash; observe stopped failed process, preserved world, and successful bounded retry with a real accepted request. First reproduce the current stuck gated-host behavior, then make the smallest cleanup fix. Run Python suite and real commit/UDP smoke. Keep any existing fixture startup timeouts as failures, without weakening deadlines. Full-game WORLD-05 remains blocked without its required construction/trade/combat/asset and actual client evidence.
+
+Evidence so far: the red test failed on the expected live gated self.host process after injected marker failure (3.606 s). The first fixed run failed before reaching the scenario because existing fixture content validation exceeded its 3-second startup deadline; retained /private/tmp/argon-recovery-green.log. An unchanged retry passed in 4.480 s, including attempt 2/5, saved-world preservation and accepted post-recovery mutation. No deadline was changed. Independent read-only review found no concrete issues and confirmed activation commit semantics are preserved. Full suite pending.
+
+Verification checkpoint: 39 Python tests ran; the new recovery case passed; two unchanged tests failed starting their fake preflight process (test_malformed_validation_response_keeps_previous_host and test_moving_native_file_to_content_is_not_a_content_only_change). First targeted retry passed malformed-validation; moving-native again timed out before its scenario. Full suite is not reported green. Logs: /private/tmp/argon-recovery-python-suite.log and /private/tmp/argon-recovery-python-retries.log. Existing one/three/ten-second fixture deadlines remain unchanged. Syntax compilation and diff whitespace checks passed.
+
+Real isolated deployment smoke passed all eight checks (two UDP sessions, Lua movement/module hot reload, dirty edits excluded, invalid pack retained, repair activation, native restart saved state, remote commit without checkout changes). Measured warm build 7.326 s, local Lua activation 0.454 s, native update 6.668 s, remote Lua at 300 ms polling 0.564 s. Raw evidence /private/tmp/argon-recovery-smoke.json. These are development observations, not full-game release approval.
+
+Upstream review: diplomacy05cf47d changes configuration/ledger call limit only; terrain5a07994 adds terrain v1 records/query/persistence plus runtime export without wiring native/world yet. README, runner and its fixture interfaces are unchanged. Reconcile to this exact main baseline before integration and rerun focused recovery checks. The running supervisor must be restarted once to load runner.py itself; ordinary game release promotion does not replace that Python process. Preserve its active release, world path, bind and polling settings.
+
+Combined Rust check at terrain5a07994: 30 library tests and one CLI test passed, then content suite stopped with the three known one-second subprocess timing failures (native_collection_operations_cannot_bypass_instruction_limits, native_pattern_work_cannot_stall_loading_or_movement, special_files_cannot_block_content_loading); 12 other content tests passed. Log /private/tmp/argon-recovery-combined-rust.log. Subsequent suites were not reached and are not reported passed. Another isolated moving-native fixture attempt timed out during initial build (12.247 s), retained /private/tmp/argon-recovery-python-final-targeted.log. These existing startup reliability failures remain unresolved, independently of the reproduced recovery cleanup bug.
+
+Constructionad67996 is a standalone module/test/record addition with no runner or runtime export change. Reconciliation preserves it. The recovery change is still one exception-handler addition, with no save restore or new retry policy.
