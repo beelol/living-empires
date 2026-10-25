@@ -1,3 +1,7 @@
 [workspace]
-members = ["crates/living-world-core"]
+members = ["crates/living-world-core", "dev/runtime", "game"]
 resolver = "2"
+
+[profile.dev]
+debug = 1
+incremental = true

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Living Empires · Diplomacy</title>
+<style>
+:root{color-scheme:dark;--ground:#141a1c;--surface:#1b2326;--line:#3b494d;--ink:#f0f2ed;--muted:#b3c1c3;--accent:#b9e6c5;--warning:#ffd497}
+*{box-sizing:border-box}body{margin:0;background:var(--ground);color:var(--ink);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1160px;margin:auto;padding:36px}h1{font-size:32px;letter-spacing:-.025em;line-height:1.2;margin:0 0 8px}h2{font-size:20px;margin:28px 0 14px}h3{font-size:18px;margin:0}p{margin:0 0 8px}.muted,small{color:var(--muted)}header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px}#model{text-align:right;max-width:40ch;overflow-wrap:anywhere}#status{padding:18px 0;margin:24px 0;border-block:1px solid var(--line)}#phase{color:var(--accent);font-weight:650}#status p{margin:6px 0}#budget{font-variant-numeric:tabular-nums;color:var(--muted)}.faction{display:grid;grid-template-columns:230px 1fr 1fr;gap:24px;padding:20px 0;border-bottom:1px solid var(--line)}.faction p{margin:4px 0}.stances{font-size:14px}.stances div{margin-bottom:6px}.friendly{color:var(--accent)}.wary{color:var(--warning)}.columns{display:grid;grid-template-columns:1fr 1fr;gap:44px}.record{padding:14px 0;border-bottom:1px solid var(--line)}.record p{overflow-wrap:anywhere}.record time{font-size:13px;color:var(--muted)}.empty{color:var(--muted)}#events{list-style:none;padding:0;margin:0}details{margin:24px 0}summary{cursor:pointer;min-height:44px;padding:10px 0}pre{white-space:pre-wrap;word-break:break-word;padding:16px;background:var(--surface);font-size:12px;max-height:400px;overflow:auto}footer{color:var(--muted);font-size:13px;max-width:85ch;margin-top:32px;padding-top:18px;border-top:1px solid var(--line)}::selection{background:var(--accent);color:var(--ground)}:focus-visible{outline:2px solid var(--accent);outline-offset:4px}a{color:var(--accent);text-underline-offset:3px}@media(max-width:740px){main{padding:24px 18px}header{display:block}#model{text-align:left;margin-top:12px}.faction{grid-template-columns:1fr;gap:10px}.columns{grid-template-columns:1fr;gap:0}}
+</style>
+<main>
+<header><div><h1>Diplomacy</h1><p class="muted">Living Empires · local operator view</p></div><p id="model" class="muted">Connecting to the Rust host…</p></header>
+<div id="status" role="status" aria-live="polite"><span id="phase">Connecting</span><p id="message">Waiting for the diplomacy worker.</p><div id="budget"></div></div>
+<section aria-labelledby="faction-title"><h2 id="faction-title">The factions</h2><div id="factions"><p class="empty">Faction identities will appear when the host is ready.</p></div></section>
+<div class="columns"><section><h2>Offers</h2><div id="offers"></div></section><section><h2>Active pacts</h2><div id="pacts"></div></section></div>
+<section><h2>Recent decisions</h2><ol id="events"></ol></section>
+<details><summary>Inspect recorded inputs and outcomes</summary><p class="muted">Latest six attempts. Includes private faction observations; only available on this computer.</p><pre id="evidence"></pre></details>
+<footer>Development demo with three seeded identities. Pacts and stances are saved diplomacy records; combat, territory rights, physical trade and generated leaders are not connected yet. The native game continues while a faction is thinking. Edit <code>.env.local</code> to change the model, turn interval or call limit.</footer>
+</main>
+<script>
+const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=String(text);if(cls)n.className=cls;return n};
+const time=t=>t?new Date(t*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}):'';
+const names={}; const name=id=>names[id]||id;
+function empty(el,text){el.replaceChildren(node('p',text,'empty'))}
+function render(data){
+ const world=data.world||{};const factions=world.factions||[];for(const f of factions)names[f.id]=f.name;
+ document.getElementById('model').textContent=data.model||'Model not configured';
+ const phases={waiting_key:'Waiting for API key',waiting_activation:'Waiting for host activation',thinking:'Thinking',running:'Loop running',retrying:'Retry scheduled',paused:'Call limit reached',error:'Diplomacy paused',starting:'Starting',stopped:'Stopped'};
+ document.getElementById('phase').textContent=phases[data.phase]||data.phase||'Starting';
+ document.getElementById('message').textContent=data.message||'';
+ document.getElementById('budget').textContent=`${world.attempt_count||0} / ${data.max_calls||'—'} API attempts · ${data.interval_seconds||'—'} seconds between turns · saved revision ${world.revision||0}`;
+ const list=document.getElementById('factions');list.replaceChildren();
+ for(const f of factions){const row=node('article',undefined,'faction');const identity=node('div');identity.append(node('h3',f.name),node('p',f.leader,'muted'));const priorities=node('div');priorities.append(node('small','Priorities'),node('p',(f.priorities||[]).join(' · ')));const stances=node('div',undefined,'stances');for(const [target,stance]of Object.entries(f.stances||{}))stances.append(node('div',`${name(target)}: ${stance}`,stance));row.append(identity,priorities,stances);list.append(row)}
+ const offers=document.getElementById('offers');offers.replaceChildren();for(const offer of world.pending_offers||[]){const row=node('div',undefined,'record');row.append(node('p',`${name(offer.proposer)} → ${name(offer.recipient)}`),node('p','Non-aggression · 5 minutes after acceptance','muted'),node('small',`${offer.id} · version ${offer.version} · expires ${time(offer.expires_at)}`));offers.append(row)}if(!offers.children.length)empty(offers,'No open offers. Each faction can start a conversation or propose a pact.');
+ const pacts=document.getElementById('pacts');pacts.replaceChildren();for(const pact of world.active_pacts||[]){const row=node('div',undefined,'record');row.append(node('p',pact.parties.map(name).join(' + ')),node('p',`Non-aggression until ${time(pact.ends_at)}`,'friendly'));pacts.append(row)}if(!pacts.children.length)empty(pacts,'No pacts yet. Both factions must agree to the same offer.');
+ const events=document.getElementById('events');events.replaceChildren();for(const decision of (world.decisions||[]).slice(-12).reverse()){const p=decision.proposal||{};const row=node('li',undefined,'record');row.append(node('time',time(decision.at)),node('p',`${name(decision.actor)}${p.target?' → '+name(p.target):''} · ${(p.action||'decision').replaceAll('_',' ')} · ${decision.accepted?'accepted':'rejected'}`),node('p',p.message||p.summary||'No message','muted'));if(!decision.accepted)row.append(node('small',decision.result?.error||JSON.stringify(decision.result)));events.append(row)}if(!events.children.length)empty(events,'No model decisions have been recorded.');
+ document.getElementById('evidence').textContent=JSON.stringify({attempts:(world.attempts||[]).slice(-6),outcomes:(world.decisions||[]).slice(-6)},null,2);
+}
+async function refresh(){try{const response=await fetch('/api/diplomacy',{cache:'no-store'});if(!response.ok)throw new Error('Host unavailable');render(await response.json())}catch{document.getElementById('phase').textContent='Host disconnected';document.getElementById('message').textContent='Reconnect or restart the Rust host. This page will retry automatically.'}finally{setTimeout(refresh,2000)}}refresh();
+</script>
+</html>

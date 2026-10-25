@@ -179,6 +179,16 @@ Keep the brief and rubric separate from creator instructions. Pin the upstream c
 
 ---
 
+
+---
+
+> **Development foundation:** Start the Rust Bevy/Lightyear host/client, edit Lua live, or deploy
+> committed `main` changes locally using the [development guide](dev/README.md).
+> Agents must read [AGENTS.md](AGENTS.md) and the entire checklist below before work.
+> This bootstrap does not mark any full-game acceptance criterion complete.
+
+https://docs.google.com/document/d/1mqgO7fSls-Rl7Pj60cTtoMFihdOzq9y89seT2yHz0bA/edit?tab=t.0
+
 # **Living Empires Game Acceptance Criteria**
 
 Living Empires is complete when every acceptance criterion below passes in the same release. The game is a persistent multiplayer strategy adventure on one alien planet: explore as a robot commander, build a machine civilization, negotiate with thinking factions, and live with the consequences while agents keep creating useful game content.

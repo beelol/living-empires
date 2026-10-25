@@ -1,0 +1,16 @@
+{
+  "initial_warm_build_seconds": 5.382,
+  "local_lua_commit_seconds": 0.706,
+  "warm_native_commit_seconds": 3.881,
+  "remote_lua_commit_seconds_at_300ms_fetch": 0.833,
+  "checks": [
+    "two Lightyear UDP sessions",
+    "Lua rules affect movement",
+    "dirty edits isolated",
+    "Lua deploy without restart",
+    "bad Lua retains healthy host",
+    "repaired commit activates",
+    "native restart preserves world",
+    "remote commit deploys without editing checkout"
+  ]
+}

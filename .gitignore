@@ -23,9 +23,18 @@ rustc-ice-*.txt
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# Asset generator local state
 node_modules/
 .env
 .env.*
 !.env.example
 .data/
 test-results/
+
+# Local development state and agent worktrees
+/.local/
+/.local-deploy/
+/.worktrees/
+__pycache__/
+*.pyc
+.DS_Store
