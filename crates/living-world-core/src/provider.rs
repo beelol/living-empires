@@ -218,7 +218,7 @@ pub fn build_generation_request(request: &GenerationRequest) -> Result<(String, 
         parts.extend(image_parts.iter().map(|image| json!({"inlineData":{"mimeType":image["mimeType"], "data":image["data"]}})));
         let body = json!({
             "contents": [{"role":"user", "parts":parts}],
-            "generationConfig": {"responseMimeType":"application/json", "responseJsonSchema":serde_json::from_str::<Value>(GENERATION_SCHEMA).expect("static recipe schema"), "maxOutputTokens":7000}
+            "generationConfig": {"responseFormat":{"text":{"mimeType":"APPLICATION_JSON", "schema":serde_json::from_str::<Value>(GENERATION_SCHEMA).expect("static recipe schema")}}, "maxOutputTokens":7000}
         });
         Ok((format!("{API_ROOT}/models/{}:generateContent", url_segment(&request.model)), body))
     }
@@ -386,7 +386,7 @@ pub fn build_review_request(request: &ReviewRequest) -> Result<(String, Value), 
         parts.push(json!({"text":format!("CURRENT VIEW {}",index+1)}));
         parts.push(json!({"inlineData":{"mimeType":"image/png","data":data}}));
     }
-    let body = json!({"contents":[{"role":"user","parts":parts}],"generationConfig":{"responseMimeType":"application/json","responseJsonSchema":serde_json::from_str::<Value>(REVIEW_SCHEMA).expect("static review schema"),"maxOutputTokens":6000}});
+    let body = json!({"contents":[{"role":"user","parts":parts}],"generationConfig":{"responseFormat":{"text":{"mimeType":"APPLICATION_JSON","schema":serde_json::from_str::<Value>(REVIEW_SCHEMA).expect("static review schema")}},"maxOutputTokens":6000}});
     Ok((format!("{API_ROOT}/models/{}:generateContent", url_segment(&request.model)), body))
 }
 

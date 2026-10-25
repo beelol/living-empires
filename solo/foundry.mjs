@@ -36,13 +36,12 @@ export function activatePackage(w,kind,pkg){
 }
 export function rollback(w,kind){const index=w.assetHistory.findLastIndex(e=>e.kind===kind);requireThat(index>=0,'No prior appearance for this family.');const entry=w.assetHistory[index];if(entry.previous)w.assets[kind]=entry.previous;else delete w.assets[kind];w.assetHistory.splice(index,1);w.revision++;}
 export class FoundryController{
- constructor({world,save,api,verifyTyped,dataDir,mode='fixture'}){Object.assign(this,{world,save,api,verifyTyped,dataDir,mode});this.busy=false;}
+ constructor({world,save,api,verifyTyped,dataDir,mode='fixture'}){Object.assign(this,{world,save,api,verifyTyped,dataDir,mode});this.busy=false;if(world.foundry.error==='Twelve jobs retained. Automatic improvements paused at the session ceiling.'){world.foundry.error=null;world.foundry.enabled=true;save();}}
  async step(){if(this.busy)return;this.busy=true;const f=this.world.foundry;
  try{
- let request=f.requests.find(r=>['dispatching','unknown','running'].includes(r.status))||f.requests.find(r=>r.status==='queued'&&(r.targetId||f.enabled));if(!request&&!f.enabled)return;
+ let request=f.requests.find(r=>['dispatching','unknown','running'].includes(r.status))||f.requests.find(r=>r.status==='queued'&&r.targetId)||f.requests.find(r=>r.status==='queued'&&f.enabled);if(!request&&!f.enabled)return;
  if(!request){
  const kind=this.world.buildings.find(b=>b.kind!=='creation'&&b.progress===1&&!f.requests.some(r=>r.kind===b.kind&&r.round===f.round))?.kind;if(!kind)return;
- if(f.requests.length>=12){f.error='Twelve jobs retained. Automatic improvements paused at the session ceiling.';f.enabled=false;this.save();return;}
  request={id:`solo-${this.world.id}-${kind}-${f.round}`,kind,round:f.round,status:'queued',provider:this.mode};request.prompt=`Single-player colony / ${request.id}. Refine this ${kind} building for a coherent ivory ceramic robot settlement on a sunlit mineral coast. Pass ${f.round}: improve silhouette, functional detail, material separation and ground contact. Keep the existing traversable outpost contract and frozen footprint. No units or gameplay changes.`;f.requests.push(request);this.save();
  }
  if(['unknown','dispatching'].includes(request.status)){

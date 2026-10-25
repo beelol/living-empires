@@ -14,7 +14,11 @@ async function check(url){try{const res=await fetch(url,{signal:AbortSignal.time
 let foundry=await check(foundryURL+'/api/config');
 if(!foundry){
  if(!['http://127.0.0.1:4317','http://127.0.0.1:4317/'].includes(foundryURL))throw Error('Configured Foundry is unavailable. Start that service, then run dev again.');
- fs.mkdirSync(path.join(canonical,'.local'),{recursive:true});const fd=fs.openSync(path.join(canonical,'.local','solo-foundry.log'),'a',0o600);
+ fs.mkdirSync(path.join(canonical,'.local'),{recursive:true});
+ // Keep the live service binary separate: ordinary test builds can replace target/debug/world-check.
+ execFileSync('cargo',['build','--manifest-path',path.join(repo,'Cargo.toml'),'-p','living-world-core','--features','live-provider'],{cwd:repo,stdio:'inherit'});
+ const liveBinary=path.join(canonical,'.local','foundry-world-check');fs.copyFileSync(path.join(repo,'target','debug','world-check'),liveBinary);env.RUST_CORE_BIN=liveBinary;
+ const fd=fs.openSync(path.join(canonical,'.local','solo-foundry.log'),'a',0o600);
  const child=spawn(process.execPath,[...(envFile?[`--env-file=${envFile}`]:[]),path.join(canonical,'server.mjs')],{cwd:canonical,env,detached:true,stdio:['ignore',fd,fd]});child.unref();fs.closeSync(fd);
  for(let i=0;i<60&&!foundry;i++){await new Promise(r=>setTimeout(r,250));foundry=await check(foundryURL+'/api/config');}
  if(!foundry)throw Error('Foundry failed to start. Inspect .local/solo-foundry.log; no key is printed by this launcher.');

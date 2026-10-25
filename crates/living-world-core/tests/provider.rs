@@ -72,14 +72,14 @@ fn direct_payload_contains_the_full_frozen_theme_and_structured_schema() {
     request.user_feedback=Some("Give the roof a distinct arch while preserving the clear entrance".into());
     let (url,body)=build_generation_request(&request).unwrap();
     assert!(url.ends_with("/models/gemini-test:generateContent"));
-    assert_eq!(body["generationConfig"]["responseMimeType"],"application/json");
+    assert_eq!(body["generationConfig"]["responseFormat"]["text"]["mimeType"],"APPLICATION_JSON");
     let prompt=body["contents"][0]["parts"][0]["text"].as_str().unwrap();
     for field in ["custom-forest","Temperate moss forest","Central path is open","Build a forest relay"] { assert!(prompt.contains(field),"missing {field}"); }
     assert!(prompt.contains("Give the roof a distinct arch"));
     assert!(prompt.contains("halfExtent of 12 metres"));
-    assert_eq!(body["generationConfig"]["responseJsonSchema"]["properties"]["parts"]["maxItems"],128);
+    assert_eq!(body["generationConfig"]["responseFormat"]["text"]["schema"]["properties"]["parts"]["maxItems"],128);
     assert!(prompt.contains("exactly the asset scope requested by the brief"));
-    assert_eq!(body["generationConfig"]["responseJsonSchema"]["required"].as_array().unwrap().iter().any(|v|v=="scene"),true);
+    assert_eq!(body["generationConfig"]["responseFormat"]["text"]["schema"]["required"].as_array().unwrap().iter().any(|v|v=="scene"),true);
 }
 
 #[test]
@@ -217,7 +217,7 @@ fn incomplete_managed_response_is_preserved_as_failure_without_treating_steps_as
 fn generation_payload_has_concrete_array_shapes_and_top_level_scene_schema() {
     let request = request(false);
     let (_, body) = build_generation_request(&request).unwrap();
-    let schema = &body["generationConfig"]["responseJsonSchema"];
+    let schema = &body["generationConfig"]["responseFormat"]["text"]["schema"];
     assert!(schema["required"].as_array().unwrap().iter().any(|value| value == "scene"));
     assert_eq!(schema["properties"]["scene"]["type"], "object");
     assert_eq!(schema["properties"]["scene"]["properties"]["components"]["type"], "array");
@@ -395,8 +395,8 @@ fn managed_prompt_has_an_exact_valid_component_example() {
 #[test]
 fn generation_schema_matches_authoritative_scene_component_bounds() {
     let (_, body) = build_generation_request(&request(false)).unwrap();
-    assert!(body["generationConfig"]["responseJsonSchema"]["properties"]["parts"].get("scene").is_none());
-    let component = &body["generationConfig"]["responseJsonSchema"]["properties"]["scene"]["properties"]["components"]["items"]["properties"];
+    assert!(body["generationConfig"]["responseFormat"]["text"]["schema"]["properties"]["parts"].get("scene").is_none());
+    let component = &body["generationConfig"]["responseFormat"]["text"]["schema"]["properties"]["scene"]["properties"]["components"]["items"]["properties"];
     assert_eq!(component["id"]["pattern"], "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$");
     assert_eq!(component["id"]["minLength"], 1);
     assert_eq!(component["id"]["maxLength"], 64);

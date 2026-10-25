@@ -48,8 +48,8 @@ test('Gemini creator requests structured JSON and parses the returned candidate'
     }); },
   });
   assert.deepEqual(result.recipe, { name: 'Tower' });
-  assert.equal(request.body.generationConfig.responseMimeType, 'application/json');
-  assert.deepEqual(request.body.generationConfig.responseJsonSchema, schema);
+  assert.equal(request.body.generationConfig.responseFormat.text.mimeType, 'APPLICATION_JSON');
+  assert.deepEqual(request.body.generationConfig.responseFormat.text.schema, schema);
   assert.equal(result.usage.totalTokenCount, 12);
 });
 
@@ -76,7 +76,7 @@ test('review validates verdicts and sends all three actual PNG buffers', async (
   assert.equal(result.renderStatus, 'fail');
   assert.match(result.findings, /View 2/);
   assert.deepEqual(body.contents[0].parts.slice(1).map(part => Buffer.from(part.inlineData.data, 'base64')), images);
-  assert.equal(body.generationConfig.responseMimeType, 'application/json');
+  assert.equal(body.generationConfig.responseFormat.text.mimeType, 'APPLICATION_JSON');
 });
 
 test('reviewer rejects malformed JSON, invalid verdicts, and missing evidence', async () => {

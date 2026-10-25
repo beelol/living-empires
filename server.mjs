@@ -372,7 +372,7 @@ const server=http.createServer(async(req,res)=>{
         if(!themeInferenceEnabled)return json(res,403,{error:'Live theme inference is prepared but disabled pending an operator-approved spending ceiling. Use the editable contract or labeled local draft.'});
         if(!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY to resolve a theme with Gemini.'});
         const spendId=spending.reserve({jobId:'theme-draft',label:'theme inference',model,managed:false});
-        let draft;try{draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});spending.settle(spendId,draft.usage);}catch(error){spending.unknown(spendId);throw error;}
+        let draft;try{draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});spending.settle(spendId,draft.usage);}catch(error){if(error.themeInference){const id=randomUUID();spending.settle(spendId,error.themeInference.usage);atomic(path.join(data,`theme-draft-${id}.json`),{id,sourceRevision,model,prompt:input.prompt,status:'invalid',error:error.message,...error.themeInference});}else spending.unknown(spendId);throw error;}
         const id=randomUUID();atomic(path.join(data,`theme-draft-${id}.json`),{id,sourceRevision,model,prompt:input.prompt,theme:draft.theme,usage:draft.usage,response:draft.response});
         return json(res,200,{theme:draft.theme,usage:draft.usage,draftId:id,requiresReview:true});
       }

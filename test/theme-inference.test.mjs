@@ -15,3 +15,8 @@ test('theme inference rejects malformed contracts and bad prompts without retrie
   await assert.rejects(inferTheme({prompt:'x',create:async()=>{calls++;}}),/5–3000/);assert.equal(calls,0);
   await assert.rejects(inferTheme({prompt:'A new alien world',create:async()=>{calls++;return{recipe:{id:'unknown'}};}}));assert.equal(calls,1);
 });
+
+for(const palette of [{shell:'#ffffff'},['#ffffff','#000000','#112233','#445566','#778899'],{shell:'ivory',frame:'#000000',accent:'#112233',ground:'#445566',rock:'#778899'}])test('invalid live palettes retain returned usage and response without retries: '+JSON.stringify(palette),async()=>{
+ let calls=0;const recipe={...structuredClone(THEMES.sylvan),palette},usage={totalTokenCount:42},response={id:'returned-response'};
+ await assert.rejects(inferTheme({prompt:'A copper observatory',create:async input=>{calls++;assert.match(input.prompt,/shell, frame, accent, ground, rock/);return {recipe,usage,response};}}),error=>{assert.match(error.message,/five #RRGGBB/);assert.deepEqual(error.themeInference,{recipe,usage,response});return true;});assert.equal(calls,1);
+});
