@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argon · development playground</title>
+<style>
+:root { color-scheme: dark; --ground:#141a1c; --surface:#1b2326; --line:#3b494d; --ink:#f0f2ed; --muted:#b3c1c3; --accent:#b9e6c5; --warning:#ffd497; --danger:#ffb4a7; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--ground); color:var(--ink); font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+::selection { color:var(--ground); background:var(--accent); }
+a { color:var(--accent); text-underline-offset:3px; }
+button,canvas { -webkit-tap-highlight-color:transparent; }
+button { border:1px solid var(--line); background:var(--surface); color:var(--ink); padding:10px 16px; min-height:44px; font:inherit; border-radius:6px; cursor:pointer; }
+button:hover { border-color:var(--accent); background:#263630; }
+button:disabled { opacity:.45; cursor:wait; }
+:focus-visible { outline:3px solid var(--accent); outline-offset:4px; }
+main { max-width:1144px; margin:0 auto; padding:32px; }
+header { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; margin-bottom:28px; }
+h1 { font-size:28px; line-height:1.2; font-weight:650; letter-spacing:-.025em; margin:0 0 8px; }
+p { margin:0; }
+.subtle { color:var(--muted); }
+#connection { display:flex; align-items:center; gap:9px; white-space:nowrap; padding-top:5px; }
+#connection::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--warning); }
+#connection[data-live=true]::before { background:var(--accent); }
+.toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:14px; }
+.identity { font-size:18px; font-weight:600; }
+#identity-note { color:var(--muted); font-size:14px; }
+#reconnect { display:none; }
+.notice { padding:12px 16px; margin:0 0 16px; border:1px solid var(--line); color:var(--warning); border-radius:6px; }
+.notice.error { color:var(--danger); }
+.notice[hidden] { display:none; }
+#arena { display:block; width:100%; height:auto; aspect-ratio:5 / 3; background:var(--surface); border:1px solid var(--line); border-radius:8px; cursor:crosshair; touch-action:manipulation; }
+.controls { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:18px 0 24px; border-bottom:1px solid var(--line); }
+.controls p { max-width:60ch; }
+.direction-buttons { display:flex; gap:6px; flex-shrink:0; }
+.direction-buttons button { min-width:54px; padding:8px 10px; }
+.details { display:grid; grid-template-columns:1fr 1fr; gap:40px; margin-top:24px; }
+h2 { font-size:16px; font-weight:600; margin:0 0 12px; }
+dl { margin:0; font-size:14px; }
+dl > div { display:flex; justify-content:space-between; gap:24px; margin:6px 0; }
+dt { color:var(--muted); }
+dd { margin:0; text-align:right; overflow-wrap:anywhere; }
+code { font:13px/1.5 ui-monospace,SFMono-Regular,monospace; }
+#players { list-style:none; padding:0; margin:0; }
+#players li { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:6px 0; font-size:14px; }
+#players li.mine { color:var(--accent); }
+.position { color:var(--muted); font-variant-numeric:tabular-nums; }
+footer { margin-top:32px; color:var(--muted); font-size:13px; max-width:84ch; }
+@media (max-width:720px) { main { padding:20px 16px; } header { display:block; margin-bottom:20px; } #connection { margin-top:16px; } h1 { font-size:25px; } .controls { align-items:flex-start; flex-direction:column; gap:14px; } .details { grid-template-columns:1fr; gap:24px; } }
+@media (prefers-reduced-motion:no-preference) { button { transition:background-color 100ms ease-out,border-color 100ms ease-out; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>Argon development playground</h1><p class="subtle">A shared world for testing movement, saved sessions, and live rules.</p></div>
+    <p id="connection" role="status">Connecting…</p>
+  </header>
+  <div id="error" class="notice error" role="alert" hidden></div>
+  <div id="content-error" class="notice" role="status" hidden></div>
+  <div id="storage-error" class="notice" hidden></div>
+  <div class="toolbar">
+    <div><p id="identity" class="identity">Joining the world…</p><p id="identity-note">Your commander’s session is saved in this browser.</p></div>
+    <button id="reconnect" type="button">Reconnect</button>
+  </div>
+  <canvas id="arena" width="1000" height="600" tabindex="0" aria-label="Shared commander positions. Use arrow keys, W A S D, or the direction buttons to move your commander.">Your browser does not support the canvas. Commander positions are listed below; use the direction buttons to move.</canvas>
+  <div class="controls">
+    <p class="subtle">Move with <strong>W A S D</strong> or the <strong>arrow keys</strong>. Click the world to take one step toward that point.</p>
+    <div class="direction-buttons" aria-label="Movement controls">
+      <button type="button" data-dx="-1" data-dy="0" aria-label="Move left">Left</button>
+      <button type="button" data-dx="0" data-dy="-1" aria-label="Move up">Up</button>
+      <button type="button" data-dx="0" data-dy="1" aria-label="Move down">Down</button>
+      <button type="button" data-dx="1" data-dy="0" aria-label="Move right">Right</button>
+    </div>
+  </div>
+  <div class="details">
+    <section aria-labelledby="world-heading"><h2 id="world-heading">World</h2><dl>
+      <div><dt>Name</dt><dd id="world-name">Waiting for host</dd></div>
+      <div><dt>Content version</dt><dd><code id="content-version">—</code></dd></div>
+      <div><dt>Host release</dt><dd><code id="release">—</code></dd></div>
+    </dl></section>
+    <section aria-labelledby="players-heading"><h2 id="players-heading">Commanders in this world</h2><ul id="players"><li class="subtle">Waiting for host</li></ul></section>
+  </div>
+  <footer>This is a development playground, not the full game. Squares represent commanders; there is no terrain, combat, economy, or hidden information yet. Use on a trusted LAN. Other browsers join this host’s address.</footer>
+</main>
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const canvas = $('arena'), ctx = canvas.getContext('2d');
+  const sessionKey = 'argon-commander-session-v1';
+  let token = '', playerId = '', sequence = 1, joined = false, joining = false, moving = false, polling = false;
+  let state = { players: [], bounds: { width:1000, height:600 } }, needsNewSession = false;
+  const held = new Set();
+  try { token = localStorage.getItem(sessionKey) || ''; }
+  catch (_) { showStorageWarning(); }
+  function showStorageWarning() { $('storage-error').textContent = 'Browser storage is unavailable. This session will not survive closing or reloading this page.'; $('storage-error').hidden = false; }
+  function message(id, text) { const el = $(id); if (el.textContent !== text) el.textContent = text; el.hidden = !text; }
+  function connection(live, text) { $('connection').dataset.live = String(live); if ($('connection').textContent !== text) $('connection').textContent = text; }
+  function disconnect(error) {
+    joined = false; held.clear(); connection(false, 'Disconnected');
+    message('error', error.message || String(error));
+    $('reconnect').style.display = 'inline-block';
+  }
+  async function api(path, body) {
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', cache:'no-store', signal:controller.signal, headers: body === undefined ? {} : {'Content-Type':'application/json'}, body: body === undefined ? undefined : JSON.stringify(body) });
+      const data = await response.json();
+      if (!response.ok) { const error = new Error(data.error || `Host returned ${response.status}`); error.status = response.status; throw error; }
+      return data;
+    } catch (error) {
+      if (error.name === 'AbortError') throw new Error('The host took too long to respond. Reconnect to check the saved result.');
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+  async function join(newSession = false) {
+    if (joining) return;
+    joining = true; $('reconnect').disabled = true;
+    try {
+      const result = await api('/api/join', !newSession && token ? {token} : {});
+      token = result.token; playerId = result.player.id; sequence = result.next_sequence; joined = true; needsNewSession = false;
+      try { localStorage.setItem(sessionKey, token); } catch (_) { showStorageWarning(); }
+      $('identity').textContent = `${result.player.name} · you`;
+      $('reconnect').style.display = 'none'; $('reconnect').textContent = 'Reconnect';
+      connection(true, 'Connected'); message('error', '');
+      await refresh();
+    } catch (error) {
+      if (error.status === 401) { needsNewSession = true; $('reconnect').textContent = 'Join as a new commander'; }
+      disconnect(error);
+    } finally { joining = false; $('reconnect').disabled = false; }
+  }
+  async function refresh() {
+    if (polling) return;
+    polling = true;
+    try {
+      state = await api('/api/state');
+      $('world-name').textContent = state.world_name;
+      $('content-version').textContent = state.content_version.slice(0,12); $('content-version').title = state.content_version;
+      $('release').textContent = state.release;
+      message('content-error', state.content_error ? `Content update rejected. The previous rules are still active. ${state.content_error}` : '');
+      if (joined) connection(true, 'Connected');
+      draw(); renderPlayers();
+      if (!joined && token && !joining && !moving && !needsNewSession) void join();
+    } catch (error) { disconnect(new Error(`Cannot reach this host. ${error.message}`)); }
+    finally { polling = false; }
+  }
+  async function move(dx, dy) {
+    if (!joined || moving || joining) return;
+    const length = Math.hypot(dx, dy); if (!length) return;
+    moving = true;
+    try {
+      const result = await api('/api/move', {token, sequence, dx:dx/length, dy:dy/length});
+      sequence = result.next_sequence;
+      const index = state.players.findIndex(p => p.id === playerId);
+      if (index >= 0) state.players[index] = result.player;
+      draw(); renderPlayers(); message('error','');
+    } catch (error) {
+      // Do not resend an ambiguous move. Rejoining reads its durable sequence and result.
+      disconnect(error);
+      if (error.status === 401) { needsNewSession = true; $('reconnect').textContent = 'Join as a new commander'; }
+    } finally { moving = false; }
+  }
+  function renderPlayers() {
+    const list = $('players'); list.replaceChildren();
+    for (const player of state.players) {
+      const li = document.createElement('li'), name = document.createElement('span'), position = document.createElement('span');
+      li.className = player.id === playerId ? 'mine' : '';
+      name.textContent = player.name + (player.id === playerId ? ' · you' : '');
+      position.className = 'position'; position.textContent = `${player.x.toFixed(0)}, ${player.y.toFixed(0)}`;
+      li.append(name,position); list.append(li);
+    }
+    if (!state.players.length) { const li = document.createElement('li'); li.textContent = 'No commanders yet'; list.append(li); }
+  }
+  function draw() {
+    if (!ctx) return;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = '#1b2326'; ctx.fillRect(0,0,1000,600);
+    ctx.strokeStyle = '#293438'; ctx.lineWidth = 1;
+    for (let x = 50; x < 1000; x += 50) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,600); ctx.stroke(); }
+    for (let y = 50; y < 600; y += 50) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(1000,y); ctx.stroke(); }
+    for (const player of state.players) {
+      const mine = player.id === playerId;
+      ctx.fillStyle = mine ? '#b9e6c5' : '#e7b489'; ctx.fillRect(player.x-8,player.y-8,16,16);
+      if (mine) { ctx.strokeStyle = '#b9e6c5'; ctx.lineWidth = 2; ctx.strokeRect(player.x-13,player.y-13,26,26); }
+      ctx.fillStyle = '#f0f2ed'; ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif'; ctx.textAlign = player.x > 880 ? 'right' : 'left';
+      ctx.fillText(player.name + (mine ? ' (you)' : ''), player.x > 880 ? player.x-18 : player.x+18, player.y+5);
+    }
+  }
+  const keys = new Set(['arrowup','arrowdown','arrowleft','arrowright','w','a','s','d']);
+  document.addEventListener('keydown', event => { const key = event.key.toLowerCase(); if (keys.has(key) && !event.metaKey && !event.ctrlKey && !event.altKey) { event.preventDefault(); held.add(key); } });
+  document.addEventListener('keyup', event => held.delete(event.key.toLowerCase()));
+  window.addEventListener('blur', () => held.clear());
+  document.addEventListener('visibilitychange', () => { if (document.hidden) held.clear(); });
+  canvas.addEventListener('click', event => {
+    canvas.focus(); const player = state.players.find(p => p.id === playerId); if (!player) return;
+    const rect = canvas.getBoundingClientRect();
+    void move((event.clientX-rect.left) / rect.width * 1000 - player.x, (event.clientY-rect.top) / rect.height * 600 - player.y);
+  });
+  document.querySelectorAll('[data-dx]').forEach(button => button.addEventListener('click', () => void move(Number(button.dataset.dx),Number(button.dataset.dy))));
+  $('reconnect').addEventListener('click', () => void join(needsNewSession));
+  setInterval(() => { const dx = Number(held.has('arrowright') || held.has('d')) - Number(held.has('arrowleft') || held.has('a')); const dy = Number(held.has('arrowdown') || held.has('s')) - Number(held.has('arrowup') || held.has('w')); if (dx || dy) void move(dx,dy); },100);
+  setInterval(() => { if (!document.hidden) void refresh(); },250);
+  draw(); void join();
+})();
+</script>
+</body>
+</html>

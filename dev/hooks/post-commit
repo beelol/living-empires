@@ -1,0 +1,7 @@
+#!/bin/sh
+# argon-local-deploy-wake-v1: constant-time wake hint, shared by every worktree.
+# The runner also polls refs, so a missing hook never prevents deployment.
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+root=$(dirname "$common")/.local-deploy
+mkdir -p "$root" 2>/dev/null && touch "$root/wake" 2>/dev/null
+exit 0
