@@ -1,15 +1,55 @@
 #![cfg(feature = "live-provider")]
 use living_world_core::provider::{ProviderTransport, UreqTransport};
 use serde_json::{json, Value};
-use std::{io::{Read, Write}, net::TcpListener, thread};
+use std::{io::{BufRead, BufReader, Read, Write}, net::TcpListener, thread, time::Duration};
 
 fn response(status: u16, body: String) -> Result<Value, living_world_core::provider::ProviderError> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/generate", listener.local_addr().unwrap());
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let mut buffer = [0; 8192];
-        let _ = stream.read(&mut buffer).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        // Read the complete request before responding. Closing with unread request bytes
+        // can reset the socket and randomly discard the response on macOS.
+        let mut request_body = Vec::new();
+        {
+            let mut reader = BufReader::new(&mut stream);
+            let mut content_length = 0;
+            let mut chunked = false;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" { break; }
+                let lower = line.to_ascii_lowercase();
+                if let Some(value) = lower.strip_prefix("content-length:") { content_length = value.trim().parse::<usize>().unwrap(); }
+                if lower.starts_with("transfer-encoding:") && lower.contains("chunked") { chunked = true; }
+            }
+            if chunked {
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let size = usize::from_str_radix(line.trim().split(';').next().unwrap(), 16).unwrap();
+                    if size == 0 {
+                        loop {
+                            line.clear();
+                            assert!(reader.read_line(&mut line).unwrap() > 0);
+                            if line == "\r\n" { break; }
+                        }
+                        break;
+                    }
+                    let start = request_body.len();
+                    request_body.resize(start + size, 0);
+                    reader.read_exact(&mut request_body[start..]).unwrap();
+                    let mut end = [0; 2];
+                    reader.read_exact(&mut end).unwrap();
+                    assert_eq!(&end, b"\r\n");
+                }
+            } else {
+                request_body.resize(content_length, 0);
+                reader.read_exact(&mut request_body).unwrap();
+            }
+        }
+        assert_eq!(serde_json::from_slice::<Value>(&request_body).unwrap(), json!({"prompt":"private input"}));
         let header = format!("HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
         let _ = stream.write_all(header.as_bytes());
         let _ = stream.write_all(body.as_bytes());
