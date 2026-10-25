@@ -277,6 +277,19 @@ pub fn geometry_repair_diagnostics(recipe: &Recipe) -> Vec<String> {
     if recipe.sensor_radius < 8.0 {
         details.push(format!("sensorRadius={} does not reach the unchanged 8-metre test target; require sensorRadius >= 8 and <= 20.", recipe.sensor_radius));
     }
+    if !access_scenario(recipe).0 {
+        for part in &recipe.parts {
+            let bottom = part.position[1] - part.size[1] / 2.0;
+            let top = part.position[1] + part.size[1] / 2.0;
+            let min_x = part.position[0] - part.size[0] / 2.0 - 0.28;
+            let max_x = part.position[0] + part.size[0] / 2.0 + 0.28;
+            let min_z = part.position[2] - part.size[2] / 2.0 - 0.28;
+            let max_z = part.position[2] + part.size[2] / 2.0 + 0.28;
+            if bottom < 1.5 && top > 0.08 && min_x < 0.0 && max_x > 0.0 && min_z < 9.0 && max_z > 0.0 {
+                details.push(format!("Part '{}' potentially blocks the failed center route x=0,z=9 to 0: vertical bounds [{bottom},{top}], player-radius-expanded x [{min_x},{max_x}], z [{min_z},{max_z}]. Player radius=0.28m and height=1.5m. For an overhead beam/arch, raise only its bottom to >=1.5m (centerY >= 1.5 + height/2); preserve unrelated geometry. Collision applies even to detail parts.", part.id));
+            }
+        }
+    }
     if details.len() > 24 {
         details.truncate(24);
         details.push("Further geometry violations omitted; apply these same per-part limits to the remaining geometry.".into());
@@ -364,6 +377,17 @@ mod tests {
         assert!(notes.contains("already assigned part 'post-0'"));
         assert!(notes.contains("nonexistent part 'missing-post'"));
         assert!(notes.contains("Part 'post-1': missing from every component"));
+    }
+    #[test] fn access_repair_names_low_overhead_parts_and_keeps_collision_unchanged() {
+        let mut r=recipe();
+        r.parts.push(Part{id:"low-portal".into(),shape:"box".into(),role:"detail".into(),position:[0.0,1.8,2.0],size:[2.2,0.8,1.6],material:"frame".into()});
+        assert!(!access_scenario(&r).0);
+        let notes=geometry_repair_diagnostics(&r).join("\n");
+        assert!(notes.contains("Part 'low-portal' potentially blocks"));
+        assert!(notes.contains("Player radius=0.28m and height=1.5m"));
+        r.parts.last_mut().unwrap().position[1]=1.91;
+        assert!(access_scenario(&r).0);
+        assert!(!geometry_repair_diagnostics(&r).iter().any(|note| note.contains("potentially blocks")));
     }
     #[test] fn open_entrance_is_reachable(){assert!(access_scenario(&recipe()).0);}
     #[test] fn blocked_entrance_prevents_movement(){let mut r=recipe();r.parts.push(Part{id:"blocker".into(),shape:"box".into(),role:"wall".into(),position:[0.0,1.0,2.5],size:[2.0,2.0,0.5],material:"frame".into()});assert!(!access_scenario(&r).0);}
