@@ -5,7 +5,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createRequire} from 'node:module';
 import {randomUUID,createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {command,advance,publicState,creationRequest} from './model.mjs';
+import {command,advance,publicState,creationRequest,creationBlueprint,power} from './model.mjs';
 import {openStore} from './store.mjs';
 import {FoundryController,httpAPI,typedVerifier,rollback} from './foundry.mjs';
 const root=path.dirname(fileURLToPath(import.meta.url)),require=createRequire(import.meta.url);
@@ -28,6 +28,7 @@ export async function createApp({port=Number(process.env.SOLO_PORT||4320),dataDi
  if(req.headers.origin&&req.headers.origin!=='http://'+host)return send(res,403,{error:'Cross-origin commands are not allowed.'});
  if(req.headers['content-type']?.split(';')[0]!=='application/json')return send(res,415,{error:'Use application/json.'});
  let body='',size=0;for await(const chunk of req){size+=chunk.length;if(size>16000)return send(res,413,{error:'Command too large.'});body+=chunk;}const input=JSON.parse(body);
+ if(pathname==='/api/v1/blueprint'){if(typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>2000)throw Error('Describe the creation in 5–2000 characters.');const blueprint=creationBlueprint(input.prompt),grid=power(w);return send(res,200,{...blueprint,availablePower:Math.max(0,grid.supply-grid.demand),affordable:w.alloy>=blueprint.cost});}
  // Work on a transaction copy; acknowledged commands are flushed before reply.
  if(pathname==='/api/v1/command'){if(input.kind==='creation'&&w.foundry.maintenance)throw Error('Foundry connection repair is in progress; your colony is safe.');if(input.kind==='creation'&&input.provider==='fixture')throw Error('Offline generation is disabled. Select live Asset Foundry.');const candidate=structuredClone(w),result=command(candidate,input);const cancelled=[];for(const request of candidate.foundry.requests){const live=w.foundry.requests.find(r=>r.id===request.id);if(live){if(request.status==='cancelled'&&live.status!=='cancelled')cancelled.push(live);Object.assign(live,request);}else w.foundry.requests.push(request);}for(const key of ['revision','paused','alloy','robot','buildings','deposits','receipts','events','factions'])w[key]=candidate[key];try{store.save();}catch(e){fatal=e;throw e;}await cancelRemote(cancelled);return send(res,200,result);}
  if(pathname==='/api/v1/foundry'){

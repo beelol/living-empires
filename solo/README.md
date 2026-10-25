@@ -20,9 +20,17 @@ The stable save is the main checkout's **`.local/solo-colony/`**, shared across 
 
 Click dry land to move; paths avoid building foundations. Keys 1–4 choose a structure; Esc returns to movement. Right-drag or WASD/arrows pans; scroll / + / − zooms; Q/E rotates; R returns to the robot. Terrain/rocks/foliage stream around the camera with bounded resident geometry. There is no survey fence. Water and invalid/overlapping sites remain invalid.
 
-Solar arrays cost 35 alloy, take 8 seconds and supply 12 power. Extractors cost 60 alloy, take 12 seconds, use 5 power and extract 2 alloy/sec from a finite seam. **Find & build a mineral extractor** chooses an affordable accessible procedural seam and uses the same construction validation. Habitats cost 40 alloy, take 10 seconds, use 3 power and add 8 to the robot capacity. Fabrication labs cost 70 alloy, take 14 seconds, use 4 power and recycle 0.5 alloy/sec. Prompt-created plots cost 25 alloy and take 6 seconds to construct; live generation continues independently.
+Solar arrays cost 35 alloy, take 8 seconds and supply 12 power. Extractors cost 60 alloy, take 12 seconds, use 5 power and extract 2 alloy/sec from a finite seam. **Find & build a mineral extractor** chooses an affordable accessible procedural seam and uses the same construction validation. Habitats cost 40 alloy, take 10 seconds, use 3 power and add 8 to the robot capacity. Fabrication labs cost 70 alloy, take 14 seconds, use 4 power and recycle 0.5 alloy/sec. Prompt-created plots use their function’s canonical cost and construction time (25 alloy / 6 seconds for a generic structure); live generation continues independently.
 
-A new colony starts with a core, one robot and 200 alloy. There is no multiplayer, other empire, combat or free model-issued world grant. New robot recruitment/actor packages are not yet implemented; the capacity counter is a real limit, not a claim that extra robots have spawned.
+A new colony starts with a core, one robot and 100 alloy. There is no multiplayer, other empire, combat or free model-issued world grant. New robot recruitment/actor packages are not yet implemented; the capacity counter is a real limit, not a claim that extra robots have spawned.
+
+## Functional economy
+
+New colonies start with **100 alloy** and receive **1 alloy/sec** while the simulation runs. Existing saves keep their balance and designs. Active extractors add **2 alloy/sec each** while their finite seam lasts; fabrication labs add 0.5/sec. The HUD reports the current combined income.
+
+A solar-panel prompt resolves a solar function; a windmill/wind-turbine prompt resolves a wind function. Each costs 35 alloy and supplies 12 power after construction and exact approved appearance installation. Their generated appearance stays attached to that object. Prompted extractors, habitats and fabrication labs use their canonical gameplay costs and functions. Other prompted structures cost 25 alloy and require 2 power. This supported function mapping does not restrict the subject or style of live-generated artwork.
+
+`POST /api/v1/blueprint {prompt}` returns the canonical function, cost, construction time, power output/demand and currently available power without spending or generating content. `POST /api/v1/command` recomputes the same values from the prompt and rechecks them when placing. Client-supplied costs/power cannot grant effects. Every building requires enough alloy; consumer power is reserved immediately, including queued construction. Power generators remain buildable during a shortage. Extractors require a valid mineral seam. Generation/appearance changes never change the frozen gameplay function.
 
 ## Live generation and repair
 
