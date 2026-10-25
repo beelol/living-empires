@@ -474,7 +474,7 @@ class Runner:
         try:
             self.wait_healthy(self.host, self.active, accepting_commands=False)
             self.activate_host(self.host, self.active)
-        except DeployError:
+        except (DeployError, OSError):
             self.terminate(self.host)
             self.host = None
             raise
