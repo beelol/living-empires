@@ -252,6 +252,6 @@ export function validateWorld(w){
   if(r.factionId===undefined&&r.factionRevision===undefined&&r.targets===undefined)continue; // Historical v1 requests stay readable, restricted to landing by adapter.
   if(!factions.has(r.factionId)||!positive(r.factionRevision)||!Array.isArray(r.targets)||!r.targets.length||r.targets.length>100||new Set(r.targets.map(t=>t?.id)).size!==r.targets.length||r.targets.some(t=>!t||!ids.has(t.id)||!positive(t.assignment)))damaged();
  }
- for(const b of candidate.buildings)if(b.kind==='creation'&&b.functionVersion===undefined){b.function=creationBlueprint(b.prompt).function;b.functionVersion=1;}
+ for(const b of candidate.buildings)if(b.kind==='creation'&&b.functionVersion===undefined){b.function=creationBlueprint(b.prompt).function;b.functionVersion=1;if(b.function==='extractor'&&!b.depositId){const deposit=candidate.deposits.find(d=>land(d.x,d.z)&&Math.hypot(d.x-b.x,d.z-b.z)<=4);if(deposit)b.depositId=deposit.id;}}
  if(migrateEconomy)Object.assign(w,candidate);return w;
 }

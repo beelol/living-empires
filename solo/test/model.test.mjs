@@ -59,3 +59,14 @@ test('canonical creation roles and costs ignore untrusted payload fields and fai
  const {creationBlueprint,power}=await import('../model.mjs');for(const prompt of ['power plant','powerplant','fusion reactor','windmills']){const blueprint=creationBlueprint(prompt);assert.equal(blueprint.power,12);assert.deepEqual(Object.keys(blueprint).sort(),['function','name','cost','seconds','power','demand','description'].sort());}
  const w=createWorld();w.alloy=1000;for(let i=0;i<4;i++)command(w,{id:'load-'+i,type:'build',kind:'creation',x:12+i*12,z:8,prompt:'A stone monument',provider:'gemini',function:'solar',power:99999,cost:0});assert.equal(power(w).demand,8);assert.equal(power(w).supply,8);assert.equal(w.alloy,900);const before=JSON.stringify(w);assert.throws(()=>command(w,{id:'overload',type:'build',kind:'creation',x:0,z:24,prompt:'A stone monument',provider:'gemini'}),/power/);assert.equal(JSON.stringify(w),before);assert.throws(()=>command(w,{id:'prospect-overload',type:'prospect'}),/seam/);assert.equal(JSON.stringify(w),before);
 });
+
+test('legacy extractors bind finite existing seams once without inventing geography',async()=>{
+ const {validateWorld}=await import('../model.mjs');
+ for(const [x,z,remaining] of [[-18,8,600],[-18,8,0],[12,8,600]]){
+  const w=createWorld();w.deposits[0].remaining=remaining;const deposits=structuredClone(w.deposits);
+  w.buildings.push({id:'old-mine',kind:'creation',prompt:'A mineral extractor',x,z,progress:1,asset:{hash:'d'.repeat(64)},factionId:'landing',factionAssignment:1});
+  validateWorld(w);const b=w.buildings.at(-1);assert.equal(b.function,'extractor');assert.equal(b.depositId,x===-18?'west-seam':undefined);assert.deepEqual(w.deposits,deposits);
+  const saved=JSON.stringify(w);validateWorld(w);assert.equal(JSON.stringify(w),saved);
+  const before=w.alloy;advance(w,5);assert.equal(w.alloy-before,x===-18&&remaining>0?15:5);assert.equal(w.deposits[0].remaining,x===-18&&remaining>0?590:remaining);
+ }
+});

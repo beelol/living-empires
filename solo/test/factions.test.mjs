@@ -188,7 +188,7 @@ test('object-specific approved source stays intact while propagation resolves a 
 });
 
 test('equivalent cached direction reconciles stale members and retains active matching propagation once',()=>{
- const {w,faction,source,hash}=approvedDirectionSetup();build(w,'aligned',36);build(w,'pending',48);
+ const {w,faction,source,hash}=approvedDirectionSetup();w.alloy=200;build(w,'aligned',36);build(w,'pending',48);
  const aligned=w.buildings.find(b=>b.id==='aligned'),pending=w.buildings.find(b=>b.id==='pending');for(const b of [aligned,pending]){b.factionId='orchid';b.factionAssignment=1;}
  aligned.asset={hash:'c'.repeat(64),theme:structuredClone(THEMES.argonaut),rehearsal:false};pending.asset={hash:'d'.repeat(64),theme:structuredClone(THEMES.sylvan),rehearsal:false};
  const installed={id:'current-aligned',kind:'solar',factionId:'orchid',factionRevision:1,status:'installed',hash:aligned.asset.hash,targets:[{id:'aligned',assignment:1}],installedTargets:['aligned']},running={id:'current-pending',kind:'solar',factionId:'orchid',factionRevision:1,status:'running',jobId:'active-direction',targets:[{id:'pending',assignment:1}]};w.foundry.requests.push(installed,running);const runningBefore=structuredClone(running),alignedBefore=structuredClone(aligned);
