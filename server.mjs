@@ -43,6 +43,7 @@ function save(job){atomic(path.join(data,job.id+'.json'),job);}
 function event(job,state,message){job.status=state;job.events.push({at:new Date().toISOString(),state,message});save(job);}
 for(const file of fs.readdirSync(data).filter(f=>/^[\da-f-]+\.json$/.test(f))){
   const job=JSON.parse(fs.readFileSync(path.join(data,file),'utf8'));
+  if(job.status==='active'&&releases.at(-1)?.jobId!==job.id){job.status='accepted';save(job);}
   if(!['accepted','failed','blocked','cancelled','exhausted','active'].includes(job.status)){
     job.status='blocked';job.stopReason='Worker restarted; paid request outcome requires reconciliation before a new run.';
     job.events.push({at:new Date().toISOString(),state:'blocked',message:job.stopReason});save(job);
@@ -206,7 +207,7 @@ const server=http.createServer(async(req,res)=>{
       lastRendererSeen=Date.now();const task=renderTasks.values().next().value;
       return json(res,200,task?{token:task.token,jobId:task.jobId,attemptNumber:task.attemptNumber,candidateHash:task.candidateHash,recipe:task.recipe,theme:task.theme}:null);
     }
-    if(pathname==='/api/jobs')return json(res,200,[...jobs.values()].map(({providerResponses,lastCreatorPrompt,...job})=>job).reverse());
+    if(pathname==='/api/jobs')return json(res,200,[...jobs.values()].sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).map(({providerResponses,lastCreatorPrompt,...job})=>job));
     if(pathname==='/api/release')return json(res,200,releases.at(-1)||null);
     const packageMatch=pathname.match(/^\/api\/jobs\/([\da-f-]+)\/package$/);
     if(packageMatch){
