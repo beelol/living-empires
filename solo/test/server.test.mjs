@@ -24,3 +24,17 @@ test('ordinary player commands preserve the in-flight Foundry request journal',a
  assert.equal(app.world.foundry,f);request.jobId='job-late-response';request.status='running';const view=await(await fetch(app.url+'/api/v1/world')).json();assert.equal(view.foundry.requests[0].jobId,'job-late-response');
  }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
+test('faction commands persist scoped assignments and supersede in-flight references without enabling automatic work',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colony-factions-'));let app;try{
+ app=await createApp({port:0,dataDir:dir,foundryEnabled:false});
+ const post=body=>fetch(app.url+'/api/v1/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ for(const input of [{id:'a',type:'build',kind:'solar',x:12,z:8},{id:'b',type:'build',kind:'solar',x:-12,z:8},{id:'create-east',type:'faction-create',factionId:'east',name:'East',artDirection:'Black basalt stepped architecture with copper ribs.'}])assert.equal((await post(input)).status,200);
+ const assign={id:'assign-east',type:'faction-assign',factionId:'east',buildingIds:['a']};assert.equal((await post(assign)).status,200);assert.equal((await post(assign)).status,200);
+ const f=app.world.foundry,prior=f.requests.find(r=>r.factionId==='east');prior.status='dispatching';
+ assert.equal((await post({id:'style-east',type:'faction-style',factionId:'east',artDirection:'Black basalt stepped architecture with carved copper ribs and deep roof eaves.'})).status,200);
+ assert.equal(app.world.foundry,f);assert.equal(prior.status,'cancelled');assert.equal(f.requests.find(r=>r.id===prior.id),prior);assert.equal(f.enabled,false);
+ let state=await(await fetch(app.url+'/api/v1/world')).json();assert.equal(state.buildings.find(b=>b.id==='a').factionId,'east');assert.equal(state.buildings.find(b=>b.id==='b').factionId,'landing');assert.equal(state.factions.find(f=>f.id==='east').revision,2);assert.ok(state.foundry.requests.filter(r=>r.status==='queued').every(r=>r.targets.every(t=>t.id==='a')));assert.ok(state.foundryURL);
+ const health=await(await fetch(app.url+'/api/v1/health')).json();assert.equal(health.apiVersion,1);assert.equal(health.saveVersion,2);assert.equal((await fetch(app.url+'/public/themes.mjs')).status,200);
+ await app.close();app=await createApp({port:0,dataDir:dir,foundryEnabled:false});state=await(await fetch(app.url+'/api/v1/world')).json();assert.equal(state.buildings.find(b=>b.id==='a').factionId,'east');assert.equal(state.foundry.requests.find(r=>r.id===prior.id).status,'cancelled');assert.equal(state.factions.find(f=>f.id==='east').revision,2);
+ }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
+});
