@@ -1,0 +1,16 @@
+# Restore locked deployment builds
+
+Owner: Bilal / content-deploy-checks chat. Base b47a215c17b2779acfcca6acf5bc26e4e9ad4d34.
+Primary WORLD-05; affected LIVE-13, LIVE-09, AUD-03. Owned Cargo.lock and this record.
+
+Observed failure: the existing local supervisor selected origin/main b47a215 but cargo build --locked refused the merged lock file. It retained the last healthy c1f5161 release with accepting commands. The second supervisor recovery fix is committed/pushed, but its Python process reload awaits resolution of the newer failed release; no successful reload was claimed.
+
+Dependency owners/contracts: Pulkit owns the newly merged living-world-core crate and Node/Three.js asset Studio; native game/terrain owners retain protocol, world and asset integration. This stream is named owner only for normalizing the merged Cargo lock to the existing manifests using Cargo1.97.1, with no package version changes, manifest edits, new provider calls, schema or gameplay changes. Existing active local claims were inspected; no other claim reserved Cargo.lock. Cross-clone fast-forward publication will be reconciled and retested if another update wins.
+
+All newly prepended README content was read, and the original122 criteria remain byte-for-byte after that prefix. Direct user worktree/claim instructions take precedence over conflicting older merged workflow notes. This repair supports both existing native deployment and the new asset generator without changing their authorities.
+
+Red evidence: .local-deploy/logs/build-b47a215c17b2779acfcca6acf5bc26e4e9ad4d34.log reports the lock must change while --locked forbids it. A disposable exact Git archive resolves offline without changing any package-version keys. The normalization removes duplicate/ambiguous dependency strings and canonicalizes records/order. Checks: same locked headless build used by deployment; locked asset-core checks; compare package versions; inspect exact diff; independent review; normal FF main push; actual supervisor activation/reload and saved identity recovery. No full-game AC pass.
+
+Verification: exact deployment command cargo build --locked -p living-empires --bin empires --no-default-features passed (39.71 s); cargo test --locked -p living-world-core passed all test binaries; cargo check --locked -p living-world-core --features live-provider passed (17.79 s), making no provider calls. Logs /private/tmp/argon-lock-headless-build.log, /private/tmp/argon-lock-asset-tests.log, /private/tmp/argon-lock-live-provider.log. Independent review confirmed all870 package identities/versions/sources/checksums and non-dependency fields unchanged; optional ureq3.5.0/live-provider remains intact. Diff whitespace checks passed. No fixture timeout or required build flag was weakened.
+
+Explicit handoff (2026-10-25): Build fast iteration / G-authority owner thread01a171d8-149a-7613-bd7d-1eb488e82b22 identified itself as the producer of the identical dirty main Cargo.lock and accepted responsibility to publish its verified repair. Ownership of Cargo.lock and this evidence record is handed to that stream at checkpoint6138f68; all checks/results above supplied directly. This stream releases bilal-deploy-lock and will not duplicate its repair/push. Parent coordination informed. Supervisor reload remains this stream's operational follow-up after the repair activates.
