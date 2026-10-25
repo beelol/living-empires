@@ -8,7 +8,7 @@ export function createTerrain(scene,coast){
  const rockGeometry=new THREE.DodecahedronGeometry(1,0),grassGeometry=new THREE.ConeGeometry(.22,1.1,4),waterGeometry=new THREE.PlaneGeometry(CHUNK_SIZE,CHUNK_SIZE);
  waterGeometry.rotateX(-Math.PI/2);
  const rockMaterial=new THREE.MeshStandardMaterial({color:0x949c8e,roughness:.83}),grassMaterial=new THREE.MeshStandardMaterial({color:0x6a8f72,roughness:.83}),surfMaterial=new THREE.LineBasicMaterial({color:0xc3d8c6,transparent:true,opacity:.8});
- const sand=new THREE.Color(0xc3bc9e),green=new THREE.Color(0x8eaa8c),dummy=new THREE.Object3D();let buildings=[],clearanceKey='',lastBounds='';
+ const sand=new THREE.Color(0xc3bc9e),green=new THREE.Color(0x8eaa8c),dummy=new THREE.Object3D();let buildings=[],clearanceKey='',lastBounds='',visibleBounds=null;
  function fill(chunk){for(const [kind,instances] of [['rock',chunk.rocks],['foliage',chunk.grass]]){let count=0;for(const p of chunk.data.details){if(p.kind!==kind||!detailVisible(p,buildings))continue;const rock=kind==='rock';dummy.position.set(p.x-chunk.data.cx*CHUNK_SIZE,p.y+p.size*(rock?.15:.4),p.z-chunk.data.cz*CHUNK_SIZE);dummy.scale.set(p.size,p.size*(rock?.55:1),p.size*(rock?.85:1));dummy.rotation.set(rock?p.tilt:0,p.yaw,rock?p.tilt:.1);dummy.updateMatrix();instances.setMatrixAt(count++,dummy.matrix);}instances.count=count;instances.instanceMatrix.needsUpdate=true;instances.computeBoundingSphere();}}
  const window=new ChunkWindow({create(cx,cz){
  const data=chunkData(cx,cz,coast),group=new THREE.Group(),geometry=new THREE.BufferGeometry(),positions=[],normals=[],colors=[],indices=[];group.position.set(cx*CHUNK_SIZE,0,cz*CHUNK_SIZE);
@@ -27,8 +27,8 @@ export function createTerrain(scene,coast){
  update(camera,nextBuildings){const key=nextBuildings.map(b=>`${b.id}:${b.x}:${b.z}`).join('|');if(key!==clearanceKey){buildings=nextBuildings;clearanceKey=key;for(const c of window.chunks.values())fill(c);}
  camera.updateMatrixWorld();const bounds={minX:Infinity,maxX:-Infinity,minZ:Infinity,maxZ:-Infinity};for(const x of [-1,1])for(const y of [-1,1]){ray.setFromCamera(new THREE.Vector2(x,y),camera);if(ray.ray.intersectPlane(plane,point)){bounds.minX=Math.min(bounds.minX,point.x);bounds.maxX=Math.max(bounds.maxX,point.x);bounds.minZ=Math.min(bounds.minZ,point.z);bounds.maxZ=Math.max(bounds.maxZ,point.z);}}
  if(!Number.isFinite(bounds.minX))return;for(const k of ['minX','minZ'])bounds[k]-=16;for(const k of ['maxX','maxZ'])bounds[k]+=16;
- const signature=[Math.floor(bounds.minX/CHUNK_SIZE),Math.floor(bounds.maxX/CHUNK_SIZE),Math.floor(bounds.minZ/CHUNK_SIZE),Math.floor(bounds.maxZ/CHUNK_SIZE)].join(',');if(signature!==lastBounds){window.update(bounds);lastBounds=signature;}
- },stats(){let rocks=0,foliage=0;for(const c of window.chunks.values()){rocks+=c.rocks.count;foliage+=c.grass.count;}return {version:TERRAIN_VERSION,seed:DETAIL_SEED,chunks:window.chunks.size,rocks,foliage,keys:[...window.chunks.keys()]};},
+ const signature=[Math.floor(bounds.minX/CHUNK_SIZE),Math.floor(bounds.maxX/CHUNK_SIZE),Math.floor(bounds.minZ/CHUNK_SIZE),Math.floor(bounds.maxZ/CHUNK_SIZE)].join(',');if(signature!==lastBounds){window.update(bounds);visibleBounds={minX:Math.floor(bounds.minX/CHUNK_SIZE)*CHUNK_SIZE,maxX:(Math.floor(bounds.maxX/CHUNK_SIZE)+1)*CHUNK_SIZE,minZ:Math.floor(bounds.minZ/CHUNK_SIZE)*CHUNK_SIZE,maxZ:(Math.floor(bounds.maxZ/CHUNK_SIZE)+1)*CHUNK_SIZE};lastBounds=signature;}
+ },bounds(){return visibleBounds;},stats(){let rocks=0,foliage=0;for(const c of window.chunks.values()){rocks+=c.rocks.count;foliage+=c.grass.count;}return {version:TERRAIN_VERSION,seed:DETAIL_SEED,chunks:window.chunks.size,rocks,foliage,keys:[...window.chunks.keys()]};},
  dispose(){window.clear();for(const resource of [groundMaterial,waterMaterial,rockGeometry,grassGeometry,waterGeometry,rockMaterial,grassMaterial,surfMaterial])resource.dispose();}
  };
 }

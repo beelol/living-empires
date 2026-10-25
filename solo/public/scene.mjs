@@ -1,7 +1,8 @@
 import * as THREE from '/vendor/three.js';
 import {groundHeight} from './chunks.mjs';
 import {createTerrain} from './terrain.mjs';
-import {coast,snap,canBuild,DEFINITIONS,HALF} from '/model.mjs';
+import {depositsInBounds} from '/minerals.mjs';
+import {coast,land,snap,canBuild,DEFINITIONS,HALF} from '/model.mjs';
 const P={sand:0xc3bc9e,rock:0x949c8e,shell:0xe3e5d8,frame:0x374e50,accent:0xcf6d3e,light:0x86d7ce};
 export function createColonyView(container,{onGround,onSelect,onHover,onError}){
  const scene=new THREE.Scene();scene.background=new THREE.Color(0xc5d6d3);scene.fog=new THREE.Fog(0xc5d6d3,100,230);
@@ -15,7 +16,20 @@ export function createColonyView(container,{onGround,onSelect,onHover,onError}){
  function cyl(parent,rTop,rBottom,height,position,color=P.frame,n=16){return mesh(parent,new THREE.CylinderGeometry(rTop,rBottom,height,n),position,mat(color));}
  const groundY=(x,z)=>groundHeight(x,z,coast);
  const terrain=createTerrain(scene,coast);
- const buildings=new Map(),depositGroups=new Map();
+ const buildings=new Map();
+ const mineralGeometries=[.5,.7,.9].map(size=>new THREE.OctahedronGeometry(size)),mineralRingGeometry=new THREE.TorusGeometry(3,.05,4,32),mineralRingMaterial=new THREE.MeshBasicMaterial({color:0x5c9b8b,transparent:true,opacity:.8});
+ const mineralDummy=new THREE.Object3D();let mineralState=null,mineralBounds=null,mineralCapacity=0,mineralBatches=[];
+ function reconcileMinerals(){
+ if(!state)return;const bounds=terrain.bounds();if(!bounds||state===mineralState&&bounds===mineralBounds)return;mineralState=state;mineralBounds=bounds;
+ const deposits=depositsInBounds(state.deposits,bounds,land).filter(d=>d.remaining>0&&!state.buildings.some(b=>b.kind!=='extractor'&&Math.abs(b.x-d.x)<8&&Math.abs(b.z-d.z)<8));
+ if(deposits.length>mineralCapacity||!mineralBatches.length){for(const batch of mineralBatches){batch.removeFromParent();batch.dispose();}mineralCapacity=2**Math.ceil(Math.log2(Math.max(16,deposits.length)));mineralBatches=[];
+ for(let color=0;color<2;color++)for(let size=0;size<3;size++){const batch=new THREE.InstancedMesh(mineralGeometries[size],mat(color?0x7faaa1:0xa0c4b4,{roughness:.45,metalness:.25}),mineralCapacity*2);batch.castShadow=true;batch.receiveShadow=true;scene.add(batch);mineralBatches.push(batch);}
+ const rings=new THREE.InstancedMesh(mineralRingGeometry,mineralRingMaterial,mineralCapacity);scene.add(rings);mineralBatches.push(rings);}
+ const counts=Array(7).fill(0);
+ for(const d of deposits){const y=groundY(d.x,d.z);for(let i=0;i<7;i++){const index=(i%2)*3+i%3;mineralDummy.position.set(d.x+Math.sin(i*6.1)*1.5,y+.35+(i%2)*.2,d.z+Math.cos(i*3.2)*1.2);mineralDummy.rotation.set(0,0,0);mineralDummy.scale.set(1,1.4,1);mineralDummy.updateMatrix();mineralBatches[index].setMatrixAt(counts[index]++,mineralDummy.matrix);}
+ mineralDummy.position.set(d.x,y+.04,d.z);mineralDummy.rotation.set(-Math.PI/2,0,0);mineralDummy.scale.set(1,1,1);mineralDummy.updateMatrix();mineralBatches[6].setMatrixAt(counts[6]++,mineralDummy.matrix);}
+ mineralBatches.forEach((batch,index)=>{batch.count=counts[index];batch.instanceMatrix.needsUpdate=true;batch.computeBoundingSphere();});
+ }
  function foundation(group){box(group,[8.6,.3,8.6],[0,.15,0],0x6c7a70);box(group,[8.25,.08,8.25],[0,.34,0],0xc9c9b5);for(const x of [-3.8,3.8])for(const z of [-3.8,3.8])box(group,[.45,.05,.45],[x,.4,z],P.accent);for(let z=4.5;z<7;z+=.6)box(group,[1.8,.045,.35],[0,.04,z],0xb1b8a7);}
  function starter(kind){const group=new THREE.Group();
  if(kind==='creation'){box(group,[6,6,6],[0,3.38,0],0x9faf9f,{transparent:true,opacity:.45});box(group,[6.2,.1,6.2],[0,6.45,0],P.accent);
@@ -35,7 +49,6 @@ export function createColonyView(container,{onGround,onSelect,onHover,onError}){
  function scaffold(){const group=new THREE.Group();for(const x of [-3.7,3.7])for(const z of [-3.7,3.7])box(group,[.1,4.4,.1],[x,2.4,z],0xd18b46);for(const z of [-3.7,3.7])box(group,[7.5,.1,.1],[0,4.6,z],0xd18b46);for(const x of [-3.7,3.7])box(group,[.1,.1,7.5],[x,4.6,0],0xd18b46);return group;}
  function disposeGroup(group){group.traverse(o=>o.geometry?.dispose());group.removeFromParent();}
  function reconcile(){if(!state)return;for(const b of state.buildings){const asset=b.asset||state.assets[b.kind],signature=asset?.hash||'starter';let entry=buildings.get(b.id);if(!entry||entry.signature!==signature){if(entry)disposeGroup(entry.group);const group=new THREE.Group();group.position.set(b.x,groundY(b.x,b.z),b.z);foundation(group);const model=asset?generated(asset):starter(b.kind);group.add(model);const frame=scaffold();group.add(frame);group.traverse(o=>{o.userData.buildingId=b.id;});scene.add(group);entry={group,model,frame,signature};buildings.set(b.id,entry);}entry.model.scale.y=1;entry.model.visible=b.progress===1||b.kind==='creation';entry.frame.visible=b.progress<1||(b.kind==='creation'&&!asset);}
- for(const d of state.deposits){let group=depositGroups.get(d.id);if(!group){group=new THREE.Group();group.position.set(d.x,groundY(d.x,d.z),d.z);for(let i=0;i<7;i++){const x=Math.sin(i*6.1)*1.5,z=Math.cos(i*3.2)*1.2;const mineral=mesh(group,new THREE.OctahedronGeometry(.5+(i%3)*.2),[x,.35+(i%2)*.2,z],mat(i%2?0x7faaa1:0xa0c4b4,{roughness:.45,metalness:.25}));mineral.scale.y=1.4;}const ring=mesh(group,new THREE.TorusGeometry(3,.035,4,48),[0,.04,0],new THREE.MeshBasicMaterial({color:0x658c7a,transparent:true,opacity:.6}));ring.rotation.x=Math.PI/2;scene.add(group);depositGroups.set(d.id,group);}group.visible=d.remaining>0;}
  if(selection){const b=state.buildings.find(b=>b.id===selection);selectionRing.visible=!!b;if(b)selectionRing.position.set(b.x,groundY(b.x,b.z)+.05,b.z);}else selectionRing.visible=false;
  }
  const robot=new THREE.Group();scene.add(robot);cyl(robot,.57,.7,.3,[0,.38,0],P.frame,12);box(robot,[.9,.85,.75],[0,.95,0]);box(robot,[1.12,.2,.82],[0,1.22,0],P.accent);box(robot,[.78,.52,.64],[0,1.64,0],P.shell);box(robot,[.6,.18,.08],[0,1.7,.36],P.frame);box(robot,[.45,.06,.09],[0,1.7,.41],P.light,{emissive:P.light,emissiveIntensity:1});for(const x of [-.72,.72]){box(robot,[.25,.75,.3],[x,.9,0],P.frame);cyl(robot,.21,.21,.6,[x,.25,0],P.frame,10);}const robotRing=mesh(robot,new THREE.TorusGeometry(.95,.035,4,40),[0,.04,0],new THREE.MeshBasicMaterial({color:0xa66038}));robotRing.rotation.x=Math.PI/2;
@@ -59,7 +72,7 @@ export function createColonyView(container,{onGround,onSelect,onHover,onError}){
  if(state){const goal=new THREE.Vector3(state.robot.x,groundY(state.robot.x,state.robot.z),state.robot.z),moving=state.robot.path.length>0;robot.position.lerp(goal,Math.min(1,dt*13));if(moving){const p=state.robot.path[0];robot.rotation.y=Math.atan2(p.x-robot.position.x,p.z-robot.position.z);robot.position.y+=Math.sin(now*.018)*.05;}const nextKey=JSON.stringify(state.robot.path);if(routeKey!==nextKey){routeKey=nextKey;route.geometry.dispose();route.geometry=new THREE.BufferGeometry().setFromPoints([goal,...state.robot.path.map(p=>new THREE.Vector3(p.x,groundY(p.x,p.z)+.08,p.z))]);route.computeLineDistances();}route.visible=moving;if(!moving)targetMarker.visible=false;}
  // Lighting and terrain follow this camera only; streaming has no simulation effects.
  sun.position.set(focus.x-40,65,focus.z+30);sun.target.position.copy(focus);sun.target.updateMatrixWorld();
- terrain.update(camera,state?.buildings||[]);
+ terrain.update(camera,state?.buildings||[]);reconcileMinerals();
  renderer.render(scene,camera);requestAnimationFrame(frame);
  }requestAnimationFrame(frame);
  return {terrainStats:()=>terrain.stats(),setState(next){state=next;reconcile();if(tool&&lastPoint)updateGhost(lastPoint);},setTool,select(id){selection=id;reconcile();},zoom,recenter,focusAt(x,z){focus.set(x,0,z);cameraPosition();},project(x,z,y=.3){const vector=new THREE.Vector3(x,y,z).project(camera);const r=canvas.getBoundingClientRect();return {x:r.left+(vector.x+1)*r.width/2,y:r.top+(1-vector.y)*r.height/2};}};

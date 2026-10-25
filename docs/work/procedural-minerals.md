@@ -1,0 +1,17 @@
+# Procedural mineral exploration
+
+Owner: Sol, isolated /private/tmp/argon-camera-chunks; base ec77c397.
+Primary SET-05, EXP-01/09; affected SET-02/04, WORLD-05, UX-03.
+Own minerals.mjs, terrain/scene integration, minerals tests and this record. Model and HTTP static-route hooks require explicit handoff from single-player owner; Foundry changes excluded.
+
+User requests procedural extraction sites across continuously generated terrain. Existing camera chunks already stream indefinitely, but only three saved starter mineral markers render. Existing prospect command creates deterministic seams only on demand near robot. Preserve its exact seam ID/hash/position/initial quantity contract and save v1.
+
+Plan: shared pure coordinate generator and saved-depletion overlay; stream mineral markers around camera and dispose distant groups; normal extractor validation discovers canonical seam, saves it only after accepted payment, and never regenerates depleted stock. Failed placement and camera travel must not grow save or grant resources. New module serves over existing HTTP route via owner. Tests for positive/negative/far bounds, restart/depletion, duplicate builds, authority/UI agreement; actual browser exploration and mining, then serialized handoff to lead.
+
+Implementation: shared generator retains exact prior `seam-x-z` hash, coordinates and quantity. Camera bounds include the generator's ±8m jitter; saved quantities, including zero, override defaults. Rendering uses seven instanced crystal/ring batches, updating on snapshot/bounds change; batch instance buffers are disposed on resize and counts replace previous view contents. Memory does not accumulate sites as travel continues. Existing starter deposits and terrain heights remain unchanged.
+
+Integration boundary: single-player owner explicitly retained model.mjs/server.mjs during live Foundry repair. Proposed exact hooks `/private/tmp/argon-minerals-model.patch`: canBuild resolves depositNear; successful extraction persists canonical deposit after validation; prospect reuses generator. Add static /minerals.mjs route alongside /model.mjs. Candidate does not edit those claimed paths.
+
+Checks: four new pure tests pass in this checkout; two new mining tests fail as expected until authority hooks integrate (not passed here). Combined isolated copy with proposed model and server hooks passes all 35 tests, including six new mineral cases. Initial test failure was missing module; next failures correctly showed procedural sites not accepted by old model. A separate attempted full run without loopback permission also failed three HTTP tests with EPERM; authorized combined run passed all35. Actual browser preview4325 showed multiple procedural mineral markers and construction sites on them; no actual far-travel/depletion claim from that visual spot check. Latest camera action was aborted before dispatch, so it establishes no additional result. Preview save preserved at /private/tmp/argon-minerals-preview-save; no paid Foundry generation initiated by this stream.
+
+Independent read-only reviewer found no blocking issue in generator, depleted-stock overlay, jitter boundaries, batch capacities/disposal or proposed authority patch. Exact model/static-route integration and running4320 verification remain pending with lead. Do not label the component commit as a completed mining feature until those hooks are installed and tested.
