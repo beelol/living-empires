@@ -38,3 +38,10 @@ test('faction commands persist scoped assignments and supersede in-flight refere
  await app.close();app=await createApp({port:0,dataDir:dir,foundryEnabled:false});state=await(await fetch(app.url+'/api/v1/world')).json();assert.equal(state.buildings.find(b=>b.id==='a').factionId,'east');assert.equal(state.foundry.requests.find(r=>r.id===prior.id).status,'cancelled');assert.equal(state.factions.find(f=>f.id==='east').revision,2);
  }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('restart retains uncertain theme work as blocked instead of silently retrying or hanging',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colony-theme-'));let app;try{
+ app=await createApp({port:0,dataDir:dir,foundryEnabled:false});app.world.foundry.requests.push({id:'theme-unknown',kind:'core',status:'preparing-theme',factionId:'landing',factionRevision:1,targets:[{id:'landing-core',assignment:1}]});await app.close();app=await createApp({port:0,dataDir:dir,foundryEnabled:false});
+ const request=app.world.foundry.requests[0];assert.equal(request.status,'blocked');assert.equal(request.reconciliationRequired,true);assert.match(request.reason,/no automatic retry/);
+ }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
+});
