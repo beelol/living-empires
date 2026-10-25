@@ -3,12 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomUUID,createHash} from 'node:crypto';
-import {spawnSync} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {chromium} from 'playwright';
-import {createCandidate,reviewCandidate} from './lib/gemini.mjs';
 import {inferTheme} from './lib/theme-inference.mjs';
 import {validateTheme} from './public/themes.mjs';
-import {THEMES,fixtureRecipe,injectDefect,recipeSchema,eligible,canAccept} from './public/core.mjs';
+import {THEMES,injectDefect,canAccept} from './public/core.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const data=path.join(root,'.data'); fs.mkdirSync(data,{recursive:true});
@@ -20,60 +19,119 @@ const themeInferenceEnabled=process.env.THEME_INFERENCE_ENABLED==='1';
 const jobs=new Map(), controllers=new Map();
 const renderTasks=new Map();
 let lastRendererSeen=0;
+let lastPipelineTime=0;
 let browser;
 const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const sourceRevision=spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).stdout?.trim()||'unknown';
-const sourceFingerprint=digest(['server.mjs','public/themes.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/gemini.mjs','lib/theme-inference.mjs','crates/living-world-core/src/lib.rs','Cargo.lock','package-lock.json'].map(file=>[file,fs.existsSync(path.join(root,file))?fs.readFileSync(path.join(root,file),'utf8'):null]));
+const sourceFingerprint=digest(['server.mjs','public/themes.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/theme-inference.mjs','crates/living-world-core/src/lib.rs','crates/living-world-core/src/main.rs','crates/living-world-core/src/pipeline.rs','crates/living-world-core/src/provider.rs','crates/living-world-core/fixtures/presets.json','Cargo.lock','package-lock.json'].map(file=>[file,fs.existsSync(path.join(root,file))?fs.readFileSync(path.join(root,file),'utf8'):null]));
 const rustBinary=process.env.RUST_CORE_BIN||path.join(root,'target/debug/world-check');
+function rustSync(input){
+  if(!fs.existsSync(rustBinary))throw new Error('Rust core is not built. Run cargo build -p living-world-core before starting a run.');
+  const result=spawnSync(rustBinary,[],{cwd:root,input:JSON.stringify(input),encoding:'utf8',timeout:15000,maxBuffer:16*1024*1024});
+  if(result.error)throw result.error;
+  let value={};try{value=JSON.parse(result.stdout||'{}');}catch{throw new Error('Rust core returned invalid JSON.');}
+  if(result.status!==0)throw new Error(value.error||'Rust core operation failed.');
+  return value;
+}
+function rustAsync(input,signal,timeoutMs=120000){
+  if(!fs.existsSync(rustBinary))return Promise.reject(new Error('Rust core is not built. Run cargo build -p living-world-core before starting a run.'));
+  return new Promise((resolve,reject)=>{
+    const child=spawn(rustBinary,[],{cwd:root,stdio:['pipe','pipe','ignore']});let stdout='',settled=false,timer;
+    const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);error?reject(error):resolve(value);};
+    const abort=()=>{child.kill('SIGTERM');finish(new Error('Cancelled'));};
+    if(signal?.aborted){abort();return;}
+    signal?.addEventListener('abort',abort,{once:true});
+    timer=setTimeout(()=>{child.kill('SIGTERM');finish(new Error('Rust provider operation timed out.'));},timeoutMs);
+    child.stdout.on('data',chunk=>{stdout+=chunk;if(stdout.length>16*1024*1024){child.kill('SIGTERM');finish(new Error('Rust provider response exceeded the size limit.'));}});
+    child.on('error',()=>finish(new Error('Could not start the Rust provider process.')));
+    child.stdin.on('error',()=>finish(new Error('Rust provider request could not be delivered.')));
+    child.on('close',code=>{
+      if(settled)return;
+      let value={};try{value=JSON.parse(stdout||'{}');}catch{finish(new Error('Rust provider returned invalid JSON.'));return;}
+      if(code!==0){finish(new Error(value.error||'Rust provider operation failed.'));return;}
+      finish(null,value);
+    });
+    child.stdin.end(JSON.stringify(input));
+  });
+}
 function verifiedAttempt(job){
+  if(job?.pipeline){
+    if(!job||!['accepted','active'].includes(job.status)||job.pipeline.status!=='approved'||job.cancelled)return null;
+    try{
+      const result=rustSync({op:'package',pipeline:job.pipeline,now:Date.now()}),canonical=result.value,attempt=job.attempts.at(-1),record=job.pipeline.candidates.at(-1);
+      if(stableJSON(job.theme)!==stableJSON(job.pipeline.contract.theme)||job.themeHash!==job.pipeline.contract.themeSha256)return null;
+      if(!canonical||!attempt||!record||canonical.manifest.contentSha256!==record.candidateHash||attempt.hash!==record.candidateHash||canonical.assetId!==job.id||attempt.imageHashes?.length!==3)return null;
+      for(let i=0;i<3;i++){
+        const file=imagePath(job,attempt.images[i]);
+        if(!file||!fs.existsSync(file))return null;
+        const hash=createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+        if(hash!==attempt.imageHashes[i]||canonical.manifest.evidence[i]?.sha256!==hash)return null;
+      }
+      return attempt;
+    }catch{return null;}
+  }
   const attempt=job?.attempts.at(-1);
   if(job?.themeHash&&digest(job.theme)!==job.themeHash)return null;
   if(!job||!['accepted','active'].includes(job.status)||job.cancelled||!attempt||digest(attempt.recipe)!==job.acceptedHash||!canAccept(attempt.checks,attempt.images.length))return null;
   if(attempt.imageHashes?.length!==3||!attempt.imageHashes.every((hash,i)=>hash===createHash('sha256').update(fs.readFileSync(path.join(data,...attempt.images[i].split('/').slice(2)))).digest('hex')))return null;
   return attempt;
 }
-function rustChecks(recipe,themeId,theme){
-  if(!fs.existsSync(rustBinary))throw new Error('Rust core is not built. Run cargo build -p living-world-core before starting a run.');
-  const result=spawnSync(rustBinary,[],{input:JSON.stringify({recipe,themeId,theme}),encoding:'utf8',timeout:5000});
-  if(result.error)throw result.error;
-  const value=JSON.parse(result.stdout||'{}');
-  if(result.status!==0)throw new Error(value.error||'Rust validation failed');
-  return value;
+function rustChecks(recipe,themeId,theme){return rustSync({recipe,themeId,theme});}
+function imagePath(job,url){
+  const match=typeof url==='string'&&url.match(new RegExp(`^/evidence/${job.id}/(\\d+-[0-2]\\.png)$`));
+  return match?path.join(data,job.id,match[1]):null;
 }
 const releaseFile=path.join(data,'releases.json');
 let releases=fs.existsSync(releaseFile)?JSON.parse(fs.readFileSync(releaseFile,'utf8')):[];
 function atomic(file,value){const tmp=file+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value,null,2));fs.renameSync(tmp,file);}
 function save(job){atomic(path.join(data,job.id+'.json'),job);}
 function event(job,state,message){job.status=state;job.events.push({at:new Date().toISOString(),state,message});save(job);}
-for(const file of fs.readdirSync(data).filter(f=>/^[\da-f-]+\.json$/.test(f))){
+for(const file of fs.readdirSync(data).filter(f=>/^(?:[\da-f-]{36}|job-[a-z0-9-]{1,120})\.json$/.test(f))){
   const job=JSON.parse(fs.readFileSync(path.join(data,file),'utf8'));
+  if(job.pipeline&&!['approved','blocked','exhausted','cancelled'].includes(job.pipeline.status)){
+    try{job.pipeline=rustSync({op:'cancel',pipeline:job.pipeline,now:Date.now()}).pipeline;job.cancelled=true;job.stopReason='Server restarted before the run completed.';}
+    catch{job.stopReason='Pipeline state could not be resumed safely after restart.';}
+  }
   if(job.status==='active'&&releases.at(-1)?.jobId!==job.id){job.status='accepted';save(job);}
   if(!['accepted','failed','blocked','cancelled','exhausted','active'].includes(job.status)){
-    job.status='blocked';job.stopReason='Worker restarted; paid request outcome requires reconciliation before a new run.';
+    job.status=job.pipeline?.status==='cancelled'?'cancelled':'blocked';job.stopReason=job.stopReason||'Worker restarted; paid request outcome requires reconciliation before a new run.';
     job.events.push({at:new Date().toISOString(),state:'blocked',message:job.stopReason});save(job);
   }
   jobs.set(job.id,job);
 }
-function ensureCurrent(job){if(job.cancelled)throw new Error('Cancelled');if(Date.now()>=job.deadline)throw new Error('Job deadline exhausted');if(job.themeHash&&digest(job.theme)!==job.themeHash)throw new Error('Frozen theme contract changed; create a new job.');}
-async function charge(job,label,fn){
-  ensureCurrent(job);
-  if(job.calls>=6)throw new Error('Six-call job ceiling reached');
-  job.calls++; job.callLog.push({number:job.calls,label,status:'dispatched',at:new Date().toISOString()});save(job);
-  const entry=job.callLog.at(-1);
-  try {const result=await fn();ensureCurrent(job);entry.status='returned';entry.usage=result.usageMetadata||result.usage||null;save(job);return result;}
-  catch(e){entry.status='failed_or_unknown';save(job);throw e;}
+function ensureCurrent(job){
+  if(job.cancelled)throw new Error('Cancelled');
+  if(Date.now()>=job.deadline)throw new Error('Job deadline exhausted');
+  if(job.pipeline){if(stableJSON(job.theme)!==stableJSON(job.pipeline.contract.theme))throw new Error('Frozen theme contract changed; create a new job.');if(!syncPipeline(job,'active'))throw new Error('Rust pipeline is no longer active.');return;}
+  if(job.themeHash&&digest(job.theme)!==job.themeHash)throw new Error('Frozen theme contract changed; create a new job.');
 }
+function stableJSON(value){
+  if(Array.isArray(value))return `[${value.map(stableJSON).join(',')}]`;
+  if(value&&typeof value==='object')return `{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${stableJSON(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+function syncPipeline(job,op,extra={}){
+  const result=rustSync({op,pipeline:job.pipeline,now:Date.now(),...extra});
+  job.pipeline=result.pipeline;job.calls=job.pipeline.providerCalls;save(job);return result.value;
+}
+async function providerCall(job,label,input){
+  syncPipeline(job,'charge');
+  const entry={number:job.pipeline.providerCalls,label,status:'dispatched',at:new Date().toISOString()};job.callLog.push(entry);job.calls=job.pipeline.providerCalls;save(job);
+  try{
+    const result=await rustAsync(input,controllers.get(job.id)?.signal);
+    ensureCurrent(job);entry.status='returned';entry.usage=result.usage||null;save(job);return result;
+  }catch(error){entry.status='failed_or_unknown';save(job);throw error;}
+}
+function reviewFindings(value){return typeof value==='string'?value.trim():String(value||'').trim();}
 async function generate(job,previous,findings){
   if(job.provider==='fixture'){
-    await new Promise(r=>setTimeout(r,350));ensureCurrent(job);
-    return previous?{...structuredClone(previous),parts:previous.parts.filter(p=>p.id!=='audit-obstruction')}:fixtureRecipe(job.theme);
+    const result=rustSync({op:'fixture',theme:job.theme,...(previous?{previous}: {})});
+    await new Promise(resolve=>setTimeout(resolve,350));ensureCurrent(job);return result.recipe;
   }
-  const prompt=`Generate a complete JSON recipe for a playable 3D sensor outpost in this game world. Output ONLY JSON, no markdown.\nFrozen world theme: ${JSON.stringify(job.theme)}\nUser brief: ${job.prompt}\nContract: ${JSON.stringify(recipeSchema)}\nGeometry uses metres: y up, all dimensions full extents. Ground y=0. Commander starts at (0,0,9), walks straight toward (0,0,0), height 1.5m, radius .28m. Leave an open corridor at least 1.2m wide along x=0,z=0..9. Supports/walls meet ground. Building stays within x/z +-4. Sensor radius 8..20. Use 4..48 parts. Materials are palette tokens ONLY; shape box/cylinder/cone; no arbitrary code. A roof, walls, posts, sensor mast and visual accents should form a coherent outpost. Preserve the same theme, identity, and gameplay role when repairing.\nReference format: ${JSON.stringify(fixtureRecipe(job.theme))}\nPrevious candidate: ${JSON.stringify(previous||null)}\nIndependent failures to repair: ${JSON.stringify(findings||[])}\nDo not add props that contradict the theme. Change the reference geometry to fit the user's request while respecting the corridor.`;
-  job.lastCreatorPrompt=prompt;save(job);
-  const result=await charge(job,'Gemini creator',()=>createCandidate({provider:job.provider,apiKey,model,agent,prompt,recipeSchema,interactionId:job.interactionId,environmentId:job.environmentId,signal:controllers.get(job.id).signal}));
-  job.interactionId=result.interactionId;job.environmentId=result.environmentId;
-  job.providerResponses.push({kind:'creator',response:result.response});save(job);
-  return result.recipe;
+  const request={theme:job.theme,prompt:job.prompt,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),model,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};
+  const result=await providerCall(job,'Gemini creator',{op:'generate',request});
+  job.interactionId=result.interactionId||job.interactionId;job.environmentId=result.environmentId||job.environmentId;
+  job.providerResponses.push({kind:'creator',response:result.response,usage:result.usage||null});save(job);return result.recipe;
 }
 async function getBrowser(){
   if(!browser){
@@ -113,44 +171,71 @@ async function capture(job,attempt){
   });
 }
 async function review(job,attempt){
-  if(job.provider==='fixture')return [
-    {id:'THEME-02',status:'pass',label:'Visual theme consistency',detail:'Offline fixture verdict for rehearsal only. No live AI visual assessment.'},
-    {id:'LIVE-04',status:'pass',label:'Three actual rendered views',detail:'Three views captured from the actual Three.js client; reviewer verdict is a rehearsal fixture.'}
-  ];
-  const result=await charge(job,'independent visual reviewer',()=>reviewCandidate({apiKey,model,theme:job.theme,prompt:job.prompt,images:attempt.images.map(url=>fs.readFileSync(path.join(data,...url.split('/').slice(2)))),signal:controllers.get(job.id).signal}));
-  job.providerResponses.push({kind:'reviewer',response:result.response});save(job);
-  return [{id:'THEME-02',status:result.themeStatus,label:'Visual theme consistency',detail:result.findings},{id:'LIVE-04',status:result.renderStatus,label:'Three actual rendered views',detail:result.findings}];
+  if(job.provider==='fixture')return {themeStatus:'pass',renderStatus:'pass',findings:'Offline rehearsal visual verdict; no live AI review.',usage:null};
+  const images=attempt.images.map(url=>fs.readFileSync(imagePath(job,url)).toString('base64'));
+  const result=await providerCall(job,'independent visual reviewer',{op:'review',request:{theme:job.theme,prompt:job.prompt,images,model}});
+  job.providerResponses.push({kind:'reviewer',response:result.response,usage:result.usage||null});save(job);return result;
 }
 async function run(job){
   let previous=null,findings=[];
   try{
-    while(eligible(job)){
-      const attempt={number:job.attempts.length+1,checks:[],images:[],createdAt:new Date().toISOString()};job.attempts.push(attempt);
+    while(true){
+      const canContinue=syncPipeline(job,'continue');
+      if(!canContinue){
+        const state=job.pipeline.status;
+        job.stopReason=state==='exhausted'?'Rust pipeline attempt, provider-call, or time budget exhausted.':'No more candidates can be evaluated.';
+        event(job,state==='blocked'?'blocked':state==='cancelled'?'cancelled':'exhausted',job.stopReason);return;
+      }
+      const attempt={number:job.pipeline.attemptCount+1,checks:[],images:[],imageHashes:[],createdAt:new Date().toISOString()};
       event(job,'generating',`${attempt.number===1?'Generating':'Repairing'} candidate ${attempt.number}/3 in the frozen ${job.theme.name} theme.`);
       let candidate=await generate(job,previous,findings);ensureCurrent(job);
       if(job.injectDefect&&attempt.number===1)candidate=injectDefect(candidate);
-      attempt.recipe=candidate;attempt.hash=digest(candidate);previous=candidate;save(job);
-      event(job,'validating',`Checking candidate ${attempt.number}: palette, geometry, collision, supports and sensor range.`);
-      try{const evaluation=rustChecks(candidate,job.themeId,job.theme);attempt.checks=evaluation.checks;attempt.rustMovement=evaluation.movement;attempt.engine=evaluation.engine;}
-      catch(e){attempt.checks=[{id:'PACKAGE-01',status:'fail',label:'Valid package and frozen theme',detail:e.message}];findings=attempt.checks;save(job);continue;}
-      event(job,'rendering','Capturing three actual game views and running the commander through the client movement path.');
-      const evidence=await capture(job,attempt);ensureCurrent(job);attempt.images=evidence.images;attempt.movement=evidence.movement;
-      attempt.imageHashes=attempt.images.map(url=>createHash('sha256').update(fs.readFileSync(path.join(data,...url.split('/').slice(2)))).digest('hex'));
-      const access=attempt.checks.find(c=>c.id==='GEN-05.access');access.status=access.status==='pass'&&evidence.movement.pass?'pass':'fail';access.trace=evidence.movement.trace;
-      if(attempt.rustMovement.pass!==evidence.movement.pass)throw new Error('Browser/Rust movement parity failed. Candidate cannot be accepted.');
-      event(job,'reviewing',job.provider==='fixture'?'Applying explicitly simulated visual verdict; functional checks and captures are real.':'Independent Gemini reviewer is inspecting the actual rendered world against the theme contract.');
-      attempt.checks.push(...await review(job,attempt));ensureCurrent(job);save(job);
-      if(canAccept(attempt.checks,attempt.images.length)){
-        job.acceptedHash=attempt.hash;job.stopReason='All six demo checks passed.';event(job,'accepted',job.provider==='fixture'?'Rehearsal candidate accepted. Visual review was simulated.':'All required checks passed. Candidate is ready to activate.');return;
+      const record=syncPipeline(job,'submit',{recipe:candidate});
+      candidate=record.recipe;attempt.recipe=candidate;attempt.hash=record.candidateHash;attempt.validationError=record.validationError||null;
+      attempt.checks=record.checks||[];
+      if(record.validationError)attempt.checks=[{id:'THEME-01',status:'fail',label:'Valid recipe and frozen theme',detail:record.validationError}];
+      job.attempts.push(attempt);previous=candidate;save(job);
+      event(job,'validating',`Rust recorded candidate ${attempt.number}: ${record.validationError?'recipe/theme validation failed.':'palette, geometry, collision, supports and sensor checks completed.'}`);
+      if(!record.validationError){
+        const evaluation=rustChecks(candidate,job.themeId,job.theme);
+        if(JSON.stringify(evaluation.checks)!==JSON.stringify(record.checks))throw new Error('Rust pipeline and validation CLI checks diverged.');
+        attempt.rustMovement=evaluation.movement;attempt.engine=evaluation.engine;
       }
-      findings=attempt.checks.filter(c=>c.status!=='pass');
-      if(findings.some(c=>c.status==='blocked')){job.stopReason='Review is inconclusive; evidence or operator input required.';event(job,'blocked',job.stopReason);return;}
-      event(job,'repairing',findings.map(c=>`${c.id}: ${c.detail}`).join(' '));
+      event(job,'rendering','Capturing three actual game views and running the commander through the client movement path.');
+      let evidence;
+      try{evidence=await capture(job,attempt);ensureCurrent(job);}
+      catch(e){if(record.validationError){syncPipeline(job,'cancel');job.stopReason='Invalid candidate could not be rendered for required evidence.';event(job,'blocked',job.stopReason);return;}throw e;}
+      attempt.images=evidence.images;attempt.movement=evidence.movement;
+      attempt.imageHashes=attempt.images.map(url=>{const file=imagePath(job,url);if(!file||!fs.existsSync(file))throw new Error('Captured evidence file is missing.');return createHash('sha256').update(fs.readFileSync(file)).digest('hex');});
+      const access=attempt.checks.find(c=>c.id==='GEN-05.access');
+      if(access){access.status=access.status==='pass'&&evidence.movement.pass?'pass':'fail';access.trace=evidence.movement.trace;}
+      if(!record.validationError&&attempt.rustMovement.pass!==evidence.movement.pass)throw new Error('Browser/Rust movement parity failed. Candidate cannot be accepted.');
+      event(job,'reviewing',job.provider==='fixture'?'Applying explicitly simulated visual verdict; functional checks and captures are real.':'Independent Gemini reviewer is inspecting the actual rendered world against the theme contract.');
+      const visual=record.validationError?{themeStatus:'fail',renderStatus:'fail',findings:record.validationError,usage:null}:await review(job,attempt);
+      ensureCurrent(job);
+      const visualFindings=reviewFindings(visual.findings),allPass=visual.themeStatus==='pass'&&visual.renderStatus==='pass';
+      const defects=allPass?[]:[visualFindings||'Visual review did not pass.'];
+      const summary=allPass?(visualFindings||'Visual theme and render review passed.'):null;
+      attempt.checks.push(
+        {id:'THEME-02',status:visual.themeStatus,label:'Visual theme consistency',detail:visualFindings||summary||'Theme visual check completed.'},
+        {id:'LIVE-04',status:visual.renderStatus,label:'Three actual rendered views',detail:visualFindings||summary||'Three rendered views reviewed.'}
+      );
+      save(job);
+      const verdict=syncPipeline(job,'decide',{review:{themeStatus:visual.themeStatus,renderStatus:visual.renderStatus,findings:defects,summary},evidence:{candidateHash:attempt.hash,imageHashes:attempt.imageHashes,imageUrls:attempt.images}});
+      if(verdict==='accept'){
+        job.acceptedHash=attempt.hash;job.stopReason=summary||'All required checks passed.';event(job,'accepted',job.provider==='fixture'?'Rehearsal candidate accepted. Visual review was simulated.':'All required checks passed. Candidate is ready to activate.');return;
+      }
+      if(verdict==='blocked'||verdict==='exhausted'){
+        job.stopReason=verdict==='blocked'?'Review is inconclusive; evidence or operator input required.':'Rust pipeline attempt, provider-call, or time budget exhausted.';event(job,verdict,job.stopReason);return;
+      }
+      findings=[...attempt.checks.filter(check=>check.status!=='pass').map(check=>`${check.id}: ${check.detail}`),...defects];
+      event(job,'repairing',findings.join(' '));
     }
-    job.stopReason=job.cancelled?'Cancelled':Date.now()>=job.deadline?'20-minute deadline reached':'Three-attempt / six-call ceiling reached';event(job,job.cancelled?'cancelled':'exhausted',job.stopReason);
   }catch(e){
+    if(job.pipeline?.status==='active'&&!job.cancelled){try{syncPipeline(job,'cancel');}catch{}}
     job.stopReason=job.cancelled?'Cancelled; late results cannot activate.':e.message;
-    event(job,job.cancelled?'cancelled':'blocked',job.stopReason);
+    const state=job.cancelled?'cancelled':job.pipeline?.status==='exhausted'?'exhausted':'blocked';
+    event(job,state,job.stopReason);
   }finally{controllers.delete(job.id);}
 }
 const json=(res,status,value)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
@@ -189,21 +274,25 @@ const server=http.createServer(async(req,res)=>{
         const theme=validateTheme(structuredClone(input.theme||THEMES[input.themeId]));
         if((input.themeId&&input.themeId!==theme.id)||!['fixture','gemini','managed'].includes(input.provider)||typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)return json(res,400,{error:'Provide a matching theme contract, provider, and 5–3000 character prompt.'});
         if(input.provider!=='fixture'&&!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY in .env and restart the server. Offline rehearsal is available now.'});
-        const job={id:randomUUID(),sourceRevision,sourceFingerprint,prompt:input.prompt,themeId:theme.id,theme,themeHash:digest(theme),provider:input.provider,model,agent,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date().toISOString(),deadline:Date.now()+20*60*1000,status:'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
+        const now=Math.max(Date.now(),lastPipelineTime+1);lastPipelineTime=now;
+        const pipeline=rustSync({op:'create',theme,prompt:input.prompt,now,provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}}).pipeline;
+        const job={id:pipeline.contract.jobId,pipeline,sourceRevision,sourceFingerprint,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
         jobs.set(job.id,job);controllers.set(job.id,new AbortController());event(job,'queued','Brief and theme contract frozen. Job limit: three candidates, six paid calls, twenty minutes.');
         json(res,201,job);void run(job);return;
       }
-      const match=pathname.match(/^\/api\/jobs\/([\da-f-]+)\/(cancel|activate)$/);
+      const match=pathname.match(/^\/api\/jobs\/([\da-z-]{1,128})\/(cancel|activate)$/);
       if(match){
         const job=jobs.get(match[1]);if(!job)return json(res,404,{error:'Unknown job'});
         if(match[2]==='cancel'){
           if(['accepted','active'].includes(job.status))return json(res,409,{error:'This run has finished. Use rollback for an active release.'});
-          job.cancelled=true;controllers.get(job.id)?.abort();event(job,'cancelled','Cancelled. No late candidate can activate.');return json(res,200,job);
+          job.cancelled=true;controllers.get(job.id)?.abort();if(job.pipeline?.status==='active')try{syncPipeline(job,'cancel');}catch{}event(job,'cancelled','Cancelled. No late candidate can activate.');return json(res,200,job);
         }
         const attempt=verifiedAttempt(job);
         if(job.status!=='accepted'||!attempt)return json(res,409,{error:'Only the exact accepted candidate and its reviewed evidence can activate.'});
         const priorJob=jobs.get(releases.at(-1)?.jobId);if(priorJob?.status==='active')event(priorJob,'accepted','Superseded by a newer active package; this candidate remains approved.');
-        releases.push({id:randomUUID(),jobId:job.id,hash:attempt.hash,recipe:attempt.recipe,theme:job.theme,rehearsal:job.provider==='fixture',at:new Date().toISOString()});atomic(releaseFile,releases);event(job,'active','Verified package activated in the preview.');return json(res,200,releases.at(-1));
+        const canonical=job.pipeline?rustSync({op:'package',pipeline:job.pipeline,now:Date.now()}).value:{recipe:attempt.recipe};
+        if(canonical.manifest?.contentSha256!==undefined&&canonical.manifest.contentSha256!==attempt.hash)return json(res,409,{error:'Rust package hash does not match the accepted candidate.'});
+        releases.push({id:randomUUID(),jobId:job.id,hash:attempt.hash,recipe:canonical.recipe,theme:job.theme,rehearsal:job.provider==='fixture',at:new Date().toISOString()});atomic(releaseFile,releases);event(job,'active','Verified package activated in the preview.');return json(res,200,releases.at(-1));
       }
       if(pathname==='/api/rollback'){
         if(releases.length<2)return json(res,409,{error:'No prior release available yet. Activate a second candidate first.'});
@@ -221,21 +310,20 @@ const server=http.createServer(async(req,res)=>{
     }
     if(pathname==='/api/jobs')return json(res,200,[...jobs.values()].sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).map(({providerResponses,lastCreatorPrompt,...job})=>job));
     if(pathname==='/api/release')return json(res,200,releases.at(-1)||null);
-    const packageMatch=pathname.match(/^\/api\/jobs\/([\da-f-]+)\/package$/);
+    const packageMatch=pathname.match(/^\/api\/jobs\/([\da-z-]{1,128})\/package$/);
     if(packageMatch){
       const job=jobs.get(packageMatch[1]),attempt=verifiedAttempt(job);
       if(!attempt)return json(res,409,{error:'Package export requires an accepted candidate and unchanged evidence.'});
-      const value={format:'living-empires.asset',schemaVersion:1,assetType:'building',assetId:job.id,themeId:job.themeId,theme:job.theme,recipe:attempt.recipe,
-        manifest:{version:attempt.number,contentSha256:attempt.hash,themeSha256:digest(job.theme),sourceRevision:job.sourceRevision,sourceFingerprint:job.sourceFingerprint,engine:attempt.engine,contractVersion:job.contractVersion,rehearsal:job.provider==='fixture',createdAt:attempt.createdAt,
-          checks:attempt.checks.map(({id,status,detail})=>({id,status,detail})),evidence:attempt.images.map((url,i)=>({view:i+1,url,sha256:attempt.imageHashes[i]})),provider:job.provider,model:job.model,agent:job.provider==='managed'?job.agent:null}};
+      const value=job.pipeline?rustSync({op:'package',pipeline:job.pipeline,now:Date.now()}).value:{format:'living-empires.asset',schemaVersion:1,assetType:'building',assetId:job.id,themeId:job.themeId,theme:job.theme,recipe:attempt.recipe,manifest:{version:attempt.number,contentSha256:attempt.hash,themeSha256:job.themeHash,sourceRevision:job.sourceRevision,sourceFingerprint:job.sourceFingerprint,engine:attempt.engine,contractVersion:job.contractVersion,rehearsal:job.provider==='fixture',createdAt:attempt.createdAt,checks:attempt.checks,evidence:attempt.images.map((url,i)=>({view:i+1,url,sha256:attempt.imageHashes[i]})),provider:job.provider,model:job.model,agent:job.agent}};
+      value.manifest.adapter={renderer:attempt.renderSource||'headless-chromium',sourceUrls:[]};
       res.writeHead(200,{'Content-Type':'application/json','Content-Disposition':`attachment; filename="asset-${job.id}.json"`,'Cache-Control':'no-store'});res.end(JSON.stringify(value,null,2));return;
     }
-    const match=pathname.match(/^\/api\/jobs\/([\da-f-]+)$/);
+    const match=pathname.match(/^\/api\/jobs\/([\da-z-]{1,128})$/);
     if(match){const job=jobs.get(match[1]);return json(res,job?200:404,job||{error:'Unknown job'});}
     let file;
     if(pathname==='/vendor/three.js')file=path.join(root,'node_modules/three/build/three.module.js');
     else if(pathname==='/vendor/three.core.js')file=path.join(root,'node_modules/three/build/three.core.js');
-    else if(/^\/evidence\/[\da-f-]+\/\d+-[0-2]\.png$/.test(pathname))file=path.join(data,...pathname.split('/').slice(2));
+    else if(/^\/evidence\/[\da-z-]{1,128}\/\d+-[0-2]\.png$/.test(pathname))file=path.join(data,...pathname.split('/').slice(2));
     else {file=path.resolve(root,'public',pathname==='/'?'index.html':'.'+pathname);if(!file.startsWith(path.join(root,'public')+path.sep))return json(res,403,{error:'Forbidden'});}
     if(!fs.existsSync(file)||!fs.statSync(file).isFile())return json(res,404,{error:'Not found'});
     res.writeHead(200,{'Content-Type':mime[path.extname(file)]||'application/octet-stream','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});fs.createReadStream(file).pipe(res);

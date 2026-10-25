@@ -224,6 +224,13 @@ impl AssetPipeline {
             && self.provider_calls < self.contract.limits.max_provider_calls)
     }
 
+    /// Whether the current job can process an in-flight result or review.
+    /// Unlike `can_continue`, this does not require budget for another attempt or call.
+    pub fn can_work(&self, now_ms: u64) -> Result<bool, String> {
+        self.check_integrity()?;
+        Ok(self.status == PipelineStatus::Active && now_ms < self.contract.deadline_ms)
+    }
+
     /// Record each returned candidate, including invalid candidates, as a bounded attempt.
     pub fn submit_candidate(&mut self, recipe: Recipe, now_ms: u64) -> Result<CandidateRecord, String> {
         self.check_integrity()?;

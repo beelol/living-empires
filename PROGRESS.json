@@ -1,90 +1,112 @@
 {
-  "milestone": "Themed asset generator: one outpost generation-review-repair-export lifecycle",
-  "scope": "Living Empires is downstream context; the scene is an asset-validation harness.",
-  "integrationOwner": "Sol manager",
-  "testedSourceRevision": "d204b7035afd07938703b780f4cfc0adbef99634",
-  "workers": [
+  "activeMilestone": "Cohesive Rust asset generator with detailed editable themes",
+  "definitionOfDone": [
+    "one Rust crate owns generation/provider boundary, frozen contracts, review/repair decisions and export",
+    "actual in-app renderer captures validated before activation",
+    "edited custom theme survives repair and export",
+    "normal GitHub main sync preserves remote development foundation"
+  ],
+  "orchestration": {
+    "intentAndAcceptance": "user/management chat",
+    "integration": "Sol local lead",
+    "builders": "bounded Luna workers",
+    "git": "Luna medium commit_manager (sole Git writer)",
+    "runtimeAuthority": "living_world_core::pipeline::AssetPipeline"
+  },
+  "shippingState": {
+    "localCommittedBase": "4750e38d4dcae468e3957ad5174570fbc5ad6ff7",
+    "testedWorkingTree": true,
+    "running": "http://127.0.0.1:4317",
+    "pushed": false,
+    "remoteBaseObserved": "0c08d570acfe5ad6f050af83febd64137721511a",
+    "syncStatus": "local history reconciled with fetched remote through 0c08d57; normal push blocked because HTTPS GitHub username credentials are unavailable in this environment; no force push or second hook configured",
+    "reconciledLocalCommit": "906db00"
+  },
+  "tasks": [
     {
-      "owner": "Luna UI",
-      "commits": [
-        "58433e7",
-        "9830b93",
-        "39041ee",
-        "071513f"
-      ]
+      "owner": "Luna theme builder",
+      "status": "committed_tested",
+      "sha": "a22c699",
+      "result": "Detailed contracts; 12/11/14-part distinct authored fixtures"
     },
     {
-      "owner": "Luna Rust core",
-      "commits": [
-        "99b1a71"
-      ]
+      "owner": "Luna UI builder",
+      "status": "committed_tested",
+      "sha": "c52249f",
+      "result": "Editable theme contract, visible assumptions, local draft and comparison page"
     },
     {
-      "owner": "Luna Gemini adapter",
-      "commits": [
-        "ec7f905"
+      "owner": "Luna Rust builder",
+      "status": "tested_WIP_followup",
+      "sha": "cb9b621",
+      "result": "Same-crate provider/pipeline and final-attempt/call completion regression"
+    },
+    {
+      "owner": "Sol + Luna integration",
+      "status": "tested_WIP",
+      "paths": [
+        "server.mjs",
+        "crates/living-world-core/src/main.rs",
+        "test/rust-pipeline.test.mjs",
+        "scripts/smoke.mjs"
       ],
-      "note": "Manager performed scoped commit after worker Git sandbox denial."
+      "result": "Node delegates new asset lifecycle to Rust CLI; native feature build succeeds"
+    },
+    {
+      "owner": "Luna medium commit manager",
+      "status": "active",
+      "sha": "4750e38",
+      "result": "Hook tests3 pass; safe merge/push in progress; initial remote success not yet verified"
     }
   ],
-  "gates": [
-    {
-      "name": "Rust build and tests",
+  "evidence": {
+    "rustTests": {
       "status": "pass",
-      "command": "cargo build -p living-world-core && cargo test -p living-world-core",
-      "tests": 6
+      "count": 21
     },
-    {
-      "name": "Node adapter, contract and parity tests",
+    "nodeTests": {
       "status": "pass",
-      "command": "npm test",
-      "tests": 13
+      "count": 23
     },
-    {
-      "name": "Offline end-to-end asset lifecycle and export",
+    "nativeHttpBuild": {
       "status": "pass",
-      "command": "npm run test:e2e",
-      "jobId": "f12c76d0-ecf6-4f67-8e36-fd45b92ab27a",
-      "artifact": ".data/f12c76d0-ecf6-4f67-8e36-fd45b92ab27a/approved-asset.json",
-      "hash": "1f889d92a822371925aa117b2b48d570af7224748f6ba92cbbac826699658f8c",
-      "evidence": {
-        "before": "/evidence/f12c76d0-ecf6-4f67-8e36-fd45b92ab27a/1-2.png",
-        "after": "/evidence/f12c76d0-ecf6-4f67-8e36-fd45b92ab27a/2-2.png"
-      },
+      "paidCalls": 0
+    },
+    "offlineEndToEnd": {
+      "status": "pass",
+      "jobId": "job-custom-tidal-foundry-1792954523970",
+      "sourceFingerprint": "c1cbbc1330a063774ee6bd2813daa66efd1fb2a731604330059bed85c95e240b",
+      "candidateHash": "837736954d760c47b6e7c40a51b3aaa0ad3d8d5f7af9af0ae88b057d3009d5a0",
+      "attempts": 2,
+      "renderSource": "studio-client",
       "checks": [
-        "two-attempt obstruction repair",
-        "three real PNG views per candidate",
-        "Rust/browser parity",
-        "approved package export",
-        "stale render rejection",
-        "exact-hash activation",
-        "duplicate activation rejection",
-        "second-theme release and rollback",
-        "delayed cancellation and activation rejection"
-      ],
-      "fixtureGenerationAndReview": true
+        "defect repair",
+        "3 real views per attempt",
+        "Rust/browser movement parity",
+        "custom theme preserved",
+        "Rust-owned package/hash/provenance",
+        "activation/duplicate rejection",
+        "rollback",
+        "late cancellation rejected",
+        "disabled inference makes no paid requests"
+      ]
     },
-    {
-      "name": "Live managed creator probe",
+    "comparison": {
       "status": "pass",
-      "evidence": ".data/managed-probe.json",
-      "note": "Recipe, session IDs and usage retained locally. This does not prove live visual review."
-    },
+      "url": "http://127.0.0.1:4317/comparison.html",
+      "kind": "authored fixture geometry, not live refinement"
+    }
+  },
+  "blocked": [
     {
-      "name": "Live independent visual review and repair",
-      "status": "not_run",
-      "blocker": "Pending explicit total API spending ceiling; no additional paid calls dispatched."
-    },
-    {
-      "name": "Optional headless renderer",
-      "status": "not_run",
-      "note": "Slow Chromium download stopped after in-app Studio renderer passed; no headless installation required for current milestone."
+      "gate": "native live generation plus independent image review/repair",
+      "reason": "pending spending ceiling; no paid native calls dispatched"
     }
   ],
-  "nextGate": "Run bounded live creator -> actual renderer -> independent image reviewer -> repair -> approved package after spending ceiling is selected.",
+  "nextAction": "Commit manager syncs existing history, commits tested integration, reconciles normal main and records verified remote SHA. Re-run scoped checks after shared-file merge.",
   "fullGameCriteria": {
     "count": 122,
     "status": "not_run",
-    "note": "Six demo gates do not complete the full game checklist."
+    "note": "Asset demo gates do not complete full Living Empires game."
   }
 }

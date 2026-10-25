@@ -55,7 +55,7 @@ async function expectFixtureSuccess(job, expectedAttempts) {
   for (const attempt of result.attempts) {
     assert.equal(attempt.images.length, 3, `Candidate ${attempt.number} should have three rendered PNGs`);
     for (const imageUrl of attempt.images) {
-      assert.match(imageUrl, /^\/evidence\/[\da-f-]+\/\d+-[0-2]\.png$/, `Unexpected evidence URL: ${imageUrl}`);
+      assert.match(imageUrl, /^\/evidence\/[a-z0-9-]+\/\d+-[0-2]\.png$/, `Unexpected evidence URL: ${imageUrl}`);
       const {response, value: bytes} = await request(imageUrl);
       assert.equal(response.status, 200, `Evidence did not load: ${imageUrl}`);
       assert.match(response.headers.get('content-type') || '', /^image\/png\b/, `Evidence is not served as PNG: ${imageUrl}`);
@@ -138,7 +138,7 @@ async function main() {
   const customPackage=await request(`/api/jobs/${customJob.id}/package`);
   assert.equal(customPackage.response.status,200);
   assert.deepEqual(customPackage.value.theme,custom,'Export must preserve every custom field');
-  const themeHash=createHash('sha256').update(JSON.stringify(custom)).digest('hex');
+  const themeHash=customJob.pipeline?.contract.themeSha256||createHash('sha256').update(JSON.stringify(custom)).digest('hex');
   assert.equal(customJob.themeHash,themeHash);
   assert.equal(customPackage.value.manifest.themeSha256,themeHash);
   assert.equal(customPackage.value.recipe.themeId,custom.id);

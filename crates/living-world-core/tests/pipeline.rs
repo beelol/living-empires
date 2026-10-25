@@ -115,6 +115,29 @@ fn cancellation_deadline_and_call_attempt_budgets_reject_late_work() {
 }
 
 #[test]
+fn final_attempt_and_call_responses_remain_processable() {
+    let theme = theme();
+    let mut final_attempt = AssetPipeline::create(theme.clone(), "Build".into(), 0).unwrap();
+    let repair = ReviewDecision { theme_status: EvidenceStatus::Fail, render_status: EvidenceStatus::Pass, findings: vec!["Fix theme".into()], summary: None };
+    for i in 0..2 {
+        let candidate = final_attempt.submit_candidate(recipe(&theme.id), i * 2 + 1).unwrap();
+        assert_eq!(final_attempt.decide(repair.clone(), evidence(candidate.candidate_sha256), i * 2 + 2).unwrap(), ReviewVerdict::Repair);
+    }
+    let last = final_attempt.submit_candidate(recipe(&theme.id), 5).unwrap();
+    assert!(!final_attempt.can_continue(5).unwrap());
+    assert!(final_attempt.can_work(5).unwrap());
+    assert_eq!(final_attempt.decide(review(), evidence(last.candidate_sha256), 6).unwrap(), ReviewVerdict::Accept);
+
+    let mut final_call = AssetPipeline::create(theme.clone(), "Build".into(), 0).unwrap();
+    for i in 0..6 { final_call.charge_call(i).unwrap(); }
+    assert!(!final_call.can_continue(7).unwrap());
+    assert!(final_call.can_work(7).unwrap());
+    let candidate = final_call.submit_candidate(recipe(&theme.id), 7).unwrap();
+    assert!(final_call.can_work(7).unwrap());
+    assert_eq!(final_call.decide(review(), evidence(candidate.candidate_sha256), 8).unwrap(), ReviewVerdict::Accept);
+}
+
+#[test]
 fn review_requires_independent_statuses_and_exact_image_evidence() {
     let theme = theme();
     let mut pipeline = AssetPipeline::create(theme.clone(), "Build".into(), 0).unwrap();
