@@ -219,7 +219,9 @@ pub fn build_generation_request(request: &GenerationRequest) -> Result<(String, 
         let mut parts = vec![json!({"text":input})];
         parts.extend(image_parts.iter().map(|image| json!({"inlineData":{"mimeType":image["mimeType"], "data":image["data"]}})));
         let generation_config = if request.model == "gemini-4-argon" {
-            json!({"responseFormat":{"text":{"mimeType":"APPLICATION_JSON","schema":serde_json::from_str::<Value>(GENERATION_SCHEMA).expect("static recipe schema")}},"maxOutputTokens":16384,"thinkingConfig":{"thinkingLevel":"low"}})
+            // Argon JSON mode keeps the complete schema in the prompt and local validation.
+            // Omit the optional server constraint schema; local acceptance remains unchanged.
+            json!({"responseFormat":{"text":{"mimeType":"APPLICATION_JSON"}},"maxOutputTokens":16384,"thinkingConfig":{"thinkingLevel":"low"}})
         } else {
             json!({"responseFormat":{"text":{"mimeType":"APPLICATION_JSON","schema":serde_json::from_str::<Value>(GENERATION_SCHEMA).expect("static recipe schema")}},"maxOutputTokens":7000})
         };
