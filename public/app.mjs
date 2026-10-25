@@ -445,7 +445,7 @@ function renderSceneEvolution(){
     header.append(title,el('span',job.status,'review-status status-'+job.status),button);section.append(header);
     if(job.baseJobId)section.append(el('p',`Branches from ${job.baseJobId} · version ${job.baseAttemptNumber??'?'} · ${job.baseCandidateHash||'hash unavailable'}`,'lineage-note'));
     else if(job.retryOf)section.append(el('p',`Retry of ${job.retryOf}; earlier outcome and limits remain recorded.`,'lineage-note'));
-    const request=el('p',job.userFeedback||job.prompt||'No prompt recorded.','evolution-request');section.append(request);
+    const requestText=job.userFeedback||job.prompt||'No prompt recorded.',request=el('p',requestText.length>280?requestText.slice(0,277)+'…':requestText,'evolution-request');section.append(request);
     const log=el('details',undefined,'evolution-log');log.dataset.job=job.id;log.open=openIds.has(job.id);log.append(el('summary','Prompt, model calls & complete run log'));
     log.append(el('h4','Original prompt'),el('p',job.prompt||'Not recorded.'));
     if(job.userFeedback)log.append(el('h4','Requested changes'),el('p',job.userFeedback));
@@ -493,7 +493,7 @@ async function refreshDashboard(){
   try{
     const jobs=await api('/api/jobs'),newest=jobs.find(job=>!jobsCache.has(job.id));
     jobsCache=new Map(jobs.map(job=>[job.id,job]));
-    $('history-sync').textContent=`Live · ${jobs.length} saved runs · updated ${new Date().toLocaleTimeString()}`;
+    const active=runningJob();$('history-sync').textContent=`Live · ${jobs.length} saved runs${active?` · ${active.status}: ${active.prompt?.slice(0,55)||active.id}`:''} · updated ${new Date().toLocaleTimeString()}`;
     if(newest){pendingNewRun=newest.id;$('new-run-notice').hidden=false;$('new-run-notice').textContent=`View new run · ${newest.prompt?.slice(0,50)||newest.id}`;}
     if(revision===sceneRevision&&!releasePinned){
       if(newest&&$('follow-runs').checked&&!draftDirty){inspectSavedScene(newest,undefined,{follow:true});pendingNewRun=null;$('new-run-notice').hidden=true;}
