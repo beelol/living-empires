@@ -152,14 +152,15 @@ test('a fresh creation brief is independent of old faction style and helper vali
 test('accepted changed art adopts once and queues only other current members without recursive proposals',()=>{
  const {w,faction,source,hash}=approvedDirectionSetup(),old=w.foundry.requests[0],before=structuredClone([w.alloy,w.robot,w.buildings,w.deposits]),originalPrompt=source.prompt,theme=structuredClone(THEMES.sylvan);old.status='running';
  const result=adoptFactionDirection(w,source,theme,hash);assert.equal(result.status,'adopted');assert.equal(faction.revision,2);assert.equal(source.factionRevision,1);assert.equal(source.adoptedFactionRevision,2);assert.equal(source.prompt,originalPrompt);assert.equal(w.foundry.requests.find(r=>r.id===source.id),source);assert.equal(old.status,'cancelled');
- assert.deepEqual(faction.theme,theme);assert.equal(faction.themeDraftId,'fresh-draft');assert.deepEqual(faction.designOrigin,{requestId:source.id,jobId:source.jobId,sourceHash:hash});assert.ok(faction.artDirection.length<=2000);assert.equal(faction.artDirection.includes('greenhouse'),false);
+ assert.equal(faction.theme,null);assert.equal(faction.themeDraftId,undefined);assert.deepEqual(faction.designOrigin,{requestId:source.id,jobId:source.jobId,sourceHash:hash});assert.ok(faction.artDirection.length<=2000);assert.equal(faction.artDirection.includes('greenhouse'),false);
  const propagated=w.foundry.requests.filter(r=>result.requestIds.includes(r.id));assert.equal(propagated.length,1);assert.deepEqual(propagated[0].targets,[{id:'older',assignment:1}]);assert.equal(propagated[0].drivesFactionDirection,undefined);assert.match(propagated[0].prompt,/Faction design language/);assert.deepEqual([w.alloy,w.robot,w.buildings,w.deposits],before);
- const after=structuredClone(w);assert.deepEqual(adoptFactionDirection(w,source,theme,hash),result);assert.deepEqual(w,after);assert.equal(adoptFactionDirection(w,propagated[0],theme,hash),null);assert.deepEqual(w,after);theme.palette.shell='#abcdef';assert.notEqual(faction.theme.palette.shell,theme.palette.shell);
+ const after=structuredClone(w);assert.deepEqual(adoptFactionDirection(w,source,theme,hash),result);assert.deepEqual(w,after);assert.equal(adoptFactionDirection(w,propagated[0],theme,hash),null);assert.deepEqual(w,after);assert.equal(source.themeDraftId,'fresh-draft');
 });
 
 test('equivalent visual style ignores descriptive identity, role and environment and queues nothing',()=>{
  const {w,faction,source,hash}=approvedDirectionSetup(),theme=structuredClone(THEMES.argonaut);theme.id='new-role';theme.name='A new building';theme.gameplayRole='A greenhouse';theme.palette.ground='#abcdef';theme.visualChecks=['Different role requirement'];theme.shapeLanguage='  '+theme.shapeLanguage.toUpperCase().replaceAll(' ','  ')+'  ';theme.motifs.reverse();
- const count=w.foundry.requests.length;assert.equal(adoptFactionDirection(w,source,theme,hash).status,'unchanged');assert.equal(faction.revision,1);assert.equal(w.foundry.requests.length,count);assert.equal(source.adoptedFactionRevision,undefined);
+ const older=w.buildings.find(b=>b.id==='older'),installed=w.foundry.requests[0];older.asset={hash:'b'.repeat(64),theme:structuredClone(THEMES.argonaut),rehearsal:false};Object.assign(installed,{status:'installed',hash:older.asset.hash,installedTargets:[older.id]});
+ const count=w.foundry.requests.length;assert.equal(adoptFactionDirection(w,source,theme,hash).status,'unchanged');assert.equal(faction.revision,1);assert.equal(w.foundry.requests.length,count);assert.equal(source.adoptedFactionRevision,1);
 });
 
 test('newer free prompts, explicit faction updates and reassignment each prevent stale direction adoption',()=>{
@@ -176,4 +177,28 @@ test('newer free prompts, explicit faction updates and reassignment each prevent
 test('failed adoption validation leaves faction, requests and assets atomically unchanged; rehearsal never propagates',()=>{
  const {w,source,hash}=approvedDirectionSetup();w.buildings.find(b=>b.id==='older').kind='creation';w.buildings.find(b=>b.id==='older').prompt='';const before=structuredClone(w);
  assert.throws(()=>adoptFactionDirection(w,source,THEMES.sylvan,hash),/subject/);assert.deepEqual(w,before);source.rehearsal=true;const rehearsal=structuredClone(w);assert.equal(adoptFactionDirection(w,source,THEMES.sylvan,hash),null);assert.deepEqual(w,rehearsal);
+});
+
+
+test('object-specific approved source stays intact while propagation resolves a new generic family contract',()=>{
+ const {w,faction,source,hash}=approvedDirectionSetup(),court=structuredClone(THEMES.sylvan);court.gameplayRole='Basketball court';court.visualChecks=['A visible basketball backboard and court lines'];
+ const origin=w.buildings.find(b=>b.id==='origin');origin.asset={hash,theme:court,manifest:{contentSha256:hash},rehearsal:false};const exactSource=structuredClone(origin.asset);faction.themeDraftId='old-family-draft';
+ const result=adoptFactionDirection(w,source,court,hash);assert.equal(result.status,'adopted');assert.equal(faction.theme,null);assert.equal(faction.themeDraftId,undefined);assert.deepEqual(origin.asset,exactSource);
+ const child=w.foundry.requests.find(r=>result.requestIds.includes(r.id));assert.equal(child.kind,'solar');assert.equal(child.theme,undefined);assert.equal(child.drivesFactionDirection,undefined);assert.equal(child.prompt.includes('backboard and court lines'),false);
+});
+
+test('equivalent cached direction reconciles stale members and retains active matching propagation once',()=>{
+ const {w,faction,source,hash}=approvedDirectionSetup();build(w,'aligned',36);build(w,'pending',48);
+ const aligned=w.buildings.find(b=>b.id==='aligned'),pending=w.buildings.find(b=>b.id==='pending');for(const b of [aligned,pending]){b.factionId='orchid';b.factionAssignment=1;}
+ aligned.asset={hash:'c'.repeat(64),theme:structuredClone(THEMES.argonaut),rehearsal:false};pending.asset={hash:'d'.repeat(64),theme:structuredClone(THEMES.sylvan),rehearsal:false};
+ const installed={id:'current-aligned',kind:'solar',factionId:'orchid',factionRevision:1,status:'installed',hash:aligned.asset.hash,targets:[{id:'aligned',assignment:1}],installedTargets:['aligned']},running={id:'current-pending',kind:'solar',factionId:'orchid',factionRevision:1,status:'running',jobId:'active-direction',targets:[{id:'pending',assignment:1}]};w.foundry.requests.push(installed,running);const runningBefore=structuredClone(running),alignedBefore=structuredClone(aligned);
+ const result=adoptFactionDirection(w,source,THEMES.argonaut,hash);assert.equal(result.status,'adopted');assert.equal(result.styleChanged,false);assert.equal(faction.revision,1);assert.equal(faction.theme,null);assert.deepEqual(faction.designOrigin,{requestId:source.id,jobId:source.jobId,sourceHash:hash});assert.ok(result.requestIds.includes(running.id));assert.deepEqual(running,runningBefore);assert.deepEqual(aligned,alignedBefore);
+ const fresh=w.foundry.requests.filter(r=>result.requestIds.includes(r.id)&&r.id!==running.id);assert.equal(fresh.length,1);assert.deepEqual(fresh[0].targets,[{id:'older',assignment:1}]);const after=structuredClone(w);adoptFactionDirection(w,source,THEMES.argonaut,hash);assert.deepEqual(w,after);
+});
+
+test('matching style on an old revision or mismatched style on the current revision still needs convergence',()=>{
+ for(const variant of ['old-revision','wrong-style']){
+  const {w,faction,source,hash}=approvedDirectionSetup(),older=w.buildings.find(b=>b.id==='older'),installed=w.foundry.requests[0];older.asset={hash:'b'.repeat(64),theme:structuredClone(variant==='wrong-style'?THEMES.sylvan:THEMES.argonaut),rehearsal:false};Object.assign(installed,{status:'installed',hash:older.asset.hash,installedTargets:['older'],factionRevision:variant==='old-revision'?0:1});
+  const result=adoptFactionDirection(w,source,THEMES.argonaut,hash);assert.equal(result.status,'adopted');assert.equal(result.styleChanged,false);assert.equal(faction.revision,1);assert.equal(result.requestIds.length,1);assert.deepEqual(w.foundry.requests.at(-1).targets,[{id:'older',assignment:1}]);
+ }
 });
