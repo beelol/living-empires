@@ -5,7 +5,7 @@ import {startRenderWorker} from './render-worker.mjs';
 const $=id=>document.getElementById(id),world=createWorld($('world'));
 startRenderWorker();
 let currentJob=null,lastHash='',busy=false,config,releasePinned=false,pollInFlight=false,sceneRevision=0,referenceObjectUrl=null,referenceImage=null,referenceReadPending=false,referenceLoadToken=0,jobsCache=new Map();
-let themeContract=null;
+let themeContract=null,localThemeTimer=null;
 const briefs={
   argonaut:'Build a sensor outpost for our machine civilization. Give it a broad ceramic canopy, a glowing cyan relay, and an entrance our commander can walk through.',
   sylvan:'Build a forest watch sanctuary. Use mossy stone, timber supports, warm amber light, and an open entrance our ranger can walk through.',
@@ -59,11 +59,23 @@ function themeChanged(){
   if($('prompt').value===displayedBrief){displayedBrief=briefs[preset.referencePreset||preset.id]||briefs.argonaut;$('prompt').value=displayedBrief;}
   renderThemeContract(preset,{selectPreset:false});$('theme-error').textContent='';
 }
+function draftPromptTheme({open=false}={}){
+  const prompt=$('prompt').value.trim();if(!prompt)return;
+  try{
+    const result=draftThemeFromPrompt(prompt,$('theme').value),checked=validateContract(result?.theme||result);
+    renderThemeContract(checked,{selectPreset:true});
+    if(open)$('theme-contract').open=true;
+    $('theme-draft-note').textContent=`LOCAL KEYWORD DRAFT · ${checked.referencePreset} preset selected from prompt terms. This is not AI semantic inference; review Advanced settings for assumptions.`;
+    $('theme-error').textContent='';
+  }catch(e){$('theme-error').textContent=e.message;}
+}
 function setEditorLocked(locked){
-  $('theme').disabled=locked;$('prompt').disabled=locked;$('provider').disabled=locked;$('inject').disabled=locked;
+  $('prompt').disabled=locked;$('provider').disabled=locked;$('inject').disabled=locked;
+  document.querySelectorAll('#advanced-settings input,#advanced-settings select,#advanced-settings textarea').forEach(input=>input.disabled=locked);
   document.querySelectorAll('#theme-contract input,#theme-contract select,#theme-contract textarea').forEach(input=>input.disabled=locked);
   $('draft-theme').disabled=locked;$('resolve-theme').disabled=locked||config?.themeInferenceEnabled!==true;
   document.querySelectorAll('#refinement-panel input,#refinement-panel select,#refinement-panel textarea').forEach(input=>input.disabled=locked);
+  document.querySelectorAll('#reference-picker input').forEach(input=>input.disabled=locked||(input.type==='checkbox'&&!referenceImage));
   $('clear-reference').disabled=locked;
   if(locked){$('preview-refinement').disabled=true;$('refine-version').disabled=true;}
 }
@@ -249,12 +261,48 @@ function renderRefinementControls(job){
   $('base-version-summary').textContent=selected?`Fixed source · job ${job.id} · version ${selected.number} · SHA-256 ${selected.hash}. The source theme and original brief stay frozen.`:'Refinement becomes available after a candidate recipe has been saved.';
   const components=selected?.recipe?.scene?.components;
   const listNode=$('component-list');listNode.replaceChildren();
+  const componentSelector=$('component-target'),oldTarget=componentSelector.value,componentEntries=Array.isArray(components)?components:[];
+  componentSelector.replaceChildren();
   if(Array.isArray(components)&&components.length){
-    for(const component of components){const row=el('li');row.append(el('strong',component.name||component.id||'Unnamed component'));const details=[component.role,`${Array.isArray(component.partIds)?component.partIds.length:0} recipe parts`].filter(Boolean);row.append(el('span',` · ${details.join(' · ')}`));listNode.append(row);}
+    const seenIds=new Set();
+    for(const component of components){
+      const id=typeof component.id==='string'?component.id.trim():'',name=component.name||id||'Unnamed component',stableId=/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id),duplicate=!!id&&seenIds.has(id);
+      if(id)seenIds.add(id);
+      const row=el('li');row.append(el('strong',name));const details=[id?`ID ${id}`:'No stable ID',component.role,`${Array.isArray(component.partIds)?component.partIds.length:0} recipe parts`].filter(Boolean);row.append(el('span',` · ${details.join(' · ')}`));listNode.append(row);
+      const option=el('option',`${name}${id?` · ${id}`:' · missing stable ID'}`);option.value=id;option.disabled=!stableId||duplicate;componentSelector.append(option);
+    }
   }else listNode.append(el('li',selected?'This saved recipe has no named component metadata; refine its whole outpost.':'Select a saved version to inspect its named components.'));
+  if(!componentSelector.options.length||componentSelector.options[0]?.textContent==='No named components available')componentSelector.append(el('option','No named components available'));
+  if([...componentSelector.options].some(option=>option.value===oldTarget&&!option.disabled))componentSelector.value=oldTarget;
+  else componentSelector.value=[...componentSelector.options].find(option=>!option.disabled&&option.value)?.value||'';
+  const scope=$('component-scope').value,scopeTarget=componentEntries.find(component=>component.id===componentSelector.value),addId=$('component-id').value.trim(),addName=$('component-name').value.trim();
+  const slug=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+  const usedIds=new Set(componentEntries.map(component=>String(component.id||'').trim().toLowerCase()).filter(Boolean));
+  let scopeValid=true,preservation='Whole-scene refinement can change any part of the selected outpost.';
+  if(scope==='modify'){
+    $('component-target-wrap').hidden=false;$('component-add-fields').hidden=true;
+    scopeValid=!!scopeTarget&&slug.test(String(scopeTarget.id||''));
+    preservation=scopeTarget?`Scoped edit target: ${scopeTarget.name||scopeTarget.id} (${scopeTarget.id}). Preserve every other named component and its stable ID.`:'Choose an existing named component with a stable lowercase-slug ID. Other named components will be preserved.';
+  }else if(scope==='add'){
+    $('component-target-wrap').hidden=true;$('component-add-fields').hidden=false;
+    const unused=slug.test(addId)&&!usedIds.has(addId.toLowerCase());
+    scopeValid=unused&&addName.length>0;
+    preservation=`Append ${addName||'one named component'} as ${addId||'a new stable ID'}; preserve every existing component, its stable ID, and its geometry.`;
+    if(addId&&!unused)preservation+=` The ID must be a valid unused lowercase slug${usedIds.has(addId.toLowerCase())?' and is already used by this baseline':''}.`;
+    else if(unused&&!addName)preservation+=' Add a display name for the new component.';
+  }else{
+    $('component-target-wrap').hidden=true;$('component-add-fields').hidden=true;
+  }
+  componentSelector.disabled=!ready||scope!=='modify'||![...componentSelector.options].some(option=>option.value&&!option.disabled);
+  $('component-scope').disabled=!ready;
+  $('component-id').disabled=!ready;
+  $('component-name').disabled=!ready;
+  $('component-preservation').textContent=preservation;
+  const hasFeedback=$('user-feedback').value.trim().length>=5;
+  $('refine-version').disabled=!ready||!hasFeedback||!scopeValid;
+  $('preview-refinement').disabled=!ready||!hasFeedback||!scopeValid;
+  $('component-preservation').dataset.invalid=String(!scopeValid);
   $('user-feedback').disabled=!ready;
-  $('refine-version').disabled=!ready||!$('user-feedback').value.trim();
-  $('preview-refinement').disabled=!ready||$('user-feedback').value.trim().length<5;
   $('clear-reference').disabled=busy;
 }
 function clearLocalReference(){
@@ -294,18 +342,51 @@ function safePreview(value,key=''){
   if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([name,item])=>[name,safePreview(item,name)]));
   return value;
 }
+function renderRoleProgress(job){
+  const host=$('role-progress'),calls=Array.isArray(job.callLog)?job.callLog:[],signature=JSON.stringify({provider:job.provider,model:job.model,agent:job.agent,artDirection:job.artDirection,calls,repairs:(job.events||[]).filter(event=>event.state==='repairing')});
+  if(host.dataset.signature===signature)return;
+  host.dataset.signature=signature;host.replaceChildren();
+  const modelName=value=>typeof value==='string'&&value.trim()?value:'Model not recorded';
+  const roleOf=call=>String(call.role||call.label||'').toLowerCase(),artCall=calls.find(call=>roleOf(call).includes('art_director')||roleOf(call).includes('theme inference')||roleOf(call).includes('art direction'));
+  if(job.artDirection&&artCall){
+    const art=job.artDirection,model=modelName(art.model||artCall.model||job.model),state=artCall.status==='dispatched'?'In flight':artCall.status==='returned'?'Returned':artCall.status==='failed_or_unknown'?'Failed or unknown':String(artCall.status||'Status unrecorded');
+    const metadata=[`Call ${artCall.number??'?'}`,state,model,art.id,art.themeSha?`Theme ${art.themeSha}`:'',art.usage?`Usage ${JSON.stringify(art.usage)}`:''].filter(Boolean).join(' · ');
+    const row=el('div',undefined,'role-call');row.append(el('span','Art direction','role-name'),el('span',metadata,'role-status'));host.append(row);
+  }else if(job.artDirection){
+    const model=modelName(job.artDirection.model||job.artDirection.modelId||job.artDirection.providerModel||job.model),row=el('div',undefined,'role-call');row.append(el('span','Art direction','role-name'),el('span',`Recorded · ${model}`,'role-status'));host.append(row);
+  }
+  for(const call of calls){
+    const rawLabel=String(call.role||call.label||'Provider call'),label=rawLabel.toLowerCase();let role=rawLabel;
+    if((roleOf(call).includes('art_director')||roleOf(call).includes('theme inference')||roleOf(call).includes('art direction'))&&job.artDirection)continue;
+    if(label.includes('review')||label.includes('critique'))role='Critique';
+    else if(label.includes('repair'))role='Design + assembly · repair';
+    else if(label.includes('creator')||label.includes('generate')){
+      const callTime=Date.parse(call.at||'');
+      const isRepair=(job.events||[]).some(event=>event.state==='repairing'&&Date.parse(event.at||'')<=callTime);
+      role=isRepair?'Design + assembly · repair':'Design + assembly';
+    }else if(label.includes('theme')||label.includes('direction'))role='Art direction';
+    const state=call.status==='dispatched'?'In flight':call.status==='returned'?'Returned':call.status==='failed_or_unknown'?'Failed or unknown':String(call.status||'Status unrecorded');
+    const model=modelName(call.model||job.model),row=el('div',undefined,'role-call');
+    row.append(el('span',role,'role-name'),el('span',[`Call ${call.number??'?'}`,state,model].filter(Boolean).join(' · '),'role-status'));host.append(row);
+  }
+  if(!job.artDirection&&!calls.length)host.append(el('p',job.provider==='fixture'?'Offline rehearsal · no model calls were recorded.':'No model calls have been recorded yet.','empty-event'));
+  if(job.agent)host.append(el('p',`Managed agent · ${job.agent}`,'role-model-note'));
+}
 function renderJob(job){
   const newJob=currentJob?.id!==job.id;
   if(newJob&&typeof job.prompt==='string'){$('prompt').value=job.prompt;displayedBrief=Object.values(briefs).includes(job.prompt)?job.prompt:'';$('inject').checked=job.injectDefect===true;$('user-feedback').value=job.userFeedback||'';$('refinement-preview-result').replaceChildren();$('refinement-error').textContent='';}
+  if(job.inferTheme!==undefined)$('use-manual-theme').checked=job.inferTheme===false;
   jobsCache.set(job.id,job);
   currentJob=job;busy=!terminal.includes(job.status);$('start').disabled=busy;$('cancel').hidden=!busy;setEditorLocked(busy);$('contract-version').textContent=`CONTRACT v${job.contractVersion||1}`;
   const editorContract=editorTheme(job.theme,job.themeId);
   if(JSON.stringify(themeContract)!==JSON.stringify(editorContract))renderThemeContract(editorContract,{selectPreset:true,preview:false});
-  $('run-status').textContent=job.status.toUpperCase();$('run-title').textContent=job.status==='accepted'?'A candidate has earned its place.':job.status==='active'?'The asset is active in the test scene.':job.status==='blocked'?'The loop needs attention.':busy?'The next iteration is taking shape.':'Run complete.';
-  $('run-budget').textContent=`${job.attempts.length}/3 CANDIDATES · ${job.calls}/6 CALLS`;
+  $('run-status').textContent=job.status.toUpperCase();
+  const limits=job.pipeline?.contract?.limits||{};
+  $('run-budget').textContent=`${job.attempts.length}/${limits.maxAttempts??3} CANDIDATES · ${job.calls}/${limits.maxProviderCalls??6} CALLS`;
+  $('run-title').textContent=job.status==='accepted'?'Candidate accepted.':job.status==='active'?'Candidate active in preview.':job.status==='blocked'?'Run blocked.':busy?'Run in progress.':'Run finished.';
+  if(job.artDirection){const model=job.artDirection.model||job.artDirection.modelId||job.artDirection.providerModel||job.model||'model metadata unavailable';$('theme-draft-note').textContent=`ART DIRECTION · ${typeof model==='string'?model:'Model metadata recorded'} inferred and recorded for this job; its theme is frozen.`;}
   $('events').replaceChildren(...job.events.slice().reverse().map(event=>{const row=el('div',undefined,'event');row.append(el('time',new Date(event.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})),el('span',event.message));return row;}));
-  const stage={queued:'generating',generating:'generating',repairing:'generating',validating:'validating',rendering:'validating',reviewing:'reviewing',accepted:'accepted',active:'accepted'}[job.status];
-  document.querySelectorAll('[data-stage]').forEach(e=>e.classList.toggle('running',e.dataset.stage===stage));
+  renderRoleProgress(job);
   const attempt=job.attempts.at(-1);renderChecks(attempt?.checks);
   if(attempt?.recipe&&attempt.hash!==lastHash){world.load(attempt.recipe,job.theme);lastHash=attempt.hash;$('scene-name').textContent=attempt.recipe.name.toUpperCase();$('scene-theme').textContent=job.theme.name.toUpperCase();$('version-label').textContent=`CANDIDATE ${attempt.number}`;}
   $('activate').disabled=job.status!=='accepted';$('activate').textContent=job.status==='accepted'?(job.provider==='fixture'?'Use rehearsal asset in preview ↗':'Use verified asset in preview ↗'):job.status==='active'?'Asset is active ✓':'Awaiting a verified candidate ↗';
@@ -318,29 +399,32 @@ function renderJob(job){
   if(job.stopReason&&['blocked','exhausted'].includes(job.status))$('error').textContent=job.stopReason;
 }
 for(const t of Object.values(THEMES)){const option=el('option',t.name+' · '+t.genre);option.value=t.id;$('theme').append(option);}
-$('theme').onchange=themeChanged;$('provider').onchange=modeNote;themeChanged();renderChecks();
+$('theme').onchange=()=>{$('use-manual-theme').checked=true;themeChanged();$('theme-draft-note').textContent='MANUAL THEME OVERRIDE · The selected preset will be frozen for this job.';};
+$('provider').onchange=modeNote;themeChanged();draftPromptTheme();renderChecks();
+$('prompt').addEventListener('input',()=>{
+  if(localThemeTimer)clearTimeout(localThemeTimer);
+  if($('use-manual-theme').checked){$('theme-draft-note').textContent='MANUAL THEME OVERRIDE · Prompt changes will not replace this contract.';return;}
+  localThemeTimer=setTimeout(()=>draftPromptTheme(),220);
+});
+$('use-manual-theme').addEventListener('change',()=>{
+  if($('use-manual-theme').checked)$('theme-draft-note').textContent='MANUAL THEME OVERRIDE · The edited contract will be frozen instead of requesting prompt-based art direction.';
+  else draftPromptTheme();
+});
 document.querySelectorAll('[data-theme-field],[data-theme-list],[data-palette]').forEach(input=>input.addEventListener('change',()=>{
   if(!themeContract)return;
-  try{themeContract=validateContract(themeFromForm());renderThemeContract(themeContract,{selectPreset:false});$('theme-error').textContent='';}
+  try{$('use-manual-theme').checked=true;themeContract=validateContract(themeFromForm());renderThemeContract(themeContract,{selectPreset:false});$('theme-draft-note').textContent='MANUAL THEME OVERRIDE · The edited contract will be frozen instead of requesting prompt-based art direction.';$('theme-error').textContent='';}
   catch(e){$('theme-error').textContent=e.message;}
 }));
 document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{world.view(Number(button.dataset.view));document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('selected',b===button));});
 $('enter').onclick=()=>world.goInside();
-$('draft-theme').onclick=()=>{
-  try{
-    const result=draftThemeFromPrompt($('prompt').value,$('theme').value),draft=result?.theme||result,checked=validateContract(draft);
-    renderThemeContract(checked,{selectPreset:true});
-    $('theme-contract').open=true;
-    $('theme-draft-note').textContent=`LOCAL KEYWORD DRAFT · Fallback preset: ${checked.referencePreset}. Review the assumptions shown in the contract before generating; this uses no AI semantic inference.`;
-    $('theme-error').textContent='';
-  }catch(e){$('theme-error').textContent=e.message;}
-};
+$('draft-theme').onclick=()=>{draftPromptTheme({open:true});$('advanced-settings').open=true;$('theme-contract').open=true;};
 $('resolve-theme').onclick=async()=>{
   if(config?.themeInferenceEnabled!==true)return;
   $('resolve-theme').disabled=true;$('theme-error').textContent='';
   try{
     const result=await api('/api/themes/resolve',{prompt:$('prompt').value}),resolved=validateContract(result.theme);
     renderThemeContract(resolved,{selectPreset:true});
+    $('use-manual-theme').checked=true;$('advanced-settings').open=true;
     $('theme-contract').open=true;
     $('theme-draft-note').textContent=`GEMINI-RESOLVED DRAFT · Fallback family: ${resolved.referencePreset}. Review all recorded assumptions before use.`;
   }catch(e){$('theme-error').textContent=e.message;}
@@ -349,20 +433,40 @@ $('resolve-theme').onclick=async()=>{
 $('start').onclick=async()=>{
   $('error').textContent='';$('theme-error').textContent='';const consentError=referenceConsentError();if(consentError){$('reference-error').textContent=consentError;return;}$('reference-error').textContent='';$('start').disabled=true;releasePinned=false;sceneRevision++;
   try{
-    const frozenTheme=validateContract(themeFromForm());renderThemeContract(frozenTheme,{selectPreset:false,preview:false});setEditorLocked(true);
-    const job=await api('/api/jobs',{themeId:frozenTheme.id,theme:frozenTheme,prompt:$('prompt').value,provider:$('provider').value,injectDefect:$('inject').checked,...referenceRequestFields()});lastHash='';renderJob(job);
+    const frozenTheme=validateContract(themeFromForm()),inferTheme=!$('use-manual-theme').checked;renderThemeContract(frozenTheme,{selectPreset:false,preview:false});
+    $('theme-draft-note').textContent=inferTheme?'Prompt-based art direction requested; waiting for the job record to confirm its inferred theme.':'Manual theme contract submitted for this job.';setEditorLocked(true);
+    const job=await api('/api/jobs',{themeId:frozenTheme.id,theme:frozenTheme,prompt:$('prompt').value,inferTheme,provider:$('provider').value,injectDefect:$('inject').checked,...referenceRequestFields()});lastHash='';renderJob(job);
   }catch(e){error(e);$('theme-error').textContent=e.message;$('start').disabled=false;setEditorLocked(false);}
 };
 $('cancel').onclick=async()=>{try{renderJob(await api(`/api/jobs/${currentJob.id}/cancel`,{}));}catch(e){error(e);}};
 $('activate').onclick=async()=>{try{const r=await api(`/api/jobs/${currentJob.id}/activate`,{});$('release-label').textContent=(r.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+r.hash.slice(0,10);renderJob(await api('/api/jobs/'+currentJob.id));}catch(e){error(e);}};
 $('base-version').onchange=()=>{if(currentJob)renderRefinementControls(currentJob);};
 $('user-feedback').addEventListener('input',()=>{if(currentJob)renderRefinementControls(currentJob);});
+$('component-scope').addEventListener('change',()=>{if(currentJob)renderRefinementControls(currentJob);});
+$('component-target').addEventListener('change',()=>{if(currentJob)renderRefinementControls(currentJob);});
+$('component-id').addEventListener('input',()=>{if(currentJob)renderRefinementControls(currentJob);});
+$('component-name').addEventListener('input',()=>{if(currentJob)renderRefinementControls(currentJob);});
 $('reference-file').addEventListener('change',event=>chooseLocalReference(event.target.files?.[0]));
 $('clear-reference').onclick=clearLocalReference;
 function refinementRequest(){
   const selected=currentJob?.attempts?.find(attempt=>attempt.hash===$('base-version').value&&attempt.recipe),userFeedback=$('user-feedback').value.trim();
   if(!currentJob||!selected)return null;
-  return {baseJobId:currentJob.id,baseAttemptNumber:selected.number,baseCandidateHash:selected.hash,userFeedback,prompt:currentJob.prompt,theme:structuredClone(currentJob.theme),provider:$('provider').value,injectDefect:false,...referenceRequestFields()};
+  const request={baseJobId:currentJob.id,baseAttemptNumber:selected.number,baseCandidateHash:selected.hash,userFeedback,prompt:currentJob.prompt,theme:structuredClone(currentJob.theme),provider:$('provider').value,injectDefect:false,...referenceRequestFields()};
+  const scope=$('component-scope').value;
+  if(scope==='modify'){
+    const component=selected.recipe.scene?.components?.find(item=>item.id===$('component-target').value);
+    if(!component)return null;
+    request.componentEdit={mode:'modify',componentId:component.id};
+    request.componentInstruction=`Edit only the named component with stable ID "${component.id}". Preserve every untargeted component, its stable ID, and its geometry. Make an intentional visual variation through silhouette, layout, proportions, construction, material finish or weathering, or signature geometry; a palette-only change is insufficient.`;
+  }else if(scope==='add'){
+    const componentId=$('component-id').value.trim(),componentName=$('component-name').value.trim();
+    const components=selected.recipe.scene?.components||[],usedIds=new Set(components.map(item=>String(item.id||'').trim().toLowerCase()));
+    if(!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(componentId)||usedIds.has(componentId.toLowerCase())||!componentName)return null;
+    request.componentEdit={mode:'add',componentId};
+    request.componentName=componentName;
+    request.componentInstruction=`Append one named component "${componentName}" with stable ID "${componentId}". Preserve every existing component, its stable ID, and its geometry. Give the new component meaningful geometry through silhouette, placement/layout, proportions, construction, material finish or weathering, or signature features; do not rely on palette alone.`;
+  }
+  return request;
 }
 $('preview-refinement').onclick=async()=>{
   $('refinement-error').textContent='';$('refinement-preview-result').replaceChildren();
