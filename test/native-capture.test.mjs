@@ -47,6 +47,15 @@ async function waitForFile(file,timeoutMs=2000){
   assert.fail(`Timed out waiting for ${file}`);
 }
 
+function failOnce(t,method,shouldFail,message='injected filesystem failure'){
+  const original=fs[method];let failed=false;
+  fs[method]=(...args)=>{
+    if(!failed&&shouldFail(...args)){failed=true;throw new Error(message);}
+    return original(...args);
+  };
+  t.after(()=>{fs[method]=original;});
+}
+
 test('native adapter binds exact candidate and all three PNGs without inventing native movement',async t=>{
   const input=setup(t);
   const result=await captureNative(input);
@@ -124,6 +133,52 @@ test('spawn failure retains its diagnostic and leaves public evidence untouched'
   assert.match(log,/Native renderer could not start/);
   assert.ok(Buffer.byteLength(log)<=32768);
   assert.equal(fs.readFileSync(path.join(folder,'1-0.png'),'utf8'),'prior evidence');
+});
+
+test('evidence manifest staging failure preserves all public image bytes',async t=>{
+  const input=setup(t),folder=path.join(input.root,'.data',input.job.id),prior=['prior-front','prior-side','prior-rear'];
+  fs.mkdirSync(folder,{recursive:true});
+  prior.forEach((bytes,index)=>fs.writeFileSync(path.join(folder,`1-${index}.png`),bytes));
+  failOnce(t,'writeFileSync',file=>path.basename(String(file)).startsWith('evidence.json'),'injected evidence manifest staging failure');
+  await assert.rejects(captureNative(input),/injected evidence manifest staging failure/);
+  prior.forEach((bytes,index)=>assert.equal(fs.readFileSync(path.join(folder,`1-${index}.png`),'utf8'),bytes));
+});
+
+test('second image publication failure restores all prior public image bytes',async t=>{
+  const input=setup(t),folder=path.join(input.root,'.data',input.job.id),prior=['prior-front','prior-side','prior-rear'];
+  fs.mkdirSync(folder,{recursive:true});
+  prior.forEach((bytes,index)=>fs.writeFileSync(path.join(folder,`1-${index}.png`),bytes));
+  failOnce(t,'renameSync',(source,target)=>path.basename(String(target))==='1-1.png'&&path.basename(String(source))==='staged-2.png','injected second frame publication failure');
+  await assert.rejects(captureNative(input),/injected second frame publication failure/);
+  prior.forEach((bytes,index)=>assert.equal(fs.readFileSync(path.join(folder,`1-${index}.png`),'utf8'),bytes));
+});
+
+test('failed second image publication removes newly published frames when no prior images exist',async t=>{
+  const input=setup(t),folder=path.join(input.root,'.data',input.job.id);
+  failOnce(t,'renameSync',(source,target)=>path.basename(String(target))==='1-1.png'&&path.basename(String(source))==='staged-2.png','injected second frame publication failure');
+  await assert.rejects(captureNative(input),/injected second frame publication failure/);
+  for(let index=0;index<3;index++)assert.equal(fs.existsSync(path.join(folder,`1-${index}.png`)),false);
+});
+
+test('rollback failure is reported with the surviving backup location',async t=>{
+  const input=setup(t),folder=path.join(input.root,'.data',input.job.id),original=fs.renameSync;
+  fs.mkdirSync(folder,{recursive:true});fs.writeFileSync(path.join(folder,'1-0.png'),'prior-front');
+  fs.writeFileSync(path.join(folder,'1-1.png'),'prior-side');fs.writeFileSync(path.join(folder,'1-2.png'),'prior-rear');
+  let failedPublish=false,failedRestore=false;
+  fs.renameSync=(source,target)=>{
+    if(!failedPublish&&path.basename(String(target))==='1-1.png'&&path.basename(String(source))==='staged-2.png'){
+      failedPublish=true;throw new Error('injected second frame publication failure');
+    }
+    if(failedPublish&&!failedRestore&&path.basename(String(source))==='prior-0.png'){
+      failedRestore=true;throw new Error('injected rollback failure');
+    }
+    return original(source,target);
+  };
+  t.after(()=>{fs.renameSync=original;});
+  await assert.rejects(captureNative(input),/rollback incomplete.*1-0\.png.*prior-0\.png/i);
+  const evidenceDir=attemptFolder(input);
+  assert.ok(fs.existsSync(path.join(evidenceDir,'prior-0.png')));
+  assert.notEqual(fs.readFileSync(path.join(folder,'1-0.png'),'utf8'),'prior-front');
 });
 
 test('baseline capture uses attempt zero and the frozen wider review extent',async t=>{
