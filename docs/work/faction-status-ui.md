@@ -51,3 +51,9 @@ adoption chain shows that current request's actual stage. Coordinated with state
 owner: adopted + styleChanged:false means an existing direction is confirmed and
 stale members are aligning; unchanged + no child IDs means no convergence work.
 Focused checks cover all three cases and the exact one-child/two-members count.
+
+Collapsed-card correction against fd81c46: preserve the upstream preview and
+reconciliation changes, but choose active work first and otherwise the latest
+current request. An older Landing failure no longer hides a later Copper
+completion. Failures remain in faction detail/history. Syntax and focused
+selection checks pass; no browser interaction or reload was performed.
