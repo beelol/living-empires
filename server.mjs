@@ -18,6 +18,7 @@ const spending=new SpendLedger(data,process.env.GOOGLE_SESSION_BUDGET_USD,{spons
 const port=Number(process.env.PORT||4317), base=`http://127.0.0.1:${port}`;
 const apiKey=process.env.GEMINI_API_KEY||process.env.GOOGLE_API_KEY;
 const model=process.env.GEMINI_MODEL||'gemini-3.8-flash';
+const roleModels=Object.freeze({creator:process.env.CREATOR_MODEL||model,repair:process.env.REPAIR_MODEL||model,reviewer:process.env.REVIEWER_MODEL||model});
 const agent=process.env.GEMINI_AGENT||'antigravity-preview-09-2026';
 const themeInferenceEnabled=process.env.THEME_INFERENCE_ENABLED==='1';
 const jobs=new Map(), controllers=new Map();
@@ -120,9 +121,12 @@ function syncPipeline(job,op,extra={}){
   job.pipeline=result.pipeline;job.calls=job.pipeline.providerCalls;save(job);return result.value;
 }
 async function providerCall(job,label,input){
+  const role=input.op==='review'?'reviewer':job.pipeline.attemptCount===0?'creator':'repair';
+  const frozenModel=job.pipeline.contract.roleModels?.[role]||job.pipeline.contract.provenance.model;
+  if(input.request.model!==frozenModel)throw new Error('Provider role model differs from the frozen contract.');
   const spendId=spending.reserve({jobId:job.id,label,model:input.request.model,managed:input.op==='generate'&&input.request.managed});
   syncPipeline(job,'charge');
-  const entry={number:job.pipeline.providerCalls,label,spendId,status:'dispatched',at:new Date().toISOString()};job.callLog.push(entry);job.calls=job.pipeline.providerCalls;job.spending=spending.summary();save(job);
+  const entry={number:job.pipeline.providerCalls,label,role:input.op==='review'?'reviewer':job.pipeline.attemptCount===0?'creator':'repair',model:input.request.model,agent:input.op==='generate'&&input.request.managed?input.request.agent:null,managed:input.op==='generate'&&input.request.managed,spendId,status:'dispatched',at:new Date().toISOString()};job.callLog.push(entry);job.calls=job.pipeline.providerCalls;job.spending=spending.summary();save(job);
   try{
     const result=await rustAsync(input,controllers.get(job.id)?.signal,input.op==='generate'&&input.request.managed?330000:120000);
     if(result.providerError){
@@ -172,8 +176,10 @@ function refinementSource(input,theme){
   return {jobId:baseJob.id,number,hash:attempt.hash,recipe:structuredClone(attempt.recipe),images:[...attempt.images],imageHashes:[...attempt.imageHashes],userFeedback:input.userFeedback.trim(),findings:[...attempt.checks.filter(c=>c.status!=='pass').map(c=>`${c.id}: ${c.detail}`),...(attempt.review?.comparison?.defects||[]).map(d=>`View ${d.view}, ${d.location}: ${d.issue}. Repair: ${d.repair}`),...(attempt.review?.comparison?.strengths||[]).map(s=>`Preserve: ${s}`)]};
 }
 function generationRequest(job,previous,findings){
+  const models=job.roleModels||{creator:job.model||roleModels.creator,repair:job.model||roleModels.repair};
+  const selectedModel=(job.pipeline?.attemptCount||0)===0?models.creator:models.repair;
   if(job.pipeline&&stableJSON(job.reference||null)!==stableJSON(job.pipeline.contract.reference||null))throw new Error('The frozen reference image consent or identity changed; create a new job.');
-  return {theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,sceneHalfExtent:job.sceneHalfExtent??job.pipeline?.contract.sceneHalfExtent??null,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),referenceImages:job.referenceImages||[],referenceConsent:job.reference?.consent===true,referenceSha256:job.reference?.sha256||null,referenceMimeType:job.reference?.mimeType||null,model,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};
+  return {theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,sceneHalfExtent:job.sceneHalfExtent??job.pipeline?.contract.sceneHalfExtent??null,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),referenceImages:job.referenceImages||[],referenceConsent:job.reference?.consent===true,referenceSha256:job.reference?.sha256||null,referenceMimeType:job.reference?.mimeType||null,model:selectedModel,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};
 }
 async function generate(job,previous,findings){
   if(job.provider==='fixture'){
@@ -182,10 +188,10 @@ async function generate(job,previous,findings){
     await new Promise(resolve=>setTimeout(resolve,350));ensureCurrent(job);return result.recipe;
   }
   const request=generationRequest(job,previous,findings);
-  job.creatorInputs=job.creatorInputs||[];job.creatorInputs.push({attempt:job.pipeline.attemptCount+1,baselineHash:job.baseline?.hash||null,previousRecipeHash:job.attempts.at(-1)?.hash||job.baseline?.hash||null,userFeedback:request.userFeedback,findings:request.findings,sceneHalfExtent:request.sceneHalfExtent,reference:job.reference||null});save(job);
+  job.creatorInputs=job.creatorInputs||[];job.creatorInputs.push({attempt:job.pipeline.attemptCount+1,baselineHash:job.baseline?.hash||null,previousRecipeHash:job.attempts.at(-1)?.hash||job.baseline?.hash||null,userFeedback:request.userFeedback,findings:request.findings,sceneHalfExtent:request.sceneHalfExtent,reference:job.reference||null,model:request.model,agent:request.managed?request.agent:null});save(job);
   const result=await providerCall(job,'Gemini creator',{op:'generate',request});
   job.interactionId=result.interactionId||job.interactionId;job.environmentId=result.environmentId||job.environmentId;
-  job.providerResponses.push({kind:'creator',response:redactReference(job,result.response),usage:result.usage||null});save(job);return result.recipe;
+  job.providerResponses.push({kind:'creator',model:request.model,agent:request.managed?request.agent:null,response:redactReference(job,result.response),usage:result.usage||null});save(job);return result.recipe;
 }
 async function getBrowser(){
   if(!browser){
@@ -249,9 +255,9 @@ async function review(job,attempt){
   });
   const prior=job.attempts.at(-2)||job.baseline;
   const previous=prior?{candidateHash:prior.hash,imageHashes:prior.imageHashes,images:imageInputs(prior),strengths:prior.review?.comparison?.strengths||[]}:null;
-  const request={theme:job.theme,prompt:job.prompt,candidateHash:attempt.hash,imageHashes:attempt.imageHashes,images:imageInputs(attempt),previous,model};
+  const request={theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,sceneHalfExtent:job.sceneHalfExtent,candidateHash:attempt.hash,imageHashes:attempt.imageHashes,images:imageInputs(attempt),previous,model:job.roleModels?.reviewer||job.model||roleModels.reviewer};
   const result=await providerCall(job,'independent comparative visual reviewer',{op:'review',request});
-  job.providerResponses.push({kind:'reviewer',response:result.response,usage:result.usage||null});save(job);return result;
+  job.providerResponses.push({kind:'reviewer',model:request.model,agent:null,response:result.response,usage:result.usage||null});save(job);return result;
 }
 function geometryDelta(previous,current){
   const diff=(before,after)=>{const old=new Map(before.map(p=>[p.id,p])),next=new Map(after.map(p=>[p.id,p]));return {added:[...next.keys()].filter(id=>!old.has(id)),changed:[...next.keys()].filter(id=>old.has(id)&&stableJSON(old.get(id))!==stableJSON(next.get(id))),removed:[...old.keys()].filter(id=>!next.has(id))};};
@@ -358,7 +364,7 @@ const server=http.createServer(async(req,res)=>{
         if(input.provider==='fixture')return json(res,200,{summary:'Offline fixtures do not use artistic feedback. Select Gemini managed agent to inspect the real refinement request; this preview makes no API call.',request:{provider:'fixture',baseCandidateHash:baseline.hash,userFeedback:baseline.userFeedback,referenceImages:'local only; not included'}});
         if(!['managed','gemini'].includes(input.provider))throw new Error('Select a generation engine.');
         const sceneHalfExtent=Number(input.sceneHalfExtent??Math.max(12,baseline.recipe.scene?.halfExtent||4));
-        const request=generationRequest({theme,prompt:input.prompt||jobs.get(baseline.jobId).prompt,provider:input.provider,userFeedback:baseline.userFeedback,sceneHalfExtent,reference:reference.reference,referenceImages:reference.images},baseline.recipe,baseline.findings);
+        const request=generationRequest({theme,prompt:input.prompt||jobs.get(baseline.jobId).prompt,provider:input.provider,userFeedback:baseline.userFeedback,sceneHalfExtent,roleModels,reference:reference.reference,referenceImages:reference.images},baseline.recipe,baseline.findings);
         const prepared=redactPrepared(rustSync({op:'prepare-generation',request}));
         return json(res,200,{summary:'Prepared locally only: the selected baseline recipe, your feedback, critic targets and frozen scene extent reach the creator request. No API call or reference-image transmission occurred.',request:{baseJobId:baseline.jobId,baseAttemptNumber:baseline.number,baseCandidateHash:baseline.hash,userFeedback:baseline.userFeedback,sceneHalfExtent,reference:reference.reference,...prepared}});
       }
@@ -397,9 +403,21 @@ const server=http.createServer(async(req,res)=>{
         const sceneHalfExtent=input.provider==='fixture'?(input.previewRecipe?.scene?.halfExtent??null):Number(input.sceneHalfExtent??Math.max(12,baseSource?.recipe.scene?.halfExtent||4));
         if(sceneHalfExtent!==null&&(!Number.isFinite(sceneHalfExtent)||sceneHalfExtent<4||sceneHalfExtent>16))throw new Error('Scene half extent must be 4–16 metres.');
         const now=Math.max(Date.now(),lastPipelineTime+1);lastPipelineTime=now;
-        const createInput={op:'create',theme,prompt:input.prompt,now,...(reference.reference?{reference:reference.reference}:{}),...(sceneHalfExtent!==null?{sceneHalfExtent}:{}),provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}};
+        let retryGroupId=null,limits=null;
+        if(input.retryOf){
+          const prior=jobs.get(input.retryOf);
+          if(!prior||prior.status!=='blocked'||!prior.callLog?.length||prior.callLog.some(call=>!['returned','returned_error'].includes(call.status))||prior.callLog.at(-1).responseStatus!=='incomplete')throw new Error('A retry requires a reconciled incomplete provider response; unknown calls cannot be retried.');
+          if(stableJSON(prior.theme)!==stableJSON(theme)||prior.prompt!==input.prompt)throw new Error('A bounded retry preserves the original theme and user brief.');
+          retryGroupId=prior.retryGroupId||prior.id;
+          const group=[...jobs.values()].filter(j=>j.id===retryGroupId||j.retryGroupId===retryGroupId);
+          const rootJob=jobs.get(retryGroupId),calls=group.reduce((n,j)=>n+(j.callLog?.length||0),0),attempts=group.reduce((n,j)=>n+j.attempts.length,0);
+          const remaining=rootJob.deadline-now;
+          if(calls>=6||attempts>=3||remaining<1000)throw new Error('The original job group call, candidate, or time limit is exhausted.');
+          limits={maxAttempts:3-attempts,maxProviderCalls:6-calls,timeBudgetMs:remaining,requiredImageHashes:3};
+        }
+        const createInput={op:'create',theme,prompt:input.prompt,now,...(limits?{limits}:{}),...(input.provider!=='fixture'?{roleModels}:{}),...(reference.reference?{reference:reference.reference}:{}),...(sceneHalfExtent!==null?{sceneHalfExtent}:{}),provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':roleModels.creator,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}};
         const pipeline=rustSync(createInput).pipeline;
-        const job={id:pipeline.contract.jobId,pipeline,createInput,sceneHalfExtent,reference:reference.reference,baseJobId:baseSource?.jobId||null,baseAttemptNumber:baseSource?.number||null,baseCandidateHash:baseSource?.hash||null,userFeedback:baseSource?.userFeedback||null,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:baseSource?'preparing':'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
+        const job={id:pipeline.contract.jobId,pipeline,createInput,sceneHalfExtent,retryOf:input.retryOf||null,retryGroupId,roleModels:input.provider==='fixture'?null:roleModels,reference:reference.reference,baseJobId:baseSource?.jobId||null,baseAttemptNumber:baseSource?.number||null,baseCandidateHash:baseSource?.hash||null,userFeedback:baseSource?.userFeedback||null,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':roleModels.creator,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:baseSource?'preparing':'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
         Object.defineProperty(job,'referenceImages',{value:reference.images,enumerable:false});
         if(input.previewRecipe){if(input.provider!=='fixture')throw new Error('Authored recipe previews are offline only.');rustChecks(input.previewRecipe,theme.id,theme);job.previewRecipe=structuredClone(input.previewRecipe);job.previewKind='authored_scene';job.sceneHalfExtent=input.previewRecipe.scene?.halfExtent||4;}
         jobs.set(job.id,job);controllers.set(job.id,new AbortController());event(job,job.status,baseSource?'Preparing matched baseline evidence; no generation dispatched yet.':'Brief and theme contract frozen. Job limit: three candidates, six paid calls, twenty minutes.');
@@ -428,7 +446,7 @@ const server=http.createServer(async(req,res)=>{
       return json(res,404,{error:'Unknown action'});
     }
     if(req.method!=='GET')return json(res,405,{error:'Method not allowed'});
-    if(pathname==='/api/config')return json(res,200,{keyConfigured:!!apiKey,model,agent,themes:THEMES,themeInferenceEnabled,spending:spending.summary()});
+    if(pathname==='/api/config')return json(res,200,{keyConfigured:!!apiKey,model,roleModels,agent,themes:THEMES,themeInferenceEnabled,spending:spending.summary()});
     if(pathname==='/api/render-task'){
       lastRendererSeen=Date.now();const task=renderTasks.values().next().value;
       return json(res,200,task?{token:task.token,jobId:task.jobId,attemptNumber:task.attemptNumber,candidateHash:task.candidateHash,recipe:task.recipe,theme:task.theme,sceneHalfExtent:task.sceneHalfExtent}:null);
