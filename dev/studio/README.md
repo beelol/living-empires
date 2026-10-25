@@ -210,7 +210,7 @@ Inventories, orders, diplomacy, faction names and raw observations are excluded.
 For the deployed world the worker invocation is:
 
 ```sh
-python3 dev/studio/foundry.py --database .local-deploy/foundry.sqlite --gm-ledger .local-deploy/world.json.game-master.json --policies .local-deploy/foundry-policy.json --output .local-deploy/foundry-ready --provider managed --live-authorized
+python3 dev/studio/foundry.py --database .local/city-deploy/world.json.foundry.sqlite --gm-ledger .local/city-deploy/world.json.game-master.json --policies .local/city-deploy/foundry-policy.json --output .local/city-deploy/world.json.foundry-ready --provider managed --live-authorized
 ```
 
 Policies are an operator-owned JSON map of faction ID to `{themeId}` or full
@@ -229,7 +229,7 @@ timestamps, receipts and exact package/render bytes in an owner-only SQLite stor
 On acceptance it invokes the first-party `world-check` package verifier, reparses
 the HTTP package through the same typed Rust integrity check, and verifies all
 three distinct PNG fingerprints. Complete immutable output is sealed before an
-atomic directory publication at `foundry-ready/need-<hash>/`. It contains
+atomic directory publication at `WORLD_STATE.foundry-ready/need-<hash>/`. It contains
 `request.json`, `job.json`, `package.json`, three fingerprint-named PNGs and
 `ready.json`, a GM v1 `content.candidate_ready` notice with faction ACLs. A restart
 after publication reuses sealed bytes and stable notice identity. This notice is
@@ -260,3 +260,7 @@ outcomes without inventing a dollar ceiling or applying another model's price.
 The setting must be explicitly supplied on each server start; saved usage never
 enables it. Existing capped operation stays the default. This does not change
 the per-job three-candidate, six-call or twenty-minute limits.
+
+Spool and controller ledger paths are bound to the complete world-state filename,
+not just its parent folder. GM and producer use `WORLD_STATE.foundry-ready/`
+and `WORLD_STATE.foundry-events/`; sibling worlds must never share these paths.
