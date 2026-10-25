@@ -78,7 +78,7 @@ fn direct_payload_contains_the_full_frozen_theme_and_structured_schema() {
     assert!(prompt.contains("Give the roof a distinct arch"));
     assert!(prompt.contains("halfExtent of 12 metres"));
     assert_eq!(body["generationConfig"]["responseFormat"]["text"]["schema"]["properties"]["parts"]["maxItems"],128);
-    assert!(prompt.contains("exactly the asset scope requested by the brief"));
+    assert!(prompt.contains("Honor exactly the requested scope"));
     assert_eq!(body["generationConfig"]["responseFormat"]["text"]["schema"]["required"].as_array().unwrap().iter().any(|v|v=="scene"),true);
 }
 
@@ -224,10 +224,8 @@ fn generation_payload_has_concrete_array_shapes_and_top_level_scene_schema() {
     assert_eq!(schema["properties"]["parts"]["items"]["type"], "object");
     assert!(schema["properties"]["scene"]["items"].is_null());
     let prompt = body["contents"][0]["parts"][0]["text"].as_str().unwrap();
-    assert!(prompt.contains("exactly the asset scope requested by the brief"));
-    assert!(prompt.contains("do not expand one building into a multi-building compound"));
-    assert!(prompt.contains("\"components\":[{"));
-    assert!(prompt.contains("\"parts\":[{"));
+    assert!(prompt.contains("Honor exactly the requested scope"));
+    assert!(prompt.contains("a single building may have several distinct functional components"));
     assert!(prompt.contains("Components are a JSON array of objects, not a string"));
     assert!(!prompt.contains("\"components\":\"prompt-chosen"));
     assert!(prompt.contains("never ground or rock"));
@@ -384,10 +382,10 @@ fn repair_fixture_removes_only_audit_obstruction_and_preserves_identity() {
 }
 
 #[test]
-fn managed_prompt_has_an_exact_valid_component_example() {
+fn managed_prompt_has_component_schema_without_template_geometry() {
  let (_,body)=build_generation_request(&request(true)).unwrap();
  let text=body["input"][0]["text"].as_str().unwrap();
- assert!(text.contains("\"partIds\":["));
+ assert!(text.contains("\"partIds\":{\"items\":"));
  assert!(text.contains("lowercase hyphenated"));
  assert!(text.contains("Elevated fins"));
 }
@@ -407,8 +405,15 @@ fn generation_schema_matches_authoritative_scene_component_bounds() {
 }
 
 #[test]
-fn concrete_creator_example_has_grounded_supports_and_clear_access() {
- let (_,body)=build_generation_request(&request(false)).unwrap();let text=body["contents"][0]["parts"][0]["text"].as_str().unwrap();let start=text.find("structure: ").unwrap()+"structure: ".len();let example:Value=serde_json::Deserializer::from_str(&text[start..]).into_iter::<Value>().next().unwrap().unwrap();let recipe:living_world_core::Recipe=serde_json::from_value(example).unwrap();let checks=evaluate_with_theme(&recipe,&theme()).unwrap();assert!(checks.iter().all(|check|check.status=="pass"),"{checks:?}");
+fn creative_prompt_retains_grounding_and_access_without_template_geometry() {
+ let (_,body)=build_generation_request(&request(false)).unwrap();
+ let text=body["contents"][0]["parts"][0]["text"].as_str().unwrap();
+ assert!(text.contains("visible connected load path"));
+ assert!(text.contains("Preserve an unobstructed access route"));
+ assert!(text.contains("dominant focal silhouette"));
+ assert!(text.contains("preserve its theme, identity, gameplay role, stable component IDs and unaffected geometry"));
+ assert!(!text.contains("front-left"));
+ assert!(!text.contains("concrete recipe structure"));
 }
 
 #[test]
