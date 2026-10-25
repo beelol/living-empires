@@ -45,6 +45,46 @@ interface, add `--advertise YOUR_REACHABLE_IP:4001` (repeatable), or bind that e
 IP. Lightyear validates the advertised address during connection. The runner can
 also use an exact address with `--bind YOUR_REACHABLE_IP:4000`.
 
+## Gemini diplomacy demo
+
+Put the host's key in `.env.local` beside the root `Cargo.toml` (copy
+`.env.example`). This file is ignored by Git; never put a real key in the example.
+
+```dotenv
+GEMINI_API_KEY=your-key-here
+GEMINI_MODEL=gemini-4-argon
+DIPLOMACY_INTERVAL_SECONDS=10
+DIPLOMACY_MAX_CALLS=120
+```
+
+The **Rust host** reads this file; no shell `source` step is needed. Existing
+environment variables override file settings. `GOOGLE_API_KEY` is also accepted.
+Set `ARGON_ENV_FILE=/absolute/path/.env.local` when launching elsewhere. The
+deployment runner automatically supplies its repository's `.env.local` path, so
+credentials stay outside release snapshots. Only the host needs the key.
+
+Start `empires play` or `empires host` normally, then open
+<http://127.0.0.1:4000/diplomacy> on the host computer (use your host's port).
+Three seeded factions take turns with separate observations and histories. They
+can send messages, change their own stance, offer a five-minute non-aggression
+pact, and accept or decline the exact offer version. Offers expire after two
+minutes. The Rust authority validates each result and saves it before displaying
+success. Model calls run off the game loop. No key means waiting, not fake replies.
+
+The host picks up a newly saved key, model, interval or call limit between calls.
+Argon is the default; `GEMINI_MODEL=gemini-3.8-flash` can select Flash. Each HTTP attempt
+counts toward the durable call limit, including failures; after the limit, the
+loop pauses until you increase it. Calls time out after 20 seconds, failures
+back off, and native movement continues. Removing the key pauses new requests.
+
+The local operator page shows private observations and decision evidence, so
+only localhost can read it. Player/network snapshots do not include these records.
+The separate `<world-save>.diplomacy.json` retains faction identities, offers,
+pacts and all bounded attempt/outcome evidence across host restarts. This demo
+uses wall-clock pact deadlines. It does not yet connect combat enforcement,
+territory, inventory, physical deliveries or generated leaders, and is not a
+full-game acceptance pass.
+
 ## Edit Lua without a build
 
 Change `distance` in [content/rules.lua](content/rules.lua) and save. The running

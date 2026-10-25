@@ -260,7 +260,8 @@ class Runner:
         with (logs/f'host-{release.binary_revision}.log').open('ab') as output:
             process = subprocess.Popen([release.binary, 'host', '--bind', bind, '--content', content,
                 '--state', str(state), '--activate-file', str(gate)],
-                env=dict(os.environ, ARGON_RELEASE=release.binary_revision),
+                env=dict(os.environ, ARGON_RELEASE=release.binary_revision,
+                    ARGON_ENV_FILE=os.environ.get('ARGON_ENV_FILE', str(self.config.repo/'.env.local'))),
                 stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         self.activation_files[process.pid] = gate
         return process

@@ -30,3 +30,7 @@ rustc-ice-*.txt
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local API credentials (shared examples never contain secrets)
+.env.local
+.env

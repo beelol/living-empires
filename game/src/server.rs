@@ -7,7 +7,7 @@ use crate::{
     },
 };
 use anyhow::{Result, bail};
-use argon_dev::{content::ContentRuntime, world::World};
+use argon_dev::{content::ContentRuntime, diplomacy_loop::DiplomacyLoop, world::World};
 use bevy::prelude::*;
 use lightyear::prelude::{server, *};
 use serde_json::json;
@@ -224,6 +224,7 @@ pub fn run_with_stop(mut config: HostConfig, stop: Arc<AtomicBool>) -> Result<()
     let listener = Admin::bind(config.bind)?;
     config.bind = listener.local_addr()?;
     let health = Health::new(json!({"ok":false}));
+    let activation_file = config.activation_file.clone();
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .add_plugins(bevy::log::LogPlugin::default())
@@ -275,7 +276,13 @@ pub fn run_with_stop(mut config: HostConfig, stop: Arc<AtomicBool>) -> Result<()
     }
     // A health probe cannot pass until the real gameplay socket has started.
     app.world().non_send::<Authority>().publish_health();
-    let _admin = Admin::start(listener, health);
+    let mut diplomacy_path = config.state.as_os_str().to_os_string();
+    diplomacy_path.push(".diplomacy.json");
+    let env_file = std::env::var_os("ARGON_ENV_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".env.local"));
+    let diplomacy = DiplomacyLoop::start(diplomacy_path.into(), env_file, activation_file)?;
+    let _admin = Admin::start_with_diplomacy(listener, health, Some(diplomacy.status()));
     println!(
         "Living Empires Bevy/Lightyear host listening on {} (UDP gameplay, TCP status)",
         config.bind
@@ -283,6 +290,10 @@ pub fn run_with_stop(mut config: HostConfig, stop: Arc<AtomicBool>) -> Result<()
     println!(
         "Saved world: {}. Trusted LAN development only.",
         config.state.display()
+    );
+    println!(
+        "Local diplomacy view: http://127.0.0.1:{}/diplomacy",
+        config.bind.port()
     );
     while !stop.load(Ordering::Relaxed) {
         app.update();

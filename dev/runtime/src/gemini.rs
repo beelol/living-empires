@@ -72,7 +72,7 @@ fn load_with_env(path: &Path, env: impl Fn(&str) -> Option<String>) -> Result<Ge
         Err(_) => bail!("Cannot open diplomacy configuration file"),
     }
     let setting = |name: &str| env(name).or_else(|| values.get(name).cloned());
-    let model = setting("GEMINI_MODEL").unwrap_or_else(|| "gemini-3.8-flash".into());
+    let model = setting("GEMINI_MODEL").unwrap_or_else(|| "gemini-4-argon".into());
     validate_model(&model)?;
     let bounded_integer = |name: &str, default: u64, max: u64| -> Result<u64> {
         let Some(value) = setting(name) else {
@@ -285,7 +285,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let config = load_with_env(&directory.path().join(".env.local"), |_| None).unwrap();
         assert!(config.key.is_none());
-        assert_eq!(config.model, "gemini-3.8-flash");
+        assert_eq!(config.model, "gemini-4-argon");
         assert_eq!(config.interval, Duration::from_secs(10));
         assert_eq!(config.max_calls, 120);
     }

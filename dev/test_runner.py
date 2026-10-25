@@ -41,7 +41,7 @@ class H(BaseHTTPRequestHandler):
         value=json.loads(state.read_text());value['world']+=1;state.write_text(json.dumps(value))
         self.send_response(200);self.end_headers();self.wfile.write(b'{}')
     def do_GET(self):
-        payload={'ok':True,'content_version':content()['version'],'release':os.environ['ARGON_RELEASE'],'pid':os.getpid(),'accepting_commands':accepting()}
+        payload={'ok':True,'content_version':content()['version'],'release':os.environ['ARGON_RELEASE'],'pid':os.getpid(),'accepting_commands':accepting(),'env_file':os.environ.get('ARGON_ENV_FILE')}
         if content().get('health_nonobject'): payload=[]
         data=json.dumps(payload).encode();self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def log_message(self,*args): pass
@@ -121,6 +121,17 @@ shutil.copyfile(p/'dev/runtime/host.py',t);t.chmod(0o755)
         self.git('branch', '-m', 'master')
         with self.assertRaisesRegex(self.module.DeployError, 'main'):
             self.runner.select_revision()
+
+    def test_host_loads_env_from_repo_even_when_deployed_from_snapshot(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('ARGON_ENV_FILE', None)
+            self.deploy_first()
+        self.assertEqual(Path(self.runner.health()['env_file']).resolve(), (self.repo/'.env.local').resolve())
+
+    def test_host_preserves_explicit_env_file(self):
+        with mock.patch.dict(os.environ, {'ARGON_ENV_FILE':str(self.root/'custom.env')}):
+            self.deploy_first()
+        self.assertEqual(self.runner.health()['env_file'], str(self.root/'custom.env'))
 
     def test_ipv6_wildcard_health_uses_ipv6_loopback(self):
         response = mock.MagicMock()
