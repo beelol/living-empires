@@ -19,7 +19,7 @@ if(${JSON.stringify(mode)}==='ignore-term'){
   process.on('SIGTERM',()=>fs.writeFileSync(path.join(attemptDir,'term-received'),'yes'));
   process.stderr.write('renderer waiting for termination\\n');
   setInterval(()=>{},1000);
-  setTimeout(()=>process.exit(0),3000);
+  setTimeout(()=>process.exit(0),15000);
 }
 fs.writeFileSync(path.join(attemptDir,'started'),String(process.pid));
 fs.mkdirSync(out,{recursive:true});
@@ -88,7 +88,7 @@ test('renderer failure retains bounded stderr and the previous public evidence',
 test('timeout escalates termination and waits for renderer exit before rejecting',async t=>{
   const input=setup(t,{mode:'ignore-term'}),folder=path.join(input.root,'.data',input.job.id);
   fs.mkdirSync(folder,{recursive:true});fs.writeFileSync(path.join(folder,'1-0.png'),'prior evidence');
-  await assert.rejects(captureNative({...input,timeoutMs:800}),/Native capture deadline exceeded/);
+  await assert.rejects(captureNative({...input,timeoutMs:5000}),/Native capture deadline exceeded/);
   const evidenceDir=attemptFolder(input),pid=Number(fs.readFileSync(path.join(evidenceDir,'started'),'utf8'));
   assert.ok(fs.existsSync(path.join(evidenceDir,'term-received')));
   const log=fs.readFileSync(path.join(evidenceDir,'renderer.log'),'utf8');
