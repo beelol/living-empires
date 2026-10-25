@@ -32,6 +32,7 @@ const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const rustBinary=process.env.RUST_CORE_BIN||path.join(root,'target/debug/world-check');
 const rustBinarySha256=fs.existsSync(rustBinary)?createHash('sha256').update(fs.readFileSync(rustBinary)).digest('hex'):null;
 const sourceRevision=spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).stdout?.trim()||'unknown';
+const sourceSha256=digest([['server.mjs',fs.readFileSync(path.join(root,'server.mjs'),'utf8')],...fs.readdirSync(path.join(root,'lib')).filter(file=>file.endsWith('.mjs')).sort().map(file=>[`lib/${file}`,fs.readFileSync(path.join(root,'lib',file),'utf8')])]);
 const sourceFingerprint=digest(['server.mjs','public/app.mjs','public/style.css','public/index.html','public/themes.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/spend-ledger.mjs','lib/job-policy.mjs','lib/theme-inference.mjs','lib/native-capture.mjs','game/examples/foundry_audit.rs','crates/living-world-core/src/lib.rs','crates/living-world-core/src/main.rs','crates/living-world-core/src/pipeline.rs','crates/living-world-core/src/provider.rs','crates/living-world-core/fixtures/presets.json','Cargo.lock','package-lock.json'].map(file=>{const source=file.startsWith('public/')?path.join(publicRoot,file.slice(7)):path.join(root,file);return [file,fs.existsSync(source)?fs.readFileSync(source,'utf8'):null];}).concat([['world-check-binary-sha256',rustBinarySha256]]));
 function rustSync(input){
   if(!fs.existsSync(rustBinary))throw new Error('Rust core is not built. Run cargo build -p living-world-core before starting a run.');
@@ -393,9 +394,12 @@ const server=http.createServer(async(req,res)=>{
       if(pathname==='/api/themes/resolve'){
         if(!themeInferenceEnabled)return json(res,403,{error:'Live theme inference is prepared but disabled pending an operator-approved spending ceiling. Use the editable contract or labeled local draft.'});
         if(!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY to resolve a theme with Gemini.'});
+        if(typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)return json(res,400,{error:'Theme prompt must contain 5–3000 characters.'});
         const spendId=spending.reserve({jobId:'theme-draft',label:'theme inference',model,managed:false});
-        let draft;try{draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});spending.settle(spendId,draft.usage);}catch(error){if(error.themeInference){const id=randomUUID();spending.settle(spendId,error.themeInference.usage);atomic(path.join(data,`theme-draft-${id}.json`),{id,sourceRevision,model,prompt:input.prompt,status:'invalid',error:error.message,...error.themeInference,normalizations:error.themeInference.normalizations||[]});}else spending.unknown(spendId);throw error;}
-        const id=randomUUID();atomic(path.join(data,`theme-draft-${id}.json`),{id,sourceRevision,model,prompt:input.prompt,theme:draft.theme,normalizations:draft.normalizations||[],usage:draft.usage,response:draft.response});
+        const id=randomUUID(),draftFile=path.join(data,`theme-draft-${id}.json`);
+        atomic(draftFile,{id,sourceRevision,model,prompt:input.prompt,status:'dispatched',spendId});
+        let draft;try{draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});spending.settle(spendId,draft.usage);}catch(error){const returned=error.themeInference||null;if(returned)spending.settle(spendId,returned.usage);else spending.unknown(spendId);atomic(draftFile,{id,sourceRevision,model,prompt:input.prompt,status:returned?'invalid':'failed_or_unknown',spendId,error:error.message,...(returned||{}),normalizations:returned?.normalizations||[]});return json(res,returned?422:502,{error:error.message,reconciliationRequired:!returned,draftId:id,...(returned?.usage?{usage:returned.usage}:{}),...(returned?.normalizations?{normalizations:returned.normalizations}:{})});}
+        atomic(draftFile,{id,sourceRevision,model,prompt:input.prompt,spendId,status:'returned',theme:draft.theme,normalizations:draft.normalizations||[],usage:draft.usage,response:draft.response});
         return json(res,200,{theme:draft.theme,normalizations:draft.normalizations||[],usage:draft.usage,draftId:id,requiresReview:true});
       }
       if(pathname==='/api/render-task'){
@@ -497,7 +501,7 @@ const server=http.createServer(async(req,res)=>{
       return json(res,404,{error:'Unknown action'});
     }
     if(req.method!=='GET')return json(res,405,{error:'Method not allowed'});
-    if(pathname==='/api/config')return json(res,200,{service:'asset-foundry',sourceRoot:root,sourceRevision,protocolVersion:1,packageVersion:1,rustBinarySha256,capabilities:rustSync({op:'capabilities'}),jobLimits:fastLimits(),completionGoal:'satisfy-frozen-style',keyConfigured:!!apiKey,model,roleModels,agent,themes:THEMES,themeInferenceEnabled,spending:spending.summary()});
+    if(pathname==='/api/config')return json(res,200,{service:'asset-foundry',sourceRoot:root,sourceRevision,sourceSha256,protocolVersion:1,packageVersion:1,rustBinarySha256,capabilities:rustSync({op:'capabilities'}),jobLimits:fastLimits(),completionGoal:'satisfy-frozen-style',keyConfigured:!!apiKey,model,roleModels,agent,themes:THEMES,themeInferenceEnabled,spending:spending.summary()});
     if(pathname==='/api/render-task'){
       lastRendererSeen=Date.now();const task=renderTasks.values().next().value;
       return json(res,200,task?{token:task.token,jobId:task.jobId,attemptNumber:task.attemptNumber,candidateHash:task.candidateHash,recipe:task.recipe,theme:task.theme,sceneHalfExtent:task.sceneHalfExtent}:null);

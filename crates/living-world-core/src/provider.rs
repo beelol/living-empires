@@ -193,6 +193,20 @@ fn prompt_text(request: &GenerationRequest) -> Result<String, ProviderError> {
     Ok(text)
 }
 
+// Gemini's response-format decoder accepts the structure but rejects large nested
+// schemas with length, count, pattern, and numeric bounds. Keep those constraints in
+// the full prompt schema and enforce them again with Rust before any candidate passes.
+fn model_schema(value: Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.into_iter().map(model_schema).collect()),
+        Value::Object(items) => Value::Object(items.into_iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "minItems" | "maxItems" | "minLength" | "maxLength" | "pattern" | "minimum" | "maximum"))
+            .map(|(key, value)| (key, model_schema(value)))
+            .collect()),
+        other => other,
+    }
+}
+
 pub fn build_generation_request(request: &GenerationRequest) -> Result<(String, Value), ProviderError> {
     crate::validate_theme(&request.theme).map_err(|_| ProviderError::new("Invalid frozen theme contract"))?;
     if request.model.trim().is_empty() { return Err(ProviderError::new("Model is required")); }
@@ -219,11 +233,10 @@ pub fn build_generation_request(request: &GenerationRequest) -> Result<(String, 
         let mut parts = vec![json!({"text":input})];
         parts.extend(image_parts.iter().map(|image| json!({"inlineData":{"mimeType":image["mimeType"], "data":image["data"]}})));
         let generation_config = if request.model == "gemini-4-argon" {
-            // Argon JSON mode keeps the complete schema in the prompt and local validation.
-            // Omit the optional server constraint schema; local acceptance remains unchanged.
-            json!({"responseFormat":{"text":{"mimeType":"APPLICATION_JSON"}},"maxOutputTokens":16384,"thinkingConfig":{"thinkingLevel":"low"}})
+            // Argon keeps the complete schema in the prompt; only structural JSON reaches its decoder.
+            json!({"responseFormat":{"text":{"mimeType":"APPLICATION_JSON","schema":model_schema(serde_json::from_str::<Value>(GENERATION_SCHEMA).expect("static recipe schema"))}},"maxOutputTokens":16384,"thinkingConfig":{"thinkingLevel":"low"}})
         } else {
-            json!({"responseFormat":{"text":{"mimeType":"APPLICATION_JSON","schema":serde_json::from_str::<Value>(GENERATION_SCHEMA).expect("static recipe schema")}},"maxOutputTokens":7000})
+            json!({"responseFormat":{"text":{"mimeType":"APPLICATION_JSON","schema":model_schema(serde_json::from_str::<Value>(GENERATION_SCHEMA).expect("static recipe schema"))}},"maxOutputTokens":7000})
         };
         let body = json!({
             "contents": [{"role":"user", "parts":parts}],
@@ -422,7 +435,7 @@ pub fn build_review_request(request: &ReviewRequest) -> Result<(String, Value), 
         parts.push(json!({"text":format!("CURRENT VIEW {}",index+1)}));
         parts.push(json!({"inlineData":{"mimeType":"image/png","data":data}}));
     }
-    let body = json!({"contents":[{"role":"user","parts":parts}],"generationConfig":{"responseFormat":{"text":{"mimeType":"APPLICATION_JSON","schema":serde_json::from_str::<Value>(REVIEW_SCHEMA).expect("static review schema")}},"maxOutputTokens":6000}});
+    let body = json!({"contents":[{"role":"user","parts":parts}],"generationConfig":{"responseFormat":{"text":{"mimeType":"APPLICATION_JSON","schema":model_schema(serde_json::from_str::<Value>(REVIEW_SCHEMA).expect("static review schema"))}},"maxOutputTokens":6000}});
     Ok((format!("{API_ROOT}/models/{}:generateContent", url_segment(&request.model)), body))
 }
 

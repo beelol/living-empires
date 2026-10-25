@@ -77,7 +77,8 @@ fn direct_payload_contains_the_full_frozen_theme_and_structured_schema() {
     for field in ["custom-forest","Temperate moss forest","Central path is open","Build a forest relay"] { assert!(prompt.contains(field),"missing {field}"); }
     assert!(prompt.contains("Give the roof a distinct arch"));
     assert!(prompt.contains("halfExtent of 12 metres"));
-    assert_eq!(body["generationConfig"]["responseFormat"]["text"]["schema"]["properties"]["parts"]["maxItems"],128);
+    assert!(body["generationConfig"]["responseFormat"]["text"]["schema"]["properties"]["parts"]["maxItems"].is_null());
+    assert!(prompt.contains("\"maxItems\":128"));
     assert!(prompt.contains("Honor exactly the requested scope"));
     assert_eq!(body["generationConfig"]["responseFormat"]["text"]["schema"]["required"].as_array().unwrap().iter().any(|v|v=="scene"),true);
 }
@@ -285,6 +286,10 @@ fn reviewer_request_uses_three_actual_inline_pngs_and_checks_verdicts() {
     let (url,body)=build_review_request(&request).unwrap();
     assert!(url.ends_with(":generateContent"));
     assert_eq!(body["contents"][0]["parts"].as_array().unwrap().len(),7);
+    let schema = &body["generationConfig"]["responseFormat"]["text"]["schema"];
+    assert_eq!(schema["properties"]["comparison"]["properties"]["status"]["enum"],json!(["initial","improved","unchanged","regressed","blocked"]));
+    assert!(schema["properties"]["comparison"]["properties"]["imageHashes"]["minItems"].is_null());
+    assert!(schema["required"].as_array().unwrap().iter().any(|value|value=="comparison"));
     assert_eq!(body["contents"][0]["parts"][2]["inlineData"]["mimeType"],"image/png");
     assert_eq!(body["contents"][0]["parts"][6]["inlineData"]["data"],request.images[2]);
     assert_eq!(body["contents"][0]["parts"][1]["text"],"CURRENT VIEW 1");
@@ -395,13 +400,12 @@ fn generation_schema_matches_authoritative_scene_component_bounds() {
     let (_, body) = build_generation_request(&request(false)).unwrap();
     assert!(body["generationConfig"]["responseFormat"]["text"]["schema"]["properties"]["parts"].get("scene").is_none());
     let component = &body["generationConfig"]["responseFormat"]["text"]["schema"]["properties"]["scene"]["properties"]["components"]["items"]["properties"];
-    assert_eq!(component["id"]["pattern"], "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$");
-    assert_eq!(component["id"]["minLength"], 1);
-    assert_eq!(component["id"]["maxLength"], 64);
-    assert_eq!(component["name"]["minLength"], 1);
-    assert_eq!(component["name"]["maxLength"], 100);
-    assert_eq!(component["role"]["minLength"], 1);
-    assert_eq!(component["role"]["maxLength"], 80);
+    assert_eq!(component["id"]["type"], "string");
+    assert!(component["id"]["pattern"].is_null());
+    assert!(component["id"]["maxLength"].is_null());
+    let prompt = body["contents"][0]["parts"][0]["text"].as_str().unwrap();
+    assert!(prompt.contains("^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"));
+    assert!(prompt.contains("\"maxLength\":64"));
 }
 
 #[test]
@@ -423,6 +427,7 @@ fn direct_argon_generation_gets_low_thinking_and_larger_json_budget_only() {
     let (_, argon_body) = build_generation_request(&argon).unwrap();
     assert_eq!(argon_body["generationConfig"]["maxOutputTokens"], 16384);
     assert_eq!(argon_body["generationConfig"]["thinkingConfig"]["thinkingLevel"], "low");
+    assert!(argon_body["generationConfig"]["responseFormat"]["text"]["schema"]["properties"]["parts"]["maxItems"].is_null());
 
     let flash = request(false);
     let (_, flash_body) = build_generation_request(&flash).unwrap();
