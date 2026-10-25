@@ -59,7 +59,7 @@ test('invalid selections and reused operation IDs leave the complete world uncha
 
 test('new construction inherits its requested faction without a global appearance grant',()=>{
  const w=createWorld();create(w);w.assets.solar={hash:'legacy-global'};build(w,'solar-a',12,'orchid');
- const building=w.buildings.at(-1);assert.equal(building.factionId,'orchid');assert.equal(building.factionAssignment,1);assert.equal(assetForBuilding(w,building),undefined);assert.equal(w.alloy,165);
+ const building=w.buildings.at(-1);assert.equal(building.factionId,'orchid');assert.equal(building.factionAssignment,1);assert.equal(assetForBuilding(w,building),undefined);assert.equal(w.alloy,65);
 });
 
 test('faction membership, current prompt, pinned asset and failed history survive durable reopen',()=>{
@@ -106,8 +106,8 @@ test('new area building queues a free design while existing in-flight work keeps
  const w=createWorld();create(w);saveArea(w,'east','orchid',eastArea);const result=build(w,'solar-a',12,'landing');
  assert.equal(result.factionId,'orchid');const first=w.foundry.requests[0];first.status='running';first.jobId='active-job';const snapshot=structuredClone(first);
  const next=build(w,'solar-b',24,'landing');assert.equal(next.factionId,'orchid');assert.deepEqual(first,snapshot);assert.equal(w.foundry.requests.length,2);
- assert.equal(w.foundry.requests[1].preferExistingDesign,undefined);assert.match(w.foundry.requests[1].prompt,/artistic direction freely/);assert.equal(w.foundry.requests[1].drivesFactionDirection,true);assert.equal(w.foundry.requests[1].artDirection,w.foundry.requests[1].userPrompt);assert.equal(w.foundry.requests[1].prompt.includes(w.factions.find(f=>f.id==='orchid').artDirection),false);assert.equal(w.factions.find(f=>f.id==='orchid').designIntentId,w.foundry.requests[1].id);assert.match(w.foundry.requests[1].userPrompt,/Solar array/);assert.ok(w.foundry.requests[1].prompt.length<=3000);assert.deepEqual(w.foundry.requests[1].targets,[{id:'solar-b',assignment:1}]);assert.equal(w.alloy,130);
- build(w,'solar-b',24,'landing');assert.equal(w.foundry.requests.length,2);assert.equal(w.alloy,130);
+ assert.equal(w.foundry.requests[1].preferExistingDesign,undefined);assert.match(w.foundry.requests[1].prompt,/artistic direction freely/);assert.equal(w.foundry.requests[1].drivesFactionDirection,true);assert.equal(w.foundry.requests[1].artDirection,w.foundry.requests[1].userPrompt);assert.equal(w.foundry.requests[1].prompt.includes(w.factions.find(f=>f.id==='orchid').artDirection),false);assert.equal(w.factions.find(f=>f.id==='orchid').designIntentId,w.foundry.requests[1].id);assert.match(w.foundry.requests[1].userPrompt,/Solar array/);assert.ok(w.foundry.requests[1].prompt.length<=3000);assert.deepEqual(w.foundry.requests[1].targets,[{id:'solar-b',assignment:1}]);assert.equal(w.alloy,30);
+ build(w,'solar-b',24,'landing');assert.equal(w.foundry.requests.length,2);assert.equal(w.alloy,30);
  saveArea(w,'east-again','orchid',eastArea);assert.equal(first.status,'running');assert.deepEqual(first.targets,[{id:'solar-a',assignment:1}]);
  command(w,{id:'new-style',type:'faction-style',factionId:'orchid',artDirection:'Tall folded brass blades with slate glass seams.'});
  const latest=w.foundry.requests.at(-1);assert.deepEqual(latest.targets.map(t=>t.id),['solar-a','solar-b']);assert.equal(latest.preferExistingDesign,undefined);assert.equal(latest.factionRevision,2);assert.equal(first.status,'cancelled');
