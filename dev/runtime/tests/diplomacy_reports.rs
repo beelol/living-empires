@@ -18,6 +18,81 @@ fn wait() -> Value {
 }
 
 #[test]
+fn preflight_checks_delivery_without_learning_or_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("world.json");
+    let mut core = Diplomacy::load(&path).unwrap();
+    let event = report("known-source", &["helios"]);
+    let before = fs::read(&path).unwrap();
+    core.can_ingest_report("helios", &event, 20).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(core.revision(), 0);
+    assert_eq!(core.context("helios", 20).unwrap()["reports"], json!([]));
+    core.ingest_report("helios", &event, 20).unwrap();
+    let saved = fs::read(&path).unwrap();
+    core.can_ingest_report("helios", &event, 1).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), saved);
+    assert_eq!(core.revision(), 1);
+    let mut changed = event;
+    changed.payload = json!({"invented":true});
+    assert!(core.can_ingest_report("helios", &changed, 21).is_err());
+    assert!(core
+        .can_ingest_report("helios", &report("older", &["helios"]), 19)
+        .is_err());
+}
+
+#[test]
+fn preflight_rejects_gm_routes_the_faction_cannot_consume() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Diplomacy::load(dir.path().join("world.json")).unwrap();
+    let mixed = report("mixed", &["helios", "studio"]);
+    let mut deep = report("deep", &["helios"]);
+    for _ in 0..65 {
+        deep.payload = json!([deep.payload]);
+    }
+    let mut future = report("future", &["helios"]);
+    future.at = 21;
+    for event in [mixed, deep, future] {
+        assert!(core.can_ingest_report("helios", &event, 20).is_err());
+    }
+    assert_eq!(core.revision(), 0);
+}
+
+#[test]
+fn batch_preflight_counts_new_deliveries_once_without_partially_learning() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("world.json");
+    drop(Diplomacy::load(&path).unwrap());
+    let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    saved["revision"] = json!(1023);
+    saved["reports"] = json!((0..1023)
+        .map(|n| json!({
+            "event":report(&format!("old-{n}"), &["helios"]),
+            "deliveries":[{"actor":"helios","received_at":20}]
+        }))
+        .collect::<Vec<_>>());
+    let bytes = serde_json::to_vec(&saved).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    let core = Diplomacy::load(&path).unwrap();
+    let new = report("new", &["helios"]);
+    let old = report("old-0", &["helios"]);
+    core.can_ingest_reports("helios", &[old, new.clone()], 21)
+        .unwrap();
+    core.can_ingest_reports("helios", &[new.clone(), new.clone()], 21)
+        .unwrap();
+    assert!(core
+        .can_ingest_reports("helios", &[new.clone(), report("another", &["helios"])], 21)
+        .is_err());
+    let mut conflict = new.clone();
+    conflict.payload = json!({"different":true});
+    assert!(core
+        .can_ingest_reports("helios", &[new, conflict], 21)
+        .is_err());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(core.revision(), 1023);
+}
+
+#[test]
 fn eligibility_is_not_delivery_and_restart_preserves_exactly_once_knowledge() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("world.json");
@@ -283,6 +358,11 @@ fn full_delivery_history_keeps_replays_valid_without_accepting_new_facts() {
         .collect::<Vec<_>>());
     fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
     let mut core = Diplomacy::load(&path).unwrap();
+    core.can_ingest_report("helios", &report("need-0", &["helios", "tide"]), 21)
+        .unwrap();
+    assert!(core
+        .can_ingest_report("tide", &report("need-0", &["helios", "tide"]), 21)
+        .is_err());
     core.ingest_report("helios", &report("need-0", &["helios", "tide"]), 21)
         .unwrap();
     assert!(core
