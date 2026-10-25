@@ -14,6 +14,9 @@ use std::{
 
 const DEFAULT_POLICY: &str = include_str!("policy.lua");
 
+mod live;
+pub use live::LivePlanner;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FactionView {
@@ -468,6 +471,10 @@ fn policy_vm(source: &str) -> Result<(Lua, Function, Arc<AtomicUsize>)> {
         "pcall",
         "xpcall",
         "print",
+        // Lua runs finalizers with instruction hooks disabled during VM teardown.
+        // Policies cannot register metamethods that escape the execution budget.
+        "setmetatable",
+        "getmetatable",
     ] {
         lua.globals().set(name, LuaValue::Nil)?;
     }
