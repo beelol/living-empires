@@ -1,3 +1,5 @@
+https://docs.google.com/document/d/1mqgO7fSls-Rl7Pj60cTtoMFihdOzq9y89seT2yHz0bA/edit?tab=t.0
+
 # **Living Empires Game Acceptance Criteria**
 
 Living Empires is complete when every acceptance criterion below passes in the same release. The game is a persistent multiplayer strategy adventure on one alien planet: explore as a robot commander, build a machine civilization, negotiate with thinking factions, and live with the consequences while agents keep creating useful game content.
