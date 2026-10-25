@@ -86,3 +86,12 @@ three failures: native_collection_operations_cannot_bypass_instruction_limits,
 native_pattern_work_cannot_stall_loading_or_movement (both one-second guards),
 and activation_authority_idempotency_reload_and_crash_recovery_over_lightyear
 (server never healthy). The later batch delta is covered by the 13-test run.
+
+Combined final batch candidate on main baseline 153aa86: runtime 40, reports 13,
+GM 14, content guards 15, and native library 20 all pass; remaining successful
+suites are in /private/tmp/argon-preflight-integrated-workspace.log. Full run
+finishes with network::activation_authority_idempotency_reload_and_crash_recovery_over_lightyear
+(server never healthy) and terrain_network::two_clients_verify_identical_terrain_move_and_reconnect_without_reset
+(terrain convergence timeout) failing. These paths are unchanged by this stream.
+Earlier failures remain above. Integrated runtime library/report-test clippy and
+independent review pass; preflight neither reserves capacity nor promises disk I/O.
