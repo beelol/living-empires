@@ -195,3 +195,50 @@ Bevy views loop remains **blocked** until those hooks and actual evidence exist.
 Do not check off README ACs based on fixture unit tests.
 
 Run: `python3 -m unittest discover -s dev/studio -v`.
+
+## Automatic Asset Foundry worker
+
+`foundry.py` connects the actual landed Node/Rust Foundry API to the GM's durable
+requests. It reads accepted `request_content` receipts targeting `studio`, resolves
+exact cited faction-brain facts, checks recipient permission, and dispatches only
+the `request_design` action. An already-approved build or a funds/navigation block
+cannot create a generation job. Semantic need identities survive new model receipt
+IDs and observation revisions. Full factual briefs remain local; creators receive
+only a fictional asset role/category, frozen visual theme, and opaque retry marker.
+Inventories, orders, diplomacy, faction names and raw observations are excluded.
+
+For the deployed world the worker invocation is:
+
+```sh
+python3 dev/studio/foundry.py --database .local-deploy/foundry.sqlite --gm-ledger .local-deploy/world.json.game-master.json --policies .local-deploy/foundry-policy.json --output .local-deploy/foundry-ready --provider managed --live-authorized
+```
+
+Policies are an operator-owned JSON map of faction ID to `{themeId}` or full
+`{theme}` contract, not model-supplied routing. The existing instance maps Helios
+to argonaut, Tide to sylvan and Cinder to ember as explicit demo art choices.
+`--provider fixture` runs labelled offline rehearsals without paid calls. The
+user explicitly authorized sponsored-credit live generation; the live flag records
+that choice while per-job three-attempt/six-call/twenty-minute limits still apply.
+
+The controller polls every five seconds outside the simulation tick. It persists
+before creating a job. A timeout/restart reconciles exact markers through the
+Foundry job list; an uncertain missing result never triggers a blind paid retry.
+The Foundry enforces one active generation job. The controller persists job states,
+timestamps, receipts and exact package/render bytes in an owner-only SQLite store.
+
+On acceptance it invokes the first-party `world-check` package verifier, reparses
+the HTTP package through the same typed Rust integrity check, and verifies all
+three distinct PNG fingerprints. Complete immutable output is sealed before an
+atomic directory publication at `foundry-ready/need-<hash>/`. It contains
+`request.json`, `job.json`, `package.json`, three fingerprint-named PNGs and
+`ready.json`, a GM v1 `content.candidate_ready` notice with faction ACLs. A restart
+after publication reuses sealed bytes and stable notice identity. This notice is
+**not game activation**. G's sole World writer owns native review, roster changes,
+costs, placement, payment and actual use. Its confirmation produces activation and
+completion events; pending candidates cannot create free structures or units.
+
+The current Foundry API supports building recipes only. Unit needs are retained
+as explicitly blocked until the producer and authoritative actor/behavior formats
+support them. No sensor outpost is relabelled as a unit. Native capture uses the
+new `game/examples/foundry_audit.rs` example with exact box/frustum/cone mapping;
+three images alone do not replace independent review or functional checks.
