@@ -334,6 +334,9 @@ class Runner:
         live_state = self.root/'world.json'
         if live_state.exists():
             shutil.copy2(live_state, probe_state)
+            terrain = Path(str(live_state) + '.terrain.json')
+            if terrain.exists():
+                shutil.copy2(terrain, Path(str(probe_state) + '.terrain.json'))
         process = self.spawn(release, bind, probe_state, release.content)
         try:
             self.wait_healthy(process, release, bind, accepting_commands=False)

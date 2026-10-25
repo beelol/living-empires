@@ -34,6 +34,10 @@ if content().get('live_fail') and a.bind.endswith(':'+os.environ.get('FAKE_LIVE_
     sys.exit(4)
 state=Path(a.state);state.parent.mkdir(parents=True,exist_ok=True)
 if not state.exists(): state.write_text('{"world":42}')
+if content().get('terrain_record'):
+    try:
+        if Path(str(state)+'.terrain.json').read_text()!=content()['terrain_record']: sys.exit(8)
+    except OSError: sys.exit(8)
 def accepting(): return not a.activate_file or Path(a.activate_file).exists()
 class H(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -318,6 +322,20 @@ shutil.copyfile(p/'dev/runtime/host.py',t);t.chmod(0o755)
         self.runner.tick()
         self.assertEqual(self.runner.health()['content_version'], 'v2')
         self.assertIn('rewind', self.runner.last_error)
+
+    def test_probe_preserves_required_terrain_sidecar_bytes(self):
+        self.deploy_first()
+        state = self.config.deploy_dir/'world.json'
+        state.write_text('{"world":99}')
+        terrain = Path(str(state)+'.terrain.json')
+        terrain.write_text('exact baked terrain bytes')
+        (self.repo/'dev/runtime/change').write_text('new runtime')
+        second = self.commit('v2', terrain_record='exact baked terrain bytes')
+        self.runner.tick()
+        self.assertEqual(self.runner.active.commit, second)
+        self.assertTrue(self.runner.health()['accepting_commands'])
+        self.assertEqual(json.loads(state.read_text()), {'world':99})
+        self.assertEqual(terrain.read_text(), 'exact baked terrain bytes')
 
     def test_crashed_host_restarts_the_last_healthy_release(self):
         pid = self.deploy_first()
