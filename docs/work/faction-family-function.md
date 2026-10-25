@@ -1,0 +1,11 @@
+# Preserve function in shared family inference
+
+Owner: faction_adapter. Base: c9f0f96. Primary GEN-02, GEN-08; affected LIVE-03, LIVE-06, LIVE-10. Owns solo/foundry.mjs, solo/test/foundry.test.mjs and this record. Lead owns runtime recovery and paid calls. Existing model/state, approved packages and Rust checks are dependencies; no interface changes.
+
+The live solar propagation job timber-thatch-homestead exhausted after the critic correctly identified cottage rather than solar function. Its shared theme required a cabin, woodstore and chimney. Those were source-object components, not reusable family style. Earlier color/exclusion capability checks did not prevent this failure.
+
+Shared inference now requests reusable construction/material language, with examples explicitly illustrative. gameplayRole must preserve each target's function from its own brief, not the source role; it cannot hard-code solar-only function into a family also used by a basketball court. The prompt explicitly excludes hut/cabin/cottage/chimney/woodstore as mandatory shared components. A narrow pre-freeze guard rejects those observed domestic-component terms in shared visualChecks before caching or dispatch. Failed drafts and their IDs remain available; there is no automatic retry or silent criterion deletion.
+
+Free creation prompts still may request cottages, chimneys and woodstores; only shared family propagation is constrained. Existing running jobs, frozen contracts, accepted packages, targets and other factions remain untouched. All existing color, sports/solar exclusion, exact verification and late-result guards remain active.
+
+`node --test solo/test/foundry.test.mjs solo/test/model.test.mjs solo/test/factions.test.mjs`: 92/92 passed, zero skips. Coverage includes fresh/cached rejection for each observed domestic term, free-source cottage allowance, shared solar/basketball dispatch, full 2000-character direction/brief within the 3000-character inference bound, frozen-job preservation and existing integrity/scope behavior. Log: /private/tmp/argon-family-function-tests.log. This is targeted regression evidence, not live visual quality proof. No paid calls, runtime restarts or saved-world edits.
