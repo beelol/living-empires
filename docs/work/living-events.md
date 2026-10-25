@@ -86,3 +86,46 @@ unavailable. Two actual client views and authoritative collision still need
 verification after hooks land. No LIVE release or full-game pass is implied.
 D0 generated-unit approval/paid deployment belongs to other owners; fixture drones
 do not satisfy D0.
+
+## Resumed goal and durable broadcast checkpoint
+
+User resumed work with an explicit active goal and asked to push every working
+checkpoint normally to main. Existing isolated workspace refreshed to e99e70c
+after preserving identical published source copies. Same event ownership, plus
+new `game/tests/events_network.rs` for the agreed real Lightyear contract.
+
+GM owner accepted public Event v1 envelopes: `{id,source,at,kind,payload,
+allowed_recipients}`. `EventWorld::advance_recorded(seconds,receipt_unix)` now
+commits each newly observed public phase and its outbox record in the SAME save
+transaction. IDs contain a generated-once persisted world namespace, meteor ID
+and phase. `at` is captured UNIX receipt time; payload `simulation_time` and the
+event's warning/impact/cooling times remain simulation time. A crash/retry cannot
+manufacture a second broadcast or replace its original receipt. Private audit
+hazards never enter this outbox. Old sidecars load with default empty outbox and
+receive a namespace without invented historical timestamps.
+
+`broadcasts()` and `EventHost::broadcast_feed()` supply this durable source to the
+existing sole GM scheduler. The frequent public client snapshot remains unchanged
+to avoid retransmitting a growing history on every gameplay update. No provider
+or scheduler is started by this module. Fixture-only `advance()` records no fake
+wall clock. Host `update()` uses captured real time for recorded advancement.
+
+Validation: 11 focused event tests pass, including deserialize into the actual
+GM v1 type, duplicate ingest without a revision change, exact-payload routing,
+atomic phase/outbox failure recovery, backwards receipt clocks and legacy loads.
+Native adapter test and standalone native clippy pass. Restricted full runtime run
+failed nine network fixtures on socket permissions; approved rerun passed all34
+library cases and CLI/construction, then retained the existing one-second
+`native_collection_operations_cannot_bypass_instruction_limits` timing failure.
+That case passed isolated retry (0.91s); no guard or unrelated content code changed.
+
+Actual 1280x800 Bevy render-target captures now show all three fixture stages;
+manifest `/private/tmp/argon-meteor-render-manifest.json` binds source and image
+SHA256, UNIX capture times, seed77 and ticks35/45/75. Earlier black window captures
+remain failed evidence. Neither rendering method is shared-client proof.
+
+The new real two-client event test compiles but fails as expected on the current
+host's unsupported `--events-demo`; it remains unpublished until shared hooks
+land. Terrain757ee07 handed shared authority/client files to the construction
+authority owner (thread01a171d8). That owner was asked for a bounded event-hook
+handoff after the current city integration. No shared file is edited here.

@@ -2,8 +2,8 @@
 
 ## Read the whole specification first
 
-`README.md` is the canonical local game acceptance checklist. Before changing
-behavior, read **all** of it, including audit rules and complete-game scenarios;
+`README.md` is the canonical local milestone acceptance checklist (contract v2). Before changing
+behavior, read **all** of it, including audit rules and integrated milestone scenarios;
 do not work from a keyword extract or just the assigned AC. Re-read relevant
 changes whenever the baseline advances. The linked
 [game specification](https://chatgpt.com/space/page_9d7940a6aa5c8191bc081c561105cfbb)
@@ -21,11 +21,11 @@ An AC is a behavior boundary, not exclusive ownership of every file related to i
 
 | Rule | ACs to consider when changing it |
 | --- | --- |
-| The authoritative simulation validates ownership, costs, consent, and idempotency; UI, chat, model proposals, and generated assets cannot grant world effects by themselves. | SET-01–06, SET-09, SET-13–14, WAR-06–10, DIP-05–14, GEN-07, WORLD-01–05 |
-| Each faction and player sees only allowed observations and history; private world facts must not leak through prompts, APIs, UI, logs exposed to players, or shared memory. | EXP-04, EXP-07, FAC-02, FAC-06–08, DIP-03, DIP-12, DIP-15, WORLD-01, EVENT-02 |
-| Acknowledged durable actions recover exactly once. Identity, inventory, geography, treaties, and history survive reconnects, restarts, and compatible visual updates. | EXP-09–10, GEN-08, LIVE-08–12, WORLD-02–08, EVENT-05 |
-| Only independently checked, fingerprinted files may activate. Provenance, review images, checks, budgets, cancellation, and rollback stay linked to that exact version. | GEN-01–08, LIVE-03–13, UX-03–04 |
-| Placement, entrances, traversal, combat line of sight, and terrain changes agree with authoritative collision and the content version used by both clients. | PLY-02–03, SET-01–03, SET-08–10, WAR-02, GEN-05–06, LIVE-08–09, LIVE-13, EVENT-01 |
+| The authoritative simulation validates ownership, costs, consent and idempotency; camera/UI/model proposals and assets cannot grant world effects. | SET-01–06, SET-08–10, SET-13, GEN-07, DIP-05, DIP-14, WORLD-01, WORLD-03–05 |
+| Empire minds receive only their permitted observations/history. Observer-wide inspection is not empire knowledge. | FAC-02, FAC-06, DIP-03, WORLD-01, UX-04, EVENT-02 |
+| Acknowledged durable actions recover once; identity, resources, geography, orders and history survive updates/restarts. | EXP-09–10, GEN-08, LIVE-08–11, WORLD-03–05 |
+| Only independently checked exact files may activate; provenance, images, budgets, cancellation and rollback remain linked. | GEN-01–03, GEN-05–08, LIVE-03–11, LIVE-13, UX-03–04 |
+| Placement, access, civilian traversal and terrain changes agree with authoritative collision and the active content version. | SET-01–03, SET-08–10, GEN-05–06, LIVE-08–09, LIVE-13, EVENT-02–03 |
 
 These are review prompts, not a replacement for the full checklist. Changes to a
 shared action schema, persistence format, asset format, permissions, clocks, or
@@ -35,7 +35,7 @@ stream's assumptions to make your own test pass.
 
 The `dev/` playground may execute local rules for iteration, but those rules are
 not independently approved game releases. Do not treat development activation or
-its tests as satisfying LIVE release checks or the full-game completion gate.
+its tests as satisfying LIVE release checks or the integrated milestone gate.
 
 ## Isolate, claim, and keep changes small
 
@@ -96,7 +96,9 @@ dependencies or evidence mean **blocked**, never passed. Keep failed outcomes.
 
 # Living Empires operating contract
 
-Current deliverable: **asset generator**. Living Empires is the downstream product context; the current milestone is one themed asset generation–review–repair–export lifecycle. Traversal is only a minimal asset-validation harness. Preserve the 122-criterion Living Empires contract in README.md as the long-term context; do not build unrelated game features before this asset lifecycle is proven.
+Current deliverable: **camera-only autonomous city growth plus the asset lifecycle**. Use three starter empires (organic, cyborg, robot), two independent observer views, the Rust/Bevy/Lightyear game with bounded Lua policies, and a separate asset-only Studio lane. Follow the F0 → D0 → D1 milestones in README contract v2: empires choose buildings, civilian units and valid sites; cities visibly form over time; needed designs pass generation, independent renderer review, repair, approval and paid construction/use. The standalone asset generator remains a required slice, not the whole milestone. Significant-event notices are optional polish. The final stretch is talking to generated races through leader panels. Combat, avatars, human factions and manual empire control are outside all active milestones and stretch scope.
+
+The old 122-criterion contract is preserved only in `docs/archive/game-contract-v1.md`. It is historical context, not a second checklist or active backlog. Reassess old evidence and stream records against v2; never reuse an old pass automatically. This scope change does not itself authorize changes to runtime schemas, persistence or collision contracts. Existing stream owners retain their claims; coordinate any implementation changes with them.
 
 ## Coordination
 
@@ -106,7 +108,7 @@ Current deliverable: **asset generator**. Living Empires is the downstream produ
 - User-authorized milestone commits may push normally to `origin/main` after acceptance checks. Never force-push; record the synced commit only after the push succeeds.
 - Keep scope updates concise: shipped scope, gates passed/failed/blocked/not_run, exact blocker, next outcome.
 
-## Acceptance and repair
+## Asset-lane acceptance and repair
 
 - Freeze each job's theme, brief, criteria version, and limits before generation. Creators cannot edit the judge or weaken a frozen contract.
 - Reproduce the failure, make the smallest useful repair, run affected checks and regressions, and retain before/after evidence.
@@ -122,7 +124,9 @@ Current deliverable: **asset generator**. Living Empires is the downstream produ
 - Publishing, public deployment, crate publication, and expanded credential or cost permissions are not implied by a local implementation or commit request.
 - Activate only exact accepted candidate/evidence hashes. Preserve the prior compatible release for rollback.
 
-## Current gates
+## Asset-lane gates
+
+These commands verify only the asset tooling slice. World acceptance requires the README core and FLOW scenarios in the actual Rust/Bevy/Lightyear game, with bounded Lua policies. Passing these commands does not establish D0 or D1.
 
 1. `cargo build -p living-world-core` and `cargo test -p living-world-core`.
 2. `npm test` for adapter, acceptance, and Rust/browser parity checks.

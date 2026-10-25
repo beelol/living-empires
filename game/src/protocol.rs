@@ -7,7 +7,7 @@ use lightyear::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const PROTOCOL_ID: u64 = 0x4c4956494e470001;
 // Shared development-only transport key. Session capabilities still authorize moves.
 // Public Internet admission requires a trusted token issuer before production use.
@@ -49,6 +49,7 @@ pub enum ServerUpdate {
     },
     Snapshot {
         players: Vec<Player>,
+        buildings: Vec<argon_dev::settlement::BuildingView>,
         content_version: String,
         world_name: String,
         release: String,

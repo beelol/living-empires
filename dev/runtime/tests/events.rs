@@ -18,13 +18,11 @@ fn meteor_warns_impacts_blocks_and_recovers_without_regranting() {
     assert!(!world.segment_blocked(from, to));
     world.advance(20).unwrap();
     assert!(world.segment_blocked(from, to));
-    assert!(
-        world
-            .snapshot()
-            .responses
-            .iter()
-            .all(|r| r.event_id == event.id)
-    );
+    assert!(world
+        .snapshot()
+        .responses
+        .iter()
+        .all(|r| r.event_id == event.id));
     let before = world.snapshot();
     drop(world);
     let mut world = EventWorld::load(&path, 999).unwrap();
@@ -141,4 +139,104 @@ fn failed_event_save_never_advances_the_authoritative_clock() {
     assert_eq!(world.snapshot().events[0].phase, Phase::Impact);
     drop(world);
     assert_eq!(EventWorld::load(path, 99).unwrap().snapshot().now, 40);
+}
+
+#[test]
+fn public_phase_and_gm_broadcast_receipt_commit_together_and_recover_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.json");
+    let mut world = EventWorld::load(&path, 77).unwrap();
+    world.advance_recorded(20, 1_800_000_000).unwrap();
+    let warning = world.broadcasts();
+    assert_eq!(warning.len(), 1);
+    assert_eq!(warning[0].at, 1_800_000_000);
+    assert_eq!(warning[0].allowed_recipients, FACTIONS);
+    assert_eq!(warning[0].payload["simulation_time"], 20);
+    assert_eq!(warning[0].payload["event"]["phase"], "Warning");
+    let id = warning[0].id.clone();
+    drop(world);
+    let mut world = EventWorld::load(&path, 123).unwrap();
+    world.advance_recorded(0, 1_800_000_001).unwrap();
+    assert_eq!(world.broadcasts()[0].id, id);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(world.advance_recorded(20, 1_800_000_020).is_err());
+    assert_eq!(world.snapshot().events[0].phase, Phase::Warning);
+    assert_eq!(world.broadcasts().len(), 1);
+    std::fs::remove_dir(&path).unwrap();
+    world.advance_recorded(20, 1_800_000_020).unwrap();
+    assert_eq!(world.broadcasts().len(), 2);
+    assert_eq!(world.broadcasts()[1].payload["event"]["phase"], "Impact");
+}
+
+#[test]
+fn private_events_and_uncaptured_old_phases_do_not_get_gm_broadcasts() {
+    let mut world = EventWorld::new(77);
+    world.schedule_meteor(100.0, 100.0, 12.0, 1, false).unwrap();
+    world.advance(20).unwrap(); // Fixture clock: no real receipt was captured.
+    assert!(world.broadcasts().is_empty());
+    world.advance_recorded(1, 1_800_000_000).unwrap();
+    assert!(
+        world.broadcasts().is_empty(),
+        "do not backfill old warning/impact times"
+    );
+    world.advance_recorded(19, 1_800_000_019).unwrap();
+    let messages = world.broadcasts();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].payload["event"]["id"], 2);
+    assert_eq!(messages[0].payload["event"]["phase"], "Impact");
+    assert!(
+        world.advance_recorded(1, 1_700_000_000).is_err(),
+        "receipt clock cannot silently rewrite history"
+    );
+}
+
+#[test]
+fn broadcast_envelope_enters_existing_gm_once_and_routes_only_recorded_facts() {
+    use argon_dev::game_master::{Event, GameMaster, Proposal};
+    let dir = tempfile::tempdir().unwrap();
+    let mut world = EventWorld::new(77);
+    world.advance_recorded(20, 1_800_000_000).unwrap();
+    let broadcast = world.broadcasts().remove(0);
+    let event: Event = serde_json::from_value(serde_json::to_value(&broadcast).unwrap()).unwrap();
+    let mut gm = GameMaster::load(dir.path().join("gm.json")).unwrap();
+    gm.ingest(event.clone()).unwrap();
+    let revision = gm.revision();
+    gm.ingest(event).unwrap();
+    assert_eq!(gm.revision(), revision);
+    let result = gm
+        .decide(
+            "route-meteor",
+            revision,
+            Proposal {
+                action: "route".into(),
+                event_ids: vec![broadcast.id],
+                target: "helios".into(),
+                summary: "Pass on orbital warning".into(),
+            },
+        )
+        .unwrap();
+    assert!(result.accepted);
+    assert_eq!(gm.deliveries("helios")[0].payload, broadcast.payload);
+    assert!(gm.deliveries("tide").is_empty());
+}
+
+#[test]
+fn old_sidecar_without_outbox_loads_without_fabricating_historical_receipts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.json");
+    let mut world = EventWorld::load(&path, 77).unwrap();
+    world.advance(20).unwrap();
+    drop(world);
+    let mut old: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    old.as_object_mut().unwrap().remove("namespace");
+    old.as_object_mut().unwrap().remove("broadcasts");
+    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+    let mut world = EventWorld::load(&path, 123).unwrap();
+    world.advance_recorded(1, 1_800_000_000).unwrap();
+    assert!(world.broadcasts().is_empty());
+    world.advance_recorded(19, 1_800_000_019).unwrap();
+    assert_eq!(world.broadcasts().len(), 1);
+    assert_eq!(world.broadcasts()[0].payload["event"]["phase"], "Impact");
 }

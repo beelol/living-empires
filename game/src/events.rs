@@ -1,16 +1,17 @@
 //! Single host-owned event clock. No worker, model call or client can advance it.
 use anyhow::Result;
-use argon_dev::events::{EventSnapshot, EventWorld};
+use argon_dev::events::{Broadcast, EventSnapshot, EventWorld};
 use std::{
     path::Path,
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub struct EventHost {
     pub world: EventWorld,
     last_tick: Instant,
     public: Arc<RwLock<EventSnapshot>>,
+    broadcasts: Arc<RwLock<Vec<Broadcast>>>,
 }
 
 impl EventHost {
@@ -21,10 +22,12 @@ impl EventHost {
             world.set_center(center)?;
         }
         let public = Arc::new(RwLock::new(world.snapshot()));
+        let broadcasts = Arc::new(RwLock::new(world.broadcasts()));
         Ok(Self {
             world,
             last_tick: Instant::now(),
             public,
+            broadcasts,
         })
     }
 
@@ -38,10 +41,14 @@ impl EventHost {
         }
         let seconds = self.last_tick.elapsed().as_secs().min(5);
         if seconds > 0 {
-            self.world.advance(seconds)?;
+            let receipt_unix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            self.world.advance_recorded(seconds, receipt_unix)?;
             self.last_tick += Duration::from_secs(seconds);
             if let Ok(mut public) = self.public.write() {
                 *public = self.world.snapshot();
+            }
+            if let Ok(mut broadcasts) = self.broadcasts.write() {
+                *broadcasts = self.world.broadcasts();
             }
         }
         Ok(())
@@ -55,6 +62,12 @@ impl EventHost {
     /// scheduler. Contains no operator prompts or private observations.
     pub fn public_feed(&self) -> Arc<RwLock<EventSnapshot>> {
         self.public.clone()
+    }
+
+    /// Full durable source history for the sole GM worker. Kept off frequent
+    /// gameplay snapshots; repeat reads contain the same immutable source IDs.
+    pub fn broadcast_feed(&self) -> Arc<RwLock<Vec<Broadcast>>> {
+        self.broadcasts.clone()
     }
 }
 
