@@ -45,3 +45,22 @@ test('restart retains uncertain theme work as blocked instead of silently retryi
  const request=app.world.foundry.requests[0];assert.equal(request.status,'blocked');assert.equal(request.reconciliationRequired,true);assert.match(request.reason,/no automatic retry/);
  }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('saved faction areas govern later construction and survive API restart without cancelling current work',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colony-area-'));let app;try{
+ app=await createApp({port:0,dataDir:dir,foundryEnabled:false});
+ const post=body=>fetch(app.url+'/api/v1/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ for(const input of [{id:'create-east',type:'faction-create',factionId:'east',name:'East',artDirection:'Basalt blocks with copper ribs and cyan recesses.'},{id:'save-east-area',type:'faction-assign',factionId:'east',buildingIds:[],area:{minX:8,maxX:30,minZ:0,maxZ:18},reuseDesign:true}]){const r=await post(input);assert.equal(r.status,200,await r.text());}
+ const first={id:'new-east-a',type:'build',kind:'solar',factionId:'landing',x:12,z:8};assert.equal((await post(first)).status,200);assert.equal((await post(first)).status,200);
+ const pending=app.world.foundry.requests.find(r=>r.targets?.some(t=>t.id==='new-east-a'));pending.status='running';pending.jobId='existing-bounded-job';
+ assert.equal((await post({id:'new-east-b',type:'build',kind:'solar',factionId:'landing',x:24,z:8})).status,200);assert.equal(pending.status,'running');assert.equal(app.world.foundry.requests.find(r=>r.id===pending.id),pending);
+ assert.equal(app.world.alloy,130);assert.equal(app.world.buildings.find(b=>b.id==='new-east-b').factionId,'east');assert.equal(app.world.foundry.requests.filter(r=>r.preferExistingDesign).length,2);assert.equal(app.world.foundry.enabled,false);
+ const originalArea=structuredClone(app.world.factions.find(f=>f.id==='east').area);await app.close();app=await createApp({port:0,dataDir:dir,foundryEnabled:false});assert.deepEqual(app.world.factions.find(f=>f.id==='east').area,originalArea);assert.equal(app.world.buildings.find(b=>b.id==='new-east-b').factionId,'east');assert.equal(app.world.foundry.requests.find(r=>r.id===pending.id).jobId,'existing-bounded-job');
+ }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('cancelling an inherited installation never cancels its shared source job',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colony-reuse-'));let app;try{
+ app=await createApp({port:0,dataDir:dir,foundryEnabled:false});const source={id:'source',kind:'core',status:'installed',jobId:'approved-source'};app.world.foundry.requests.push(source,{id:'inheritor',kind:'core',status:'running',jobId:'approved-source',reuseFromRequestId:'source'});
+ const r=await fetch(app.url+'/api/v1/foundry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'cancel',requestId:'inheritor'})});assert.equal(r.status,200);assert.equal(source.status,'installed');assert.equal(app.world.foundry.error,null);assert.equal(app.world.foundry.requests[1].status,'cancelled');
+ }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
+});
