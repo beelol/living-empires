@@ -248,6 +248,7 @@ function renderAttemptHistory(job){
 }
 function renderRefinementControls(job){
   const selector=$('base-version'),attempts=(job.attempts||[]).filter(attempt=>attempt.recipe&&attempt.hash),signature=attempts.map(attempt=>`${attempt.number}:${attempt.hash}`).join('|');
+  $('refinement-panel').hidden=!attempts.length;
   const oldSelection=selector.value;
   if(selector.dataset.job!==job.id||selector.dataset.signature!==signature){
     selector.replaceChildren();
@@ -306,7 +307,7 @@ function renderRefinementControls(job){
   $('clear-reference').disabled=busy;
 }
 function clearLocalReference(){
-  referenceLoadToken++;referenceReadPending=false;
+  referenceLoadToken++;referenceReadPending=false;$('reference-consent-row').hidden=true;$('reference-consent-note').hidden=true;
   if(referenceObjectUrl)URL.revokeObjectURL(referenceObjectUrl);
   referenceObjectUrl=null;referenceImage=null;$('reference-file').value='';$('reference-image').removeAttribute('src');$('reference-name').textContent='';$('reference-preview').hidden=true;$('reference-consent').checked=false;$('reference-consent').disabled=true;
 }
@@ -328,7 +329,7 @@ async function chooseLocalReference(file){
   try{
     const data=await readLocalImage(file);
     if(token!==referenceLoadToken)return;
-    referenceObjectUrl=URL.createObjectURL(file);referenceImage={mimeType:file.type,data};$('reference-image').src=referenceObjectUrl;$('reference-name').textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MiB`;$('reference-preview').hidden=false;$('reference-consent').disabled=false;
+    referenceObjectUrl=URL.createObjectURL(file);referenceImage={mimeType:file.type,data};$('reference-image').src=referenceObjectUrl;$('reference-name').textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MiB`;$('reference-preview').hidden=false;$('reference-consent').disabled=false;$('reference-consent-row').hidden=false;$('reference-consent-note').hidden=false;
   }catch(e){if(token===referenceLoadToken){$('reference-error').textContent=e.message;clearLocalReference();}}
   finally{if(token===referenceLoadToken)referenceReadPending=false;}
 }
