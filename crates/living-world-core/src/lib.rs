@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Recipe {
     pub theme_id: String,
@@ -12,7 +12,7 @@ pub struct Recipe {
     pub parts: Vec<Part>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Part {
     pub id: String,
     pub shape: String,
@@ -22,7 +22,7 @@ pub struct Part {
     pub material: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThemeContract {
     pub id: String,
@@ -49,19 +49,19 @@ pub struct ThemeContract {
     pub architecture: Architecture,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReferencePreset { Argonaut, Sylvan, Ember }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Flora { Crystal, Tree, Basalt }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Architecture { Industrial, Organic, Fortified }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Palette {
     pub shell: String,
@@ -74,8 +74,13 @@ pub struct Palette {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct Position { pub x: f64, pub z: f64 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Check { pub id: String, pub status: String, pub label: String, pub detail: String }
+
+pub mod pipeline;
+pub use pipeline::{AssetPipeline, ApprovedAssetPackage, Evidence, EvidenceStatus, FrozenJobContract, JobLimits, PipelineStatus, Provenance, ReviewDecision, ReviewVerdict};
+pub mod provider;
 
 pub fn validate_theme(theme: &ThemeContract) -> Result<(), String> {
     let slug = theme.id.as_bytes();
