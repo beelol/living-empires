@@ -120,7 +120,17 @@ def main():
             time.sleep(.4)
             assert request('/health')['content_version'] == original_version
             started = time.monotonic()
-            revision = commit(repo, 'Lua step 13')
+            # Distinct declared modules must survive validation and hot activation.
+            # The names differ only by a repeated extension: strip one suffix.
+            (repo/'dev/content/speed.lua').write_text('return 3\n')
+            (repo/'dev/content/speed.lua.lua').write_text('return 10\n')
+            manifest_path = repo/'dev/content/manifest.json'
+            manifest = json.loads(manifest_path.read_text())
+            manifest['files'].extend(['speed.lua', 'speed.lua.lua'])
+            manifest_path.write_text(json.dumps(manifest)+'\n')
+            rules.write_text(original_rules.replace('local distance = 12',
+                "local distance = require('speed') + require('speed.lua')"))
+            revision = commit(repo, 'Lua module step 13')
             changed = eventually(lambda: active(revision))
             timings['local_lua_commit_seconds'] = round(time.monotonic()-started, 3)
             assert changed['host_pid'] == original_pid
@@ -167,7 +177,7 @@ def main():
             assert git(repo, 'rev-parse', 'HEAD') == native_revision
             assert client('b')['player'] == b['player']
             timings['checks'] = ['two Lightyear UDP sessions', 'Lua rules affect movement', 'dirty edits isolated',
-                'Lua deploy without restart', 'bad Lua retains healthy host', 'repaired commit activates',
+                'Lua module deploy without restart', 'bad Lua retains healthy host', 'repaired commit activates',
                 'native restart preserves world', 'remote commit deploys without editing checkout']
             print(json.dumps(timings, indent=2))
             if args.output:

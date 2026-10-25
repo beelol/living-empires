@@ -228,3 +228,34 @@ fn rejects_file_symlinks_and_follows_atomic_pack_switches() {
     symlink(dir.path().join("rules.lua"), other.path().join("rules.lua")).unwrap();
     assert!(runtime.reload().is_err());
 }
+
+#[test]
+fn strips_only_the_final_lua_extension_from_module_names() {
+    let dir = pack();
+    fs::write(
+        dir.path().join("manifest.json"),
+        r#"{"schema_version":1,"entry":"rules.lua","files":["rules.lua","speed.lua","speed.lua.lua"]}"#,
+    ).unwrap();
+    fs::write(dir.path().join("speed.lua"), "return 3").unwrap();
+    fs::write(dir.path().join("speed.lua.lua"), "return 7").unwrap();
+    rules(&dir, "local a=require('speed'); local b=require('speed.lua'); return {schema_version=1,world_name='Distinct modules',step=function(x,y,dx,dy) return x+dx*a,y+dy*b end}");
+    let mut runtime = ContentRuntime::load(dir.path()).unwrap();
+    assert_eq!(runtime.step(0., 0., 1., 1.).unwrap(), (3., 7.));
+    fs::write(dir.path().join("speed.lua.lua"), "return 11").unwrap();
+    assert!(runtime.reload().unwrap());
+    assert_eq!(runtime.step(0., 0., 1., 1.).unwrap(), (3., 11.));
+}
+
+#[test]
+fn still_rejects_dotted_and_nested_module_aliases() {
+    let dir = pack();
+    fs::create_dir(dir.path().join("helpers")).unwrap();
+    fs::write(dir.path().join("helpers/speed.lua"), "return 3").unwrap();
+    fs::write(dir.path().join("helpers.speed.lua"), "return 7").unwrap();
+    fs::write(
+        dir.path().join("manifest.json"),
+        r#"{"schema_version":1,"entry":"rules.lua","files":["rules.lua","helpers/speed.lua","helpers.speed.lua"]}"#,
+    ).unwrap();
+    let error = ContentRuntime::load(dir.path()).err().unwrap();
+    assert!(error.to_string().contains("ambiguous Lua module"));
+}

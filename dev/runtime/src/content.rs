@@ -245,7 +245,7 @@ fn install_bounded_collections(lua: &Lua) -> Result<()> {
     Ok(())
 }
 fn module_name(name: &str) -> String {
-    name.trim_end_matches(".lua").replace('/', ".")
+    name.strip_suffix(".lua").unwrap_or(name).replace('/', ".")
 }
 fn relative_file(name: &str) -> Result<()> {
     ensure!(
