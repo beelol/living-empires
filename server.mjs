@@ -190,7 +190,7 @@ function generationRequest(job,previous,findings){
   const models=job.roleModels||{creator:job.model||roleModels.creator,repair:job.model||roleModels.repair};
   const selectedModel=(job.pipeline?.attemptCount||0)===0?models.creator:models.repair;
   if(job.pipeline&&stableJSON(job.reference||null)!==stableJSON(job.pipeline.contract.reference||null))throw new Error('The frozen reference image consent or identity changed; create a new job.');
-  return {theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,componentEdit:job.componentEdit||null,sceneHalfExtent:job.sceneHalfExtent??job.pipeline?.contract.sceneHalfExtent??null,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),referenceImages:job.referenceImages||[],referenceConsent:job.reference?.consent===true,referenceSha256:job.reference?.sha256||null,referenceMimeType:job.reference?.mimeType||null,model:selectedModel,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};
+  return {theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,componentEdit:job.componentEdit||null,componentBaseline:job.componentEdit?(job.baseline?.recipe||previous):null,sceneHalfExtent:job.sceneHalfExtent??job.pipeline?.contract.sceneHalfExtent??null,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),referenceImages:job.referenceImages||[],referenceConsent:job.reference?.consent===true,referenceSha256:job.reference?.sha256||null,referenceMimeType:job.reference?.mimeType||null,model:selectedModel,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};
 }
 async function generate(job,previous,findings){
   if(job.provider==='fixture'){
@@ -266,7 +266,11 @@ async function review(job,attempt){
   });
   const prior=job.attempts.at(-2)||job.baseline;
   const previous=prior?{candidateHash:prior.hash,imageHashes:prior.imageHashes,images:imageInputs(prior),strengths:prior.review?.comparison?.strengths||[]}:null;
-  const request={theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,componentEdit:job.componentEdit||null,sceneHalfExtent:job.sceneHalfExtent,candidateHash:attempt.hash,imageHashes:attempt.imageHashes,images:imageInputs(attempt),previous,model:job.roleModels?.reviewer||job.model||roleModels.reviewer};
+  // Keep the original scene visible to the critic after a rejected intermediate
+  // attempt; improving a degraded draft alone must not justify acceptance.
+  const retainedBaseline=job.baseline&&prior!==job.baseline?{candidateHash:job.baseline.hash,imageHashes:job.baseline.imageHashes,images:imageInputs(job.baseline),strengths:job.baseline.findings?.filter(finding=>finding.startsWith('Preserve: '))||[]}:null;
+  const request={theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,componentEdit:job.componentEdit||null,retainedBaseline,sceneHalfExtent:job.sceneHalfExtent,candidateHash:attempt.hash,imageHashes:attempt.imageHashes,images:imageInputs(attempt),previous,model:job.roleModels?.reviewer||job.model||roleModels.reviewer};
+  job.reviewerInputs=job.reviewerInputs||[];job.reviewerInputs.push({attempt:attempt.number,candidateHash:attempt.hash,previousCandidateHash:previous?.candidateHash||null,retainedBaselineHash:retainedBaseline?.candidateHash||null,componentEdit:request.componentEdit,userFeedback:request.userFeedback});save(job);
   const result=await providerCall(job,'independent comparative visual reviewer',{op:'review',request});
   job.providerResponses.push({kind:'reviewer',model:request.model,agent:null,response:result.response,usage:result.usage||null});save(job);return result;
 }
