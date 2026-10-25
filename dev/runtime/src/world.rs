@@ -51,6 +51,10 @@ struct SavedMove {
 struct SavedWorld {
     schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    settlements: Option<crate::settlement::SettlementState>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    builders: std::collections::BTreeMap<String, [f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     terrain: Option<SavedTerrain>,
     next_id: u64,
     players: Vec<SavedPlayer>,
@@ -118,6 +122,8 @@ impl World {
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => SavedWorld {
                 schema_version: 1,
+                settlements: None,
+                builders: Default::default(),
                 terrain: None,
                 next_id: 1,
                 players: Vec::new(),
@@ -182,6 +188,186 @@ impl World {
 
     pub fn terrain(&self) -> Option<&Terrain> {
         self.terrain.as_ref()
+    }
+
+    pub fn buildings(&self) -> Vec<crate::settlement::BuildingView> {
+        self.saved
+            .settlements
+            .as_ref()
+            .map_or_else(Vec::new, |s| s.snapshot())
+    }
+
+    pub fn faction_metal(&self, faction: &str) -> Option<u64> {
+        self.saved
+            .settlements
+            .as_ref()
+            .and_then(|s| s.metal(faction))
+    }
+
+    /// Explicit authored scenario setup; never reinterpret a legacy arena.
+    pub fn initialize_settlements(&mut self) -> Result<()> {
+        if self.saved.settlements.is_some() {
+            return Ok(());
+        }
+        let terrain = self
+            .terrain
+            .as_ref()
+            .context("settlements require a terrain world")?;
+        let spawn = terrain.spawn();
+        let mut next = self.saved.clone();
+        let mut state = crate::settlement::SettlementState::new();
+        for (id, offset) in [
+            ("helios", [-96.0, 0.0]),
+            ("tide", [96.0, 0.0]),
+            ("cinder", [0.0, 160.0]),
+        ] {
+            let mut anchor_found = None;
+            'search: for radius in 0i32..16 {
+                for y in -radius..=radius {
+                    for x in -radius..=radius {
+                        if x.abs() != radius && y.abs() != radius {
+                            continue;
+                        }
+                        let center = [
+                            spawn[0] + offset[0] + f64::from(x) * 8.0,
+                            spawn[1] + offset[1] + f64::from(y) * 8.0,
+                        ];
+                        let anchor = [center[0], center[1] - 24.0];
+                        if state
+                            .start(
+                                terrain,
+                                id,
+                                "starter-core",
+                                crate::settlement::Role::Core,
+                                center,
+                                anchor,
+                                state.revision(),
+                            )
+                            .is_ok()
+                        {
+                            anchor_found = Some(anchor);
+                            break 'search;
+                        }
+                    }
+                }
+            }
+            next.builders.insert(
+                id.into(),
+                anchor_found.context("no legal starter core site; world unchanged")?,
+            );
+        }
+        state.validate()?;
+        next.schema_version = 3;
+        next.settlements = Some(state);
+        self.commit(next)
+    }
+
+    /// Trusted faction policy entry point; never pass a client-selected faction.
+    pub fn plan_settlement(
+        &mut self,
+        faction: &str,
+        request_id: &str,
+        role: crate::settlement::Role,
+    ) -> Result<Option<String>> {
+        use crate::city::{CityPlanner, LayoutRequest, Rect, Species};
+        let state = self
+            .saved
+            .settlements
+            .as_ref()
+            .context("settlements not initialized")?;
+        if let Some(previous) = state.request(faction, request_id) {
+            ensure!(previous.role == role, "request ID reused with another role");
+            return Ok(Some(previous.id.clone()));
+        }
+        let snapshot = state.snapshot();
+        let core = snapshot
+            .iter()
+            .find(|b| b.faction_id == faction && b.role == crate::settlement::Role::Core)
+            .context("unknown faction core")?;
+        ensure!(core.complete, "core still under construction");
+        let anchor = *self
+            .saved
+            .builders
+            .get(faction)
+            .context("missing authoritative builder")?;
+        let terrain = self.terrain.as_ref().context("missing terrain")?;
+        let mut planner = CityPlanner::new(faction)?;
+        let recipe = role.recipe();
+        let request = LayoutRequest {
+            faction_id: faction.into(),
+            species: match core.species {
+                crate::settlement::Species::Robot => Species::Robot,
+                crate::settlement::Species::Organic => Species::Organic,
+                crate::settlement::Species::Cyborg => Species::Cyborg,
+            },
+            center: core.center,
+            founded: true,
+            half_extents: recipe.half_extents,
+            anchors: vec![anchor],
+            reserved: snapshot
+                .iter()
+                .flat_map(|b| {
+                    [
+                        Rect {
+                            min: [
+                                b.center[0] - b.half_extents[0],
+                                b.center[1] - b.half_extents[1],
+                            ],
+                            max: [
+                                b.center[0] + b.half_extents[0],
+                                b.center[1] + b.half_extents[1],
+                            ],
+                        },
+                        Rect {
+                            min: b.entrance.min,
+                            max: b.entrance.max,
+                        },
+                        Rect {
+                            min: b.approach_bounds.min,
+                            max: b.approach_bounds.max,
+                        },
+                    ]
+                })
+                .collect(),
+        };
+        // Each rejected proposal is an isolated clone; no charge or history escapes.
+        let decision = planner.propose(&request, |pose| {
+            let mut candidate = state.clone();
+            let id = candidate.start(
+                terrain,
+                faction,
+                request_id,
+                role,
+                pose.center,
+                anchor,
+                state.revision(),
+            )?;
+            Ok((candidate, id))
+        })?;
+        let Some((state, id)) = decision.site else {
+            return Ok(None);
+        };
+        let mut next = self.saved.clone();
+        next.settlements = Some(state);
+        self.commit(next)?;
+        Ok(Some(id))
+    }
+
+    /// Called only from the server's fixed simulation schedule.
+    pub fn tick_settlements(&mut self, ticks: u64) -> Result<()> {
+        let mut next = self.saved.clone();
+        let Some(state) = next.settlements.as_mut() else {
+            return Ok(());
+        };
+        let changed = state.advance(ticks, |b| {
+            next.builders
+                .get(&b.faction_id)
+                .is_some_and(|a| (a[0] - b.center[0]).hypot(a[1] - b.center[1]) <= 128.0)
+        })?;
+        if changed {
+            self.commit(next)?;
+        }
+        Ok(())
     }
 
     pub fn snapshot(&self) -> Vec<Player> {
@@ -303,6 +489,14 @@ impl World {
         } else {
             (x.clamp(12.0, WIDTH - 12.0), y.clamp(12.0, HEIGHT - 12.0))
         };
+        ensure!(
+            !self
+                .saved
+                .settlements
+                .as_ref()
+                .is_some_and(|s| s.blocks_movement([old.x, old.y], [x, y])),
+            "route crosses a reserved building footprint"
+        );
         let mut next = self.saved.clone();
         let moved = &mut next.players[index].player;
         moved.x = x;
@@ -322,6 +516,11 @@ impl World {
     }
 
     fn commit(&mut self, next: SavedWorld) -> Result<()> {
+        let bytes = serde_json::to_vec_pretty(&next)?;
+        ensure!(
+            (bytes.len() as u64) < MAX_SAVE_BYTES,
+            "world save exceeds size limit"
+        );
         let parent = self
             .path
             .parent()
@@ -341,7 +540,7 @@ impl World {
             let mut file = options
                 .open(&temp)
                 .context("cannot create temporary world save")?;
-            file.write_all(&serde_json::to_vec_pretty(&next)?)?;
+            file.write_all(&bytes)?;
             file.write_all(b"\n")?;
             file.sync_all().context("cannot flush world save")?;
             fs::rename(&temp, &self.path).context("cannot replace world save")?;
@@ -378,10 +577,32 @@ fn hash_token(token: &str) -> String {
 
 fn validate_saved(saved: &SavedWorld) -> Result<()> {
     ensure!(
-        (saved.schema_version == 1 && saved.terrain.is_none())
-            || (saved.schema_version == 2 && saved.terrain.is_some()),
+        (saved.schema_version == 1 && saved.terrain.is_none() && saved.settlements.is_none())
+            || (saved.schema_version == 2
+                && saved.terrain.is_some()
+                && saved.settlements.is_none())
+            || (saved.schema_version == 3
+                && saved.terrain.is_some()
+                && saved.settlements.is_some()),
         "unsupported saved-world schema; refusing to reset it"
     );
+    if let Some(state) = &saved.settlements {
+        state.validate()?;
+        ensure!(saved.builders.len() == 3, "invalid saved builder roster");
+        for id in ["helios", "tide", "cinder"] {
+            ensure!(
+                saved
+                    .builders
+                    .get(id)
+                    .is_some_and(|a| a.iter().all(|v| v.is_finite()
+                        && *v >= 0.0
+                        && *v <= f64::from(crate::terrain::WORLD_SIZE))),
+                "invalid saved builder anchor"
+            );
+        }
+    } else {
+        ensure!(saved.builders.is_empty(), "orphan saved builders");
+    }
     ensure!(
         saved.next_id > 0 && saved.players.len() <= MAX_PLAYERS,
         "invalid saved-world identity state"

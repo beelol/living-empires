@@ -257,6 +257,39 @@ impl SettlementState {
     pub fn revision(&self) -> u64 {
         self.revision
     }
+    pub fn request(&self, faction: &str, request_id: &str) -> Option<&BuildingView> {
+        self.buildings
+            .iter()
+            .find(|b| b.view.faction_id == faction && b.request_id == request_id)
+            .map(|b| &b.view)
+    }
+    /// Conservative authored-building collision, including reserved construction.
+    /// Building interiors are not yet a traversal surface in this starter slice.
+    pub fn blocks_movement(&self, from: [f64; 2], to: [f64; 2]) -> bool {
+        self.buildings.iter().any(|b| {
+            let mut enter: f64 = 0.0;
+            let mut exit: f64 = 1.0;
+            for axis in 0..2 {
+                let min = b.footprint.min[axis] - 0.35;
+                let max = b.footprint.max[axis] + 0.35;
+                let delta = to[axis] - from[axis];
+                if delta.abs() < 1e-12 {
+                    if from[axis] < min || from[axis] > max {
+                        return false;
+                    }
+                } else {
+                    let a = (min - from[axis]) / delta;
+                    let z = (max - from[axis]) / delta;
+                    enter = enter.max(a.min(z));
+                    exit = exit.min(a.max(z));
+                    if enter > exit {
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+    }
     pub fn metal(&self, actor: &str) -> Option<u64> {
         self.factions.get(actor).map(|f| f.ledger.metal())
     }
