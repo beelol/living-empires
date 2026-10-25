@@ -1,0 +1,18 @@
+[package]
+name = "living-world-core"
+version = "0.1.0"
+edition = "2021"
+description = "First-party world recipe validation, collision simulation, and acceptance gates for Living Empires"
+license = "MIT"
+publish = false
+
+[lib]
+name = "living_world_core"
+
+[[bin]]
+name = "world-check"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
