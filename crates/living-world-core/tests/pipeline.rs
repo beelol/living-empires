@@ -1,7 +1,7 @@
 use living_world_core::{
     Architecture, AssetPipeline, Evidence, EvidenceStatus, Flora, Palette, PipelineStatus,
     Provenance, Recipe, RecipeScene, SceneComponent, ReferencePreset, ReviewDecision, ReviewVerdict, ThemeContract,
-    pipeline::{ComparisonStatus, ReviewComparison, VisualDefect},
+    pipeline::{ComparisonStatus, JobLimits, ReviewComparison, RoleModels, VisualDefect},
 };
 use serde_json;
 
@@ -49,6 +49,76 @@ fn comparison(current: &Evidence, previous: Option<&Evidence>, status: Compariso
         status, summary: "Matched views preserve the requested form and entry.".into(),
         strengths: vec!["Entry remains visible".into()], defects: vec![], improvements: vec![], regressions: vec![], simulated: false,
     }
+}
+
+fn sample_role_models() -> RoleModels {
+    RoleModels { creator: "gemini-3.8-flash".into(), repair: "gemini-4-argon".into(), reviewer: "gemini-4-argon".into() }
+}
+
+#[test]
+fn role_models_are_prework_frozen_hashed_and_exported() {
+    let frozen = theme();
+    let mut pipeline = AssetPipeline::create(frozen.clone(), "Build an orchard relay".into(), 0).unwrap();
+    let original_hash = pipeline.contract.frozen_sha256.clone();
+    pipeline.set_role_models(sample_role_models()).unwrap();
+    assert_ne!(pipeline.contract.frozen_sha256, original_hash);
+    assert_eq!(pipeline.contract.role_models, Some(sample_role_models()));
+    pipeline.charge_call(1).unwrap();
+    assert!(pipeline.set_role_models(sample_role_models()).unwrap_err().contains("before provider work"));
+    let candidate = pipeline.submit_candidate(recipe(&frozen.id), 2).unwrap();
+    assert_eq!(pipeline.decide(review(), evidence(candidate.candidate_sha256), 3).unwrap(), ReviewVerdict::Accept);
+    let package = pipeline.package(4).unwrap();
+    assert_eq!(package.manifest.role_models, Some(sample_role_models()));
+    assert_eq!(package.manifest.model, pipeline.contract.provenance.model);
+}
+
+#[test]
+fn legacy_state_without_role_models_deserializes_with_identical_hashes() {
+    let pipeline = AssetPipeline::create(theme(), "Build an orchard relay".into(), 0).unwrap();
+    let frozen_sha256 = pipeline.contract.frozen_sha256.clone();
+    let state_sha256 = pipeline.state_sha256.clone();
+    let mut old_state = serde_json::to_value(&pipeline).unwrap();
+    old_state["contract"].as_object_mut().unwrap().remove("roleModels");
+    if let Some(approved) = old_state.get_mut("approved").and_then(serde_json::Value::as_object_mut) {
+        approved.remove("roleModels");
+    }
+    let mut restored: AssetPipeline = serde_json::from_value(old_state).unwrap();
+    assert_eq!(restored.contract.role_models, None);
+    assert_eq!(restored.contract.frozen_sha256, frozen_sha256);
+    assert_eq!(restored.state_sha256, state_sha256);
+    assert!(serde_json::to_value(&restored).unwrap()["contract"].get("roleModels").is_none());
+    restored.charge_call(1).unwrap();
+}
+
+#[test]
+fn unsupported_role_model_ids_are_rejected_without_mutating_contract() {
+    let mut pipeline = AssetPipeline::create(theme(), "Build an orchard relay".into(), 0).unwrap();
+    let hash = pipeline.contract.frozen_sha256.clone();
+    let mut models = sample_role_models();
+    models.reviewer = "unapproved-model".into();
+    assert!(pipeline.set_role_models(models).is_err());
+    assert_eq!(pipeline.contract.role_models, None);
+    assert_eq!(pipeline.contract.frozen_sha256, hash);
+}
+
+#[test]
+fn limits_are_bounded_frozen_before_work_and_can_preserve_remaining_budget() {
+    let mut pipeline = AssetPipeline::create(theme(), "Build an orchard relay".into(), 1_000).unwrap();
+    let original_hash = pipeline.contract.frozen_sha256.clone();
+    let remaining = JobLimits { max_attempts: 2, time_budget_ms: 600_000, max_provider_calls: 5, required_image_hashes: 3 };
+    pipeline.set_limits(remaining.clone()).unwrap();
+    assert_ne!(pipeline.contract.frozen_sha256, original_hash);
+    assert_eq!(pipeline.contract.deadline_ms, 601_000);
+    assert_eq!(pipeline.contract.limits, remaining);
+
+    let hash = pipeline.contract.frozen_sha256.clone();
+    let mut invalid = remaining.clone();
+    invalid.max_provider_calls = 7;
+    assert!(pipeline.set_limits(invalid).is_err());
+    assert_eq!(pipeline.contract.frozen_sha256, hash);
+
+    pipeline.charge_call(1_001).unwrap();
+    assert!(pipeline.set_limits(remaining).unwrap_err().contains("before provider work"));
 }
 
 #[test]

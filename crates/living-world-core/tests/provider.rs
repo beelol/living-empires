@@ -77,7 +77,7 @@ fn direct_payload_contains_the_full_frozen_theme_and_structured_schema() {
     assert!(prompt.contains("Give the roof a distinct arch"));
     assert!(prompt.contains("halfExtent of 12 metres"));
     assert_eq!(body["generationConfig"]["responseJsonSchema"]["properties"]["parts"]["maxItems"],128);
-    assert!(prompt.contains("complete, cohesive 3D sensor-outpost scene"));
+    assert!(prompt.contains("exactly the asset scope requested by the brief"));
     assert_eq!(body["generationConfig"]["responseJsonSchema"]["required"].as_array().unwrap().iter().any(|v|v=="scene"),true);
 }
 
@@ -113,6 +113,7 @@ fn managed_generation_resumes_context_and_environment_and_extracts_final_text() 
     assert!(call.0.ends_with("/interactions"));
     assert_eq!(call.2["previous_interaction_id"],"previous-turn");
     assert_eq!(call.2["environment"],"sandbox-2");
+    assert_eq!(call.2["tools"],json!([{"type":"code_execution"}]));
     assert_eq!(call.2["agent_config"]["model"],"gemini-test");
     assert_eq!(call.2["agent_config"]["max_total_tokens"],50_000);
 }
@@ -194,6 +195,40 @@ fn completed_managed_model_output_step_is_used_and_raw_response_metadata_is_pres
     let error=generate_with_transport(&request,"key",&transport).unwrap_err();
     assert!(error.to_string().contains("malformed JSON"));
     assert_eq!(error.response,Some(malformed));
+}
+
+#[test]
+fn incomplete_managed_response_is_preserved_as_failure_without_treating_steps_as_final_text() {
+    let request = request(true);
+    let transport = MockTransport::default();
+    let incomplete = json!({"id":"incomplete-17","status":"incomplete","usage":{"total_tokens":49999},"environment_id":"remote-env","steps":[
+        {"type":"thought","text":"partial internal work"},
+        {"type":"code_execution_result","result":"no asset"}
+    ]});
+    *transport.response.lock().unwrap() = Some(incomplete.clone());
+    let error = generate_with_transport(&request, "key", &transport).unwrap_err();
+    assert!(error.to_string().contains("no final text"));
+    assert_eq!(error.response, Some(incomplete));
+    assert_eq!(transport.calls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn generation_payload_has_concrete_array_shapes_and_top_level_scene_schema() {
+    let request = request(false);
+    let (_, body) = build_generation_request(&request).unwrap();
+    let schema = &body["generationConfig"]["responseJsonSchema"];
+    assert!(schema["required"].as_array().unwrap().iter().any(|value| value == "scene"));
+    assert_eq!(schema["properties"]["scene"]["type"], "object");
+    assert_eq!(schema["properties"]["scene"]["properties"]["components"]["type"], "array");
+    assert_eq!(schema["properties"]["parts"]["items"]["type"], "object");
+    assert!(schema["properties"]["scene"]["items"].is_null());
+    let prompt = body["contents"][0]["parts"][0]["text"].as_str().unwrap();
+    assert!(prompt.contains("exactly the asset scope requested by the brief"));
+    assert!(prompt.contains("do not expand one building into a multi-building compound"));
+    assert!(prompt.contains("\"components\":[{"));
+    assert!(prompt.contains("\"parts\":[{"));
+    assert!(prompt.contains("Components are a JSON array of objects, not a string"));
+    assert!(!prompt.contains("\"components\":\"prompt-chosen"));
 }
 
 #[test]

@@ -21,6 +21,18 @@ impl Default for JobLimits {
     }
 }
 
+impl JobLimits {
+    fn validate(&self) -> Result<(), String> {
+        if !(1..=3).contains(&self.max_attempts)
+            || !(1..=6).contains(&self.max_provider_calls)
+            || !(1..=DEFAULT_TIME_BUDGET_MS).contains(&self.time_budget_ms)
+            || self.required_image_hashes != 3 {
+            return Err("Limits require 1..3 attempts, 1..6 provider calls, 1..1,200,000 ms, and exactly 3 image hashes".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrozenJobContract {
@@ -33,6 +45,9 @@ pub struct FrozenJobContract {
     pub deadline_ms: u64,
     pub limits: JobLimits,
     pub provenance: Provenance,
+    /// Frozen model assignment for the independent creator, repairer and reviewer roles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_models: Option<RoleModels>,
     /// Fixed renderer camera extent for coherent scene candidates in this job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene_half_extent: Option<f64>,
@@ -43,6 +58,27 @@ pub struct FrozenJobContract {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<ReferenceContract>,
     pub frozen_sha256: String,
+}
+
+/// Supported provider model IDs assigned independently to asset lifecycle roles.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RoleModels {
+    pub creator: String,
+    pub repair: String,
+    pub reviewer: String,
+}
+
+impl RoleModels {
+    fn validate(&self) -> Result<(), String> {
+        const SUPPORTED: [&str; 2] = ["gemini-3.8-flash", "gemini-4-argon"];
+        for (role, model) in [("creator", &self.creator), ("repair", &self.repair), ("reviewer", &self.reviewer)] {
+            if model.len() > 100 || !SUPPORTED.contains(&model.as_str()) {
+                return Err(format!("Unsupported {role} model ID; use gemini-3.8-flash or gemini-4-argon"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,6 +240,9 @@ pub struct PackageManifest {
     pub rehearsal: bool,
     pub provider: String,
     pub model: String,
+    /// Exact frozen model assignment used for lifecycle roles, when configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_models: Option<RoleModels>,
     pub agent: Option<String>,
     pub source_revision: Option<String>,
     pub source_fingerprint: Option<String>,
@@ -234,7 +273,7 @@ impl AssetPipeline {
         let mut contract = FrozenJobContract {
             job_id, prompt, prompt_sha256, theme, theme_sha256, created_at_ms: now_ms, deadline_ms, limits,
             provenance: Provenance::default(), frozen_sha256: String::new(),
-            scene_half_extent: None, refinement: None, reference: None,
+            scene_half_extent: None, refinement: None, reference: None, role_models: None,
         };
         contract.frozen_sha256 = contract_hash(&contract)?;
         let mut pipeline = Self {
@@ -273,6 +312,30 @@ impl AssetPipeline {
         }
         self.contract.scene_half_extent = frozen_extent;
         self.contract.provenance = provenance;
+        self.contract.frozen_sha256 = contract_hash(&self.contract)?;
+        self.refresh_state_hash()?;
+        Ok(())
+    }
+
+    /// Freeze provider role models before any provider call or candidate exists.
+    pub fn set_role_models(&mut self, role_models: RoleModels) -> Result<(), String> {
+        self.check_integrity()?;
+        self.ensure_unstarted()?;
+        role_models.validate()?;
+        self.contract.role_models = Some(role_models);
+        self.contract.frozen_sha256 = contract_hash(&self.contract)?;
+        self.refresh_state_hash()?;
+        Ok(())
+    }
+
+    /// Replace bounded job limits before work starts, preserving one frozen deadline.
+    pub fn set_limits(&mut self, limits: JobLimits) -> Result<(), String> {
+        self.check_integrity()?;
+        self.ensure_unstarted()?;
+        limits.validate()?;
+        let deadline_ms = self.contract.created_at_ms.checked_add(limits.time_budget_ms).ok_or("Job deadline overflow")?;
+        self.contract.limits = limits;
+        self.contract.deadline_ms = deadline_ms;
         self.contract.frozen_sha256 = contract_hash(&self.contract)?;
         self.refresh_state_hash()?;
         Ok(())
@@ -322,7 +385,7 @@ impl AssetPipeline {
 
     fn ensure_unstarted(&self) -> Result<(), String> {
         if self.status != PipelineStatus::Active || self.provider_calls != 0 || self.attempt_count != 0 {
-            return Err("Scene extent and refinement feedback are frozen before provider work".into());
+            return Err("Job metadata is frozen before provider work".into());
         }
         Ok(())
     }
@@ -498,6 +561,7 @@ impl AssetPipeline {
                 rehearsal: self.contract.provenance.rehearsal,
                 provider: self.contract.provenance.provider.clone(),
                 model: self.contract.provenance.model.clone(),
+                role_models: self.contract.role_models.clone(),
                 agent: self.contract.provenance.agent.clone(),
                 source_revision: self.contract.provenance.source_revision.clone(),
                 source_fingerprint: self.contract.provenance.source_fingerprint.clone(),
@@ -525,14 +589,16 @@ impl AssetPipeline {
         }
         if let Some(refinement) = &self.contract.refinement { validate_refinement(refinement, &self.contract.theme)?; }
         if let Some(reference) = &self.contract.reference { validate_reference(reference)?; }
+        if let Some(role_models) = &self.contract.role_models { role_models.validate()?; }
         if let (Some(extent), Some(refinement)) = (self.contract.scene_half_extent, self.contract.refinement.as_ref()) {
             if refinement.baseline_recipe.scene.as_ref().is_some_and(|scene| scene.half_extent.to_bits() != extent.to_bits()) {
                 return Err("Refinement baseline scene extent differs from frozen renderer extent".into());
             }
         }
+        if self.contract.limits.validate().is_err() {
+            return Err("Frozen job contract or pipeline counters were tampered with".into());
+        }
         if pipeline_hash(self)? != self.state_sha256
-            || self.contract.limits.max_attempts > 3 || self.contract.limits.max_provider_calls > 6
-            || self.contract.limits.time_budget_ms > DEFAULT_TIME_BUDGET_MS || self.contract.limits.required_image_hashes != 3
             || contract_hash(&self.contract)? != self.contract.frozen_sha256
             || sha256_json(&self.contract.theme)? != self.contract.theme_sha256
             || sha256(self.contract.prompt.as_bytes()) != self.contract.prompt_sha256
@@ -570,6 +636,7 @@ impl AssetPipeline {
             if self.status != PipelineStatus::Approved || package.manifest.rehearsal != self.contract.provenance.rehearsal
                 || package.manifest.provider != self.contract.provenance.provider || package.manifest.model != self.contract.provenance.model
                 || package.manifest.agent != self.contract.provenance.agent
+                || package.manifest.role_models != self.contract.role_models
                 || package.manifest.source_revision != self.contract.provenance.source_revision
                 || package.manifest.source_fingerprint != self.contract.provenance.source_fingerprint {
                 return Err("Approved package provenance was tampered with".into());
