@@ -62,7 +62,7 @@ class FoundryAPI:
             headers={'Content-Type': 'application/json'} if body is not None else {})
         try:
             with self.opener.open(request, timeout=15) as response:
-                limit = 2_000_000 if binary else 12_000_000
+                limit = 2_900_000 if binary else 12_000_000
                 data = response.read(limit + 1)
                 require(len(data) <= limit, 'Foundry response exceeds limit')
                 if binary:

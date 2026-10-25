@@ -212,3 +212,36 @@ rearcanopyseam blocked. Functionaltraversal/sensors/multiplayer blocked, notpass
 Structuredrecord /tmp/argon-foundry-native-views-v3/independent-review.json binds
 exactpackage/content/3imageSHA and release_approved=false. This is useful retained
 failure feedback, never silently promoted to goodquality/live activation.
+
+Native capture integration lane: this stream names itself serialized owner of
+server.mjs plus new lib/native-capture.mjs and test/native-capture.test.mjs.
+Registry inspection found no matching claim; coordinator/brain/G notified of
+the compatible opt-in AUDIT_RENDERER=bevy boundary. Existing renderer default,
+HTTP/package schema and first-party acceptance/call/attempt/time limits remain.
+Actual native images must enter the SAME review/repair cycle before approval,
+not a new post-approval job that resets limits. Browser movement remains an
+explicitly separate functional harness, not invented native traversal evidence.
+
+Sponsored-credit follow-up: user explicitly rejects dollar-ceiling gating.
+Named narrow serialized ownership adds lib/spend-ledger.mjs and new
+test/spend-ledger.test.mjs, coordinator notified. Explicit operator-only
+GOOGLE_SPONSORED_CREDITS=1 preserves usage/unknown receipts and per-job limits,
+never infers authorization from a saved ledger, defaults remain closed/capped.
+RED/GREEN tests verify sponsored restart, unknown usage retention, other-model
+usage without fabricated pricing, and default refusal.
+
+Actual native API rehearsal job-argonaut-1792959775198 captured three Bevy PNGs
+with hashes, then blocked (retained) because Pulkit's new comparison contract
+on main exceeded the previously built world-check binary schema. Rebuilt the
+current first-party Rust verifier with --locked; no schema downgrade or review
+bypass. New job-argonaut-1792959930987 is an explicitly separate zero-spend
+rehearsal against that current binary, not a production NeedReport.
+
+Native API v2 completed: job-argonaut-1792959930987, attempt1 repair then
+attempt2 accept, both renderSource=bevy-native with3exactimagehashes each.
+Visual verdict remains explicitly simulated fixture, no live quality/AC pass.
+Python verify_package revalidated this exported package with current first-party
+Rust and downloaded/checked all3 nativePNGs successfully. 28Node+36Python tests
+pass; actualserver runtime explicitly enables sponsoredcredits. Hourly existing
+heartbeat updated from obsolete absent-Studio state to actualcurrentintegration
+with source-needs/units blockers and authorizedsponsoredmode. No duplicateworker.

@@ -8,12 +8,13 @@ import {chromium} from 'playwright';
 import {inferTheme} from './lib/theme-inference.mjs';
 import {validateTheme} from './public/themes.mjs';
 import {THEMES,injectDefect,canAccept} from './public/core.mjs';
+import {captureNative} from './lib/native-capture.mjs';
 import {SpendLedger} from './lib/spend-ledger.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const publicRoot=process.env.ASSET_PUBLIC_DIR||path.join(root,'public');
 const data=process.env.ASSET_DATA_DIR||path.join(root,'.data'); fs.mkdirSync(data,{recursive:true});
-const spending=new SpendLedger(data,process.env.GOOGLE_SESSION_BUDGET_USD);
+const spending=new SpendLedger(data,process.env.GOOGLE_SESSION_BUDGET_USD,{sponsoredCredits:process.env.GOOGLE_SPONSORED_CREDITS==='1'});
 const port=Number(process.env.PORT||4317), base=`http://127.0.0.1:${port}`;
 const apiKey=process.env.GEMINI_API_KEY||process.env.GOOGLE_API_KEY;
 const model=process.env.GEMINI_MODEL||'gemini-3.8-flash';
@@ -28,7 +29,7 @@ const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const rustBinary=process.env.RUST_CORE_BIN||path.join(root,'target/debug/world-check');
 const rustBinarySha256=fs.existsSync(rustBinary)?createHash('sha256').update(fs.readFileSync(rustBinary)).digest('hex'):null;
 const sourceRevision=spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).stdout?.trim()||'unknown';
-const sourceFingerprint=digest(['server.mjs','public/app.mjs','public/style.css','public/index.html','public/themes.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/spend-ledger.mjs','lib/theme-inference.mjs','crates/living-world-core/src/lib.rs','crates/living-world-core/src/main.rs','crates/living-world-core/src/pipeline.rs','crates/living-world-core/src/provider.rs','crates/living-world-core/fixtures/presets.json','Cargo.lock','package-lock.json'].map(file=>{const source=file.startsWith('public/')?path.join(publicRoot,file.slice(7)):path.join(root,file);return [file,fs.existsSync(source)?fs.readFileSync(source,'utf8'):null];}).concat([['world-check-binary-sha256',rustBinarySha256]]));
+const sourceFingerprint=digest(['server.mjs','public/app.mjs','public/style.css','public/index.html','public/themes.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/spend-ledger.mjs','lib/theme-inference.mjs','lib/native-capture.mjs','game/examples/foundry_audit.rs','crates/living-world-core/src/lib.rs','crates/living-world-core/src/main.rs','crates/living-world-core/src/pipeline.rs','crates/living-world-core/src/provider.rs','crates/living-world-core/fixtures/presets.json','Cargo.lock','package-lock.json'].map(file=>{const source=file.startsWith('public/')?path.join(publicRoot,file.slice(7)):path.join(root,file);return [file,fs.existsSync(source)?fs.readFileSync(source,'utf8'):null];}).concat([['world-check-binary-sha256',rustBinarySha256]]));
 function rustSync(input){
   if(!fs.existsSync(rustBinary))throw new Error('Rust core is not built. Run cargo build -p living-world-core before starting a run.');
   const result=spawnSync(rustBinary,[],{cwd:root,input:JSON.stringify(input),encoding:'utf8',timeout:15000,maxBuffer:16*1024*1024});
@@ -173,6 +174,17 @@ async function captureHeadless(job,attempt){
   }finally{await page.close();}
 }
 async function capture(job,attempt){
+  if(process.env.AUDIT_RENDERER==='bevy'){
+    const functional=await captureHeadless(job,attempt);
+    ensureCurrent(job);
+    const native=await captureNative({root,job,attempt,movement:functional.movement,
+      binary:process.env.NATIVE_AUDIT_BIN||path.join(root,'target/debug/examples/foundry_audit'),
+      signal:controllers.get(job.id)?.signal,
+      timeoutMs:Math.min(90000,Math.max(1,job.deadline-Date.now()))});
+    ensureCurrent(job);attempt.renderSource=native.renderSource;
+    attempt.functionalHarness=native.functionalHarness;attempt.nativeEvidence=native.nativeEvidence;
+    return native;
+  }
   if(process.env.AUDIT_RENDERER==='headless'||Date.now()-lastRendererSeen>10000)return captureHeadless(job,attempt);
   return new Promise((resolve,reject)=>{
     const token=randomUUID();
@@ -350,7 +362,8 @@ const server=http.createServer(async(req,res)=>{
       const job=jobs.get(packageMatch[1]),attempt=verifiedAttempt(job);
       if(!attempt)return json(res,409,{error:'Package export requires an accepted candidate and unchanged evidence.'});
       const value=job.pipeline?rustSync({op:'package',pipeline:job.pipeline,now:Date.now()}).value:{format:'living-empires.asset',schemaVersion:1,assetType:'building',assetId:job.id,themeId:job.themeId,theme:job.theme,recipe:attempt.recipe,manifest:{version:attempt.number,contentSha256:attempt.hash,themeSha256:job.themeHash,sourceRevision:job.sourceRevision,sourceFingerprint:job.sourceFingerprint,engine:attempt.engine,contractVersion:job.contractVersion,rehearsal:job.provider==='fixture',createdAt:attempt.createdAt,checks:attempt.checks,evidence:attempt.images.map((url,i)=>({view:i+1,url,sha256:attempt.imageHashes[i]})),provider:job.provider,model:job.model,agent:job.agent}};
-      value.manifest.adapter={renderer:attempt.renderSource||'headless-chromium',sourceUrls:[]};
+      value.manifest.adapter={renderer:attempt.renderSource||'headless-chromium',sourceUrls:[],
+        ...(attempt.nativeEvidence?{nativeEvidenceSha256:digest(attempt.nativeEvidence),functionalHarness:attempt.functionalHarness}: {})};
       res.writeHead(200,{'Content-Type':'application/json','Content-Disposition':`attachment; filename="asset-${job.id}.json"`,'Cache-Control':'no-store'});res.end(JSON.stringify(value,null,2));return;
     }
     const match=pathname.match(/^\/api\/jobs\/([\da-z-]{1,128})$/);
