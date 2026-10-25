@@ -64,13 +64,15 @@ const familyOnlyInference='Shared style for DIFFERENT building functions. Extrac
 const familyCapability='ASCII field limits: name100, genre120, biome200, scale300, description1500; other text/list entries400 characters. Compact 8m x 8m building plots, grounded supports, clear access. Axis-aligned boxes, vertical cylinders/cones only; no tilt, rotation, textures, spheres or simulated foliage. Building-part colors/visualChecks use ONLY exact palette.shell/frame/accent. palette.ground/rock are ENVIRONMENT ONLY, never building colors.';
 function validateSharedTheme(theme){
  const partColors=new Set(['shell','frame','accent'].map(key=>theme.palette[key].toLowerCase()));
- for(const check of theme.visualChecks)requireThat(!/\b(?:huts?|cabins?|cottages?|chimneys?|wood[ -]?stores?)\b/i.test(check),'Shared faction visual checks require source-specific domestic components. Resolve reusable construction and materials before generation.');
  for(const check of theme.visualChecks){for(const color of check.match(/#[0-9a-f]{3,8}\b/gi)||[]){const normalized=color.length===4?'#'+[...color.slice(1)].map(c=>c+c).join(''):color;requireThat(partColors.has(normalized.toLowerCase()),`Shared faction visual check requires unavailable building color ${color}; use only palette.shell/frame/accent. Resolve a new family before generation.`);}}
- for(const exclusion of theme.exclusions)requireThat(!/\b(?:sports?|basketball|courts?|hoops?|backboards?|solar|photovoltaic|collectors?)\b/i.test(exclusion),'Shared faction exclusions conflict with supported sports or solar functions. Resolve a role-neutral family before generation.');
 }
-function themeInferencePrompt(request,faction){
- if(request.drivesFactionDirection)return `Infer an original art direction from the complete user brief below. Choose distinctive silhouette, composition, palette, material treatment and memorable functional details freely; no previous faction style constrains this design. Preserve the requested purpose and explicit details. Return a valid theme contract with concrete renderable visual checks.\n${familyCapability}\nUser brief: ${request.userPrompt||request.artDirection}`;
- return `${familyOnlyInference}\n${familyCapability}\nFaction art direction: ${request.artDirection||faction.artDirection||request.userPrompt}`;
+export function themeInferencePrompt(request,faction){
+ const subject=request.userPrompt||request.prompt||request.artDirection||faction.artDirection||'';
+ if(request.drivesFactionDirection)return `Infer an original art direction from the complete user brief below. Choose distinctive silhouette, composition, palette, material treatment and memorable functional details freely; no previous faction style constrains this design. Preserve the requested purpose and explicit details. Return a valid theme contract with concrete renderable visual checks.\n${familyCapability}\nUser brief: ${subject}`;
+ const palette=request.familyPalette||faction.theme?.palette;
+ const colors=palette?` Exact building palette: shell ${palette.shell}, frame ${palette.frame}, accent ${palette.accent}. Preserve these exact colors.`:'';
+ const prefix=`Infer a frozen theme for THIS requested function, preserving its purpose and explicit details. Faction style is reusable construction/material inspiration only; source object names never require components. Do not invent a different gameplayRole. Visual checks must fit this target function.${colors}\n${familyCapability}\nRequested function: ${subject}\nFaction style examples: `;
+ return prefix+(request.artDirection||faction.artDirection||'').slice(0,Math.max(0,3000-prefix.length));
 }
 class SupersededRequest extends Error{}
 export class FoundryController{
@@ -151,14 +153,14 @@ export class FoundryController{
  request.startedAtMs??=Date.now();this.save();
  if(!request.theme){
  const faction=factionOf(this.world,request.factionId);
- if(!request.drivesFactionDirection&&faction.theme&&!(request.targetId&&!this.world.factions)){request.theme=structuredClone(faction.theme);request.themeDraftId=faction.themeDraftId;}
- else{
+ if(!request.drivesFactionDirection){const source=this.world.buildings.find(b=>b.asset?.hash===faction.designOrigin?.sourceHash);request.familyPalette??=structuredClone(source?.asset?.theme?.palette||faction.theme?.palette||null);}
+ {
  request.status='preparing-theme';this.progress(request,null,'Resolving the faction art direction.');this.save();let themeResponseReceived=false;
- try{const draft=await this.read(request,()=>this.api('/api/themes/resolve',{prompt:themeInferencePrompt(request,faction)}));themeResponseReceived=true;request.theme=validateTheme(draft.theme);request.themeDraftId=draft.draftId;if(!request.drivesFactionDirection)validateSharedTheme(request.theme);if(this.world.factions&&!request.drivesFactionDirection){const currentFaction=factionOf(this.world,request.factionId);currentFaction.theme=structuredClone(request.theme);currentFaction.themeDraftId=draft.draftId;}request.status='queued';this.save();}
+ try{const draft=await this.read(request,()=>this.api('/api/themes/resolve',{prompt:themeInferencePrompt(request,faction)}));themeResponseReceived=true;request.theme=validateTheme(draft.theme);request.themeDraftId=draft.draftId;if(!request.drivesFactionDirection){validateSharedTheme(request.theme);const palette=request.familyPalette;if(palette)for(const key of ['shell','frame','accent'])requireThat(request.theme.palette[key].toLowerCase()===palette[key].toLowerCase(),'Target theme changed the approved faction building palette.');}request.status='queued';this.save();}
  catch(e){if(e instanceof SupersededRequest)throw e;const refused=e.cause?.code==='ECONNREFUSED'||(e.cause?.errors?.length&&e.cause.errors.every(error=>error.code==='ECONNREFUSED'));if(e.reconciliationRequired||(!themeResponseReceived&&!refused&&(!e.status||e.status>=500)))request.reconciliationRequired=true;if(e.draftId)request.themeDraftId=e.draftId;request.status='blocked';request.reason='Live artistic contract could not be resolved: '+e.message+(request.reconciliationRequired?' Paid outcome needs reconciliation before another attempt.':'');f.error=request.reason;this.save();return;}
  }
  }
- if(!request.drivesFactionDirection)validateSharedTheme(request.theme);
+ if(!request.drivesFactionDirection){validateSharedTheme(request.theme);const palette=request.familyPalette;if(palette)for(const key of ['shell','frame','accent'])requireThat(request.theme.palette[key].toLowerCase()===palette[key].toLowerCase(),'Target theme changed the approved faction building palette.');}
  const timeBudgetMs=0; // The frozen attempt and call ceilings bound work; latency remains visible per phase.
  this.guard(request);request.status='dispatching';this.progress(request,null,'Submitting the frozen building request.');this.save();let job;
  try{job=await this.api('/api/jobs',{timeBudgetMs,provider:request.provider,theme:request.theme,themeId:request.theme.id,sceneHalfExtent:4,prompt:request.prompt,injectDefect:false});}
