@@ -1,0 +1,5 @@
+# Solo colony stream
+Owner: Sol, isolated worktree solo-colony. Base: 9fa0b16c23da4a187465adabfdb8f71e38a7971f. Owned: solo/, this record, named solo-colony plan.
+Primary reference AC subjects: PLY-04, SET-03/04, GEN-08, WORLD-05. Affected: SET-02/05/06, GEN-05, LIVE-03/06/07/10/11, UX-01/03. No v2 acceptance passes claimed: owner explicitly requested a separate single-player app with robot and player construction, contradicting v2 camera-only/autonomous-three-empire scope.
+Dependencies: Pulkit owns Foundry HTTP /api/config, /api/jobs, /api/jobs/:id, /package and evidence URLs; living-world-core owns package operation/typed verification. Consume existing schema without modifications. Sol owns solo JSON API v1 and save v1, no shared runtime/save/protocol changes. Existing active claims inspected; all changes isolated from their paths and contracts. Main README remains the other app's contract.
+Acceptance: node --test solo/test/*.test.mjs; real browser normal actions and actual screenshots; Foundry fixture loop explicitly rehearsal, live independent provider review not claimed unless actually demonstrated.

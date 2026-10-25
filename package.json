@@ -6,10 +6,11 @@
   "scripts": {
     "build:core": "cargo build -p living-world-core --features live-provider",
     "test:core": "cargo test -p living-world-core",
-    "dev": "node --env-file-if-exists=.env server.mjs",
-    "start": "node --env-file-if-exists=.env server.mjs",
+    "dev": "node scripts/dev.mjs",
+    "start": "node scripts/dev.mjs",
     "test": "node --test test/*.test.mjs",
-    "test:e2e": "node scripts/smoke.mjs"
+    "test:e2e": "node scripts/smoke.mjs",
+    "studio": "node scripts/dev.mjs --studio"
   },
   "dependencies": {
     "@google/genai": "^1.0.0",

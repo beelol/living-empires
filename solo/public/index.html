@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#172e32"><title>First Landing · Robot colony</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<main id="game" aria-label="Single-player robot colony">
+ <div id="world" aria-label="Colony map. Click to move; choose a building below to place it." tabindex="0"></div>
+ <header class="topbar">
+  <div class="identity"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 25V12l10-6 10 6v13H6ZM12 25V15h8v10M16 6V2"/></svg><div><h1>First Landing</h1><span>YOUR ROBOT. YOUR FRONTIER.</span></div></div>
+  <div class="resources" aria-label="Colony resources"><div><span>Alloy</span><strong id="alloy">200</strong></div><div><span>Power</span><strong id="power">8 / 0</strong></div><div><span>Robot cap</span><strong id="population">0</strong></div></div>
+  <div class="top-actions"><span id="save-status">Local colony · saved</span><button id="pause" class="icon-button" aria-label="Pause simulation"><svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg></button><button id="help-button" class="icon-button" aria-label="Show controls"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4M12 16v1"/></svg></button></div>
+ </header>
+ <section class="colony-heading" aria-label="Colony status"><div class="live-dot"></div><span id="colony-stage">A small beginning</span><p id="objective">Make your first mark on the coast.</p></section>
+ <aside id="inspector" class="inspector" hidden aria-label="Selected building"><button id="close-inspector" class="close" aria-label="Close building details">×</button><span class="label">COLONY STRUCTURE</span><h2 id="building-name"></h2><p id="building-status"></p><div id="building-details"></div><button id="regenerate-object" class="text-button" hidden>Regenerate with live Foundry</button><button id="rollback" class="text-button" hidden>Restore previous appearance</button></aside>
+ <aside class="foundry" aria-label="Asset Foundry"><div class="foundry-title"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 5v8l-8 5-8-5V8l8-5ZM4 8l8 5 8-5M12 13v8"/></svg><h2>Asset Foundry</h2><button id="foundry-toggle" class="text-button">Pause</button></div><p id="foundry-status">Connecting to the local Foundry…</p><div class="foundry-foot"><span id="foundry-mode">LIVE FOUNDRY</span><button id="refine" class="text-button">Refine again</button></div><div id="foundry-recovery"></div></aside>
+ <div class="camera-tools" aria-label="Camera controls"><button id="zoom-in" aria-label="Zoom in">+</button><button id="zoom-out" aria-label="Zoom out">−</button><button id="recenter" aria-label="Return camera to robot"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></button></div>
+ <div id="toast" role="status" aria-live="polite" hidden></div>
+ <section class="build-shelf" aria-label="Build menu"><div class="shelf-heading"><div><h2>Build a foothold.</h2><p id="build-hint">Choose a structure, then click a clear patch of land.</p></div><button id="create-button" class="create-button">Create something…</button><button id="move-tool" class="tool active" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="m6 3 12 9-7 1-3 7-2-17Z"/></svg>Move <kbd>Esc</kbd></button></div><button id="prospect" class="text-button prospect">Find &amp; build a mineral extractor · 60 alloy</button><div id="build-options" class="build-options"></div><div class="shelf-footer"><span id="activity">Touchdown successful.</span><span id="clock">Sol 1 · 00:00</span></div></section>
+ <section id="help" class="help" hidden aria-label="Controls"><button id="close-help" class="close" aria-label="Close controls">×</button><h2>A world to make your own.</h2><p>Click dry land to move your robot. Choose a structure below, then click a valid site to begin construction.</p><dl><dt>Look around</dt><dd>Drag with the right mouse button, or use WASD / arrow keys.</dd><dt>Get closer</dt><dd>Scroll or use + / −. Press R to find your robot.</dd><dt>Build</dt><dd>Keys 1–4 select a structure. Esc returns to movement.</dd><dt>Keep growing</dt><dd>Solar arrays power your colony. Extractors turn mineral seams into alloy. Habitats welcome settlers; labs recycle alloy.</dd><dt>Improve the city</dt><dd>Foundry upgrades each completed building family in sequence. New designs use live Asset Foundry generation and independent review.</dd></dl><a href="/api/v1/export" download>Export colony save</a><p class="small">Progress continues while this local app server runs. Closing the server pauses your colony.</p></section>
+
+ <aside id="creator" class="creator" hidden aria-label="Create with Asset Foundry">
+  <button id="close-creator" class="close" aria-label="Close creation panel">×</button>
+  <h2>Imagine it.<br>Make it part of your world.</h2>
+  <p>Describe anything. Place a standard cube on the map; Foundry replaces it with your reviewed creation.</p>
+  <form id="creation-form"><label for="creation-prompt">What would you like to create?</label><textarea id="creation-prompt" required minlength="5" maxlength="2000" rows="5" placeholder="A mossy observatory with copper fins and a glowing blue dome…"></textarea>
+  <label for="creation-provider">Generation engine</label><select id="creation-provider"><option value="gemini">Live Foundry · structured generation</option><option value="managed">Live Foundry · managed agent</option></select>
+  <p id="creation-cost" class="creation-note">25 alloy · fixed 8 × 8 m plot. Live generation uses Foundry’s configured API credits and limits.</p>
+  <button type="submit" class="primary-button">Choose where to place</button></form>
+  <p class="creation-note">The cube is a placeholder while generation runs. Failed or cancelled jobs stay visible in inspection; nothing unreviewed activates.</p>
+ </aside>
+ <div id="loading"><h2>Finding a place to begin.</h2><p>Preparing your local colony…</p></div>
+</main>
+<script type="module" src="/app.mjs"></script></body></html>
