@@ -433,8 +433,13 @@ class Runner:
                     self.fetch_error = str(exc)
             revision = self.select_revision()
             if self.active and (self.host is None or self.host.poll() is not None):
-                if revision == self.active.commit or revision == self.failed_commit:
+                try:
                     self.recover_host()
+                except (DeployError, OSError) as recovery_error:
+                    if revision == self.active.commit or revision == self.failed_commit:
+                        raise
+                    self.log(f'Host recovery failed; trying the new candidate: {recovery_error}')
+                else:
                     self.write_status()
                     return
             elif time.monotonic() - self.healthy_since >= 30:

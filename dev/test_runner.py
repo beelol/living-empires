@@ -328,6 +328,50 @@ shutil.copyfile(p/'dev/runtime/host.py',t);t.chmod(0o755)
         self.assertEqual(self.runner.health()['content_version'], 'v1')
         self.assertEqual(self.runner.active.commit, self.first)
 
+    def test_crashed_host_recovers_before_building_a_new_candidate(self):
+        self.deploy_first()
+        (self.config.deploy_dir/'world.json').write_text('{"world":99}')
+        (self.repo/'BUILD_FAIL').write_text('fail')
+        second = self.commit('v2')
+        self.runner.host.kill()
+        self.runner.host.wait(timeout=3)
+        self.runner.tick()
+        self.assertIsNone(self.runner.host.poll(), 'Recover the healthy world before preparing newer work')
+        self.assertTrue(self.runner.health()['accepting_commands'])
+        self.assertEqual(self.runner.active.commit, self.first)
+        self.assertIsNone(self.runner.failed_commit, 'The new candidate must remain pending during recovery')
+        self.assertEqual(self.runner.select_revision(), second)
+        self.assertEqual(json.loads((self.config.deploy_dir/'world.json').read_text()), {'world':99})
+        recovered_pid = self.runner.host.pid
+        self.runner.tick()
+        self.assertEqual(self.runner.failed_commit, second)
+        self.assertIn('Build failed', self.runner.last_error)
+        self.assertEqual(self.runner.host.pid, recovered_pid)
+        self.assertTrue(self.runner.health()['accepting_commands'])
+        self.assertEqual(json.loads((self.config.deploy_dir/'world.json').read_text()), {'world':99})
+
+    def test_new_candidate_can_restore_service_when_old_release_recovery_fails(self):
+        self.deploy_first()
+        (self.repo/'dev/runtime/change').write_text('new runtime')
+        second = self.commit('v2')
+        self.runner.host.kill()
+        self.runner.host.wait(timeout=3)
+        original_touch = Path.touch
+        failures = []
+        def touch(path, *args, **kwargs):
+            if path.parent.name == 'activation' and not failures:
+                metadata = json.loads((self.config.deploy_dir/'active.json').read_text())
+                if metadata['commit'] == self.first:
+                    failures.append(True)
+                    raise OSError('Injected old-release recovery failure')
+            return original_touch(path, *args, **kwargs)
+        with mock.patch.object(Path, 'touch', new=touch):
+            self.runner.tick()
+        self.assertEqual(failures, [True], 'Try restoring the old release before preparing new work')
+        self.assertEqual(self.runner.active.commit, second)
+        self.assertTrue(self.runner.health()['accepting_commands'])
+        self.assertEqual(json.loads((self.config.deploy_dir/'world.json').read_text()), {'world':42})
+
     def test_recovery_marker_failure_stops_gated_host_and_retries(self):
         self.deploy_first()
         self.runner.host.kill()
