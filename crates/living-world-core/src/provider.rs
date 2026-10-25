@@ -158,6 +158,11 @@ fn prompt_text(request: &GenerationRequest) -> Result<String, ProviderError> {
     if let Some(previous) = &request.previous {
         text.push_str("\nPrevious approved baseline or immediately prior candidate to refine while preserving its identity: ");
         text.push_str(&serde_json::to_string(previous).map_err(|_| ProviderError::new("Could not encode previous candidate"))?);
+        let geometry_diagnostics = crate::geometry_repair_diagnostics(previous);
+        if !geometry_diagnostics.is_empty() {
+            text.push_str("\nExact existing Rust geometry limits violated by that candidate (repair only the named defects while retaining the scene): ");
+            text.push_str(&serde_json::to_string(&geometry_diagnostics).map_err(|_| ProviderError::new("Could not encode geometry repair guidance"))?);
+        }
     }
     if let Some(edit) = &request.component_edit {
         let baseline = request.previous.as_ref().expect("component edit baseline checked above");

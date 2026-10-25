@@ -207,6 +207,46 @@ fn validate_recipe(recipe: &Recipe) -> Result<(), String> {
     Ok(())
 }
 
+/// Additional repair guidance only. Saved validation strings/checks remain stable for integrity.
+pub fn geometry_repair_diagnostics(recipe: &Recipe) -> Vec<String> {
+    let mut details = Vec::new();
+    let bound = recipe.scene.as_ref().map_or(4.0, |scene| scene.half_extent) + 0.05;
+    for part in &recipe.parts {
+        for (axis, name) in ["x", "y", "z"].iter().enumerate() {
+            let size = part.size[axis];
+            if !size.is_finite() || size <= 0.0 || size > 12.0 {
+                details.push(format!("Part '{}': size[{axis}] ({name})={size}; each dimension must be finite and 0 < size <= 12 metres. Split longer spans into adjoining parts.", part.id));
+            }
+            let center = part.position[axis];
+            let limit = if axis == 1 { 10.0 } else { 28.0 };
+            if !center.is_finite() || center.abs() > limit {
+                details.push(format!("Part '{}': position[{axis}] ({name})={center}; center must be finite with absolute value <= {limit} metres.", part.id));
+            }
+            if axis != 1 && center.abs() + size / 2.0 > bound {
+                details.push(format!("Part '{}': {name} outer extent {} exceeds scene limit {bound}; require abs(position[{axis}]) + size[{axis}]/2 <= {bound}.", part.id, center.abs() + size / 2.0));
+            }
+        }
+        let bottom = part.position[1] - part.size[1] / 2.0;
+        if bottom < -0.05 {
+            details.push(format!("Part '{}': bottom y={bottom} from centerY {} - height {}/2; bottom must be >= -0.05 metres.", part.id, part.position[1], part.size[1]));
+        }
+        if ["wall", "support"].contains(&part.role.as_str()) && bottom.abs() >= 0.08 {
+            details.push(format!("Part '{}' ({}) has bottom y={bottom}; every wall/support must individually satisfy abs(centerY - height/2) < 0.08 metres. Ground structural supports; classify mounted non-ground-bearing trim as detail.", part.id, part.role));
+        }
+    }
+    if !recipe.parts.iter().any(|part| ["wall", "support"].contains(&part.role.as_str())) {
+        details.push("No wall/support part exists; the grounding check requires at least one grounded wall or support.".into());
+    }
+    if recipe.sensor_radius < 8.0 {
+        details.push(format!("sensorRadius={} does not reach the unchanged 8-metre test target; require sensorRadius >= 8 and <= 20.", recipe.sensor_radius));
+    }
+    if details.len() > 24 {
+        details.truncate(24);
+        details.push("Further geometry violations omitted; apply these same per-part limits to the remaining geometry.".into());
+    }
+    details
+}
+
 pub fn collides(recipe: &Recipe, point: Position) -> bool {
     recipe.parts.iter().any(|p| {
         p.position[1]-p.size[1]/2.0 < 1.5 && p.position[1]+p.size[1]/2.0 > 0.08
@@ -262,6 +302,20 @@ mod tests {
     fn recipe() -> Recipe {
         let parts=(0..4).map(|i|Part{id:format!("post-{i}"),shape:"box".into(),role:"support".into(),position:[if i%2==0{-2.0}else{2.0},1.5,if i<2{-2.0}else{2.0}],size:[0.5,3.0,0.5],material:"frame".into()}).collect();
         Recipe{theme_id:"argonaut".into(),name:"Test outpost".into(),description:"A sensor outpost".into(),sensor_radius:12.0,parts,scene:None}
+    }
+    #[test] fn geometry_repair_names_invalid_dimensions_without_changing_saved_error() {
+        let mut r=recipe(); r.parts[0].size[2]=13.6;
+        assert_eq!(validate(&r,"argonaut").unwrap_err(),"Invalid build envelope or dimensions");
+        let notes=geometry_repair_diagnostics(&r).join("\n");
+        assert!(notes.contains("Part 'post-0': size[2] (z)=13.6"));
+        assert!(notes.contains("0 < size <= 12"));
+    }
+    #[test] fn geometry_repair_names_floating_support_and_keeps_check_detail_stable() {
+        let mut r=recipe(); r.parts[2].position[1]+=0.5;
+        let notes=geometry_repair_diagnostics(&r).join("\n");
+        assert!(notes.contains("Part 'post-2' (support) has bottom y=0.5"));
+        assert!(notes.contains("< 0.08 metres"));
+        assert_eq!(evaluate(&r,"argonaut").unwrap()[2].detail,"Wall/support bases must meet ground within 8cm.");
     }
     #[test] fn open_entrance_is_reachable(){assert!(access_scenario(&recipe()).0);}
     #[test] fn blocked_entrance_prevents_movement(){let mut r=recipe();r.parts.push(Part{id:"blocker".into(),shape:"box".into(),role:"wall".into(),position:[0.0,1.0,2.5],size:[2.0,2.0,0.5],material:"frame".into()});assert!(!access_scenario(&r).0);}
