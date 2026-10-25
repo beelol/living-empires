@@ -269,7 +269,17 @@ impl World {
         request_id: &str,
         role: crate::settlement::Role,
     ) -> Result<Option<String>> {
-        use crate::city::{CityPlanner, LayoutRequest, Rect, Species};
+        let mut planner = crate::city::CityPlanner::new(faction)?;
+        self.plan_settlement_with_planner(faction, request_id, role, &mut planner)
+    }
+
+    pub fn plan_settlement_with_planner(
+        &mut self,
+        faction: &str,
+        request_id: &str,
+        role: crate::settlement::Role,
+        planner: &mut crate::city::CityPlanner,
+    ) -> Result<Option<String>> {
         let state = self
             .saved
             .settlements
@@ -291,7 +301,47 @@ impl World {
             .get(faction)
             .context("missing authoritative builder")?;
         let terrain = self.terrain.as_ref().context("missing terrain")?;
-        let mut planner = CityPlanner::new(faction)?;
+
+        let request = self.city_layout_request(faction, role)?;
+        // Each rejected proposal is an isolated clone; no charge or history escapes.
+        let decision = planner.propose(&request, |pose| {
+            let mut candidate = state.clone();
+            let id = candidate.start(
+                terrain,
+                faction,
+                request_id,
+                role,
+                pose.center,
+                anchor,
+                state.revision(),
+            )?;
+            Ok((candidate, id))
+        })?;
+        let Some((state, id)) = decision.site else {
+            return Ok(None);
+        };
+        let mut next = self.saved.clone();
+        next.settlements = Some(state);
+        self.commit(next)?;
+        Ok(Some(id))
+    }
+
+    pub fn city_layout_request(
+        &self,
+        faction: &str,
+        role: crate::settlement::Role,
+    ) -> Result<crate::city::LayoutRequest> {
+        use crate::city::{LayoutRequest, Rect, Species};
+        let snapshot = self.buildings();
+        let core = snapshot
+            .iter()
+            .find(|b| b.faction_id == faction && b.role == crate::settlement::Role::Core)
+            .context("missing city core")?;
+        let anchor = *self
+            .saved
+            .builders
+            .get(faction)
+            .context("missing city builder")?;
         let recipe = role.recipe();
         let request = LayoutRequest {
             faction_id: faction.into(),
@@ -330,27 +380,7 @@ impl World {
                 })
                 .collect(),
         };
-        // Each rejected proposal is an isolated clone; no charge or history escapes.
-        let decision = planner.propose(&request, |pose| {
-            let mut candidate = state.clone();
-            let id = candidate.start(
-                terrain,
-                faction,
-                request_id,
-                role,
-                pose.center,
-                anchor,
-                state.revision(),
-            )?;
-            Ok((candidate, id))
-        })?;
-        let Some((state, id)) = decision.site else {
-            return Ok(None);
-        };
-        let mut next = self.saved.clone();
-        next.settlements = Some(state);
-        self.commit(next)?;
-        Ok(Some(id))
+        Ok(request)
     }
 
     /// Called only from the server's fixed simulation schedule.

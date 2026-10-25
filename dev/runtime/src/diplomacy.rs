@@ -172,10 +172,50 @@ impl Diplomacy {
     pub fn attempts(&self) -> u64 {
         self.saved.attempts.len() as u64
     }
-    /// Trusted authority only. Eligibility is not delivery; this records one actor
-    /// learning exact source facts. Replays keep the original receipt time.
-    pub fn ingest_report(
-        &mut self,
+    /// Check a whole proposed route without reserving or acknowledging delivery.
+    /// Identical IDs count once; a batch cannot partly consume the remaining cap.
+    pub fn can_ingest_reports(
+        &self,
+        actor: &str,
+        events: &[crate::game_master::Event],
+        received_at: u64,
+    ) -> Result<()> {
+        let mut unique = BTreeMap::new();
+        for event in events {
+            self.check_report(actor, event, received_at)?;
+            if let Some(old) = unique.insert(event.id.as_str(), event) {
+                ensure!(
+                    old == event,
+                    "report ID reused within batch with different facts or permissions"
+                );
+            }
+        }
+        let additional = unique
+            .values()
+            .filter(|event| {
+                !self.saved.reports.iter().any(|r| {
+                    r.event.id == event.id && r.deliveries.iter().any(|d| d.actor == actor)
+                })
+            })
+            .count();
+        ensure!(
+            delivery_count(&self.saved) + additional <= LIMIT,
+            "report delivery limit reached"
+        );
+        Ok(())
+    }
+    /// Pure preflight for trusted route validation. Does not reserve capacity,
+    /// acknowledge a delivery, write files, or guarantee a future save succeeds.
+    pub fn can_ingest_report(
+        &self,
+        actor: &str,
+        event: &crate::game_master::Event,
+        received_at: u64,
+    ) -> Result<()> {
+        self.can_ingest_reports(actor, std::slice::from_ref(event), received_at)
+    }
+    fn check_report(
+        &self,
         actor: &str,
         event: &crate::game_master::Event,
         received_at: u64,
@@ -212,6 +252,25 @@ impl Diplomacy {
             delivery_count(&self.saved) < LIMIT,
             "report delivery limit reached"
         );
+        Ok(())
+    }
+    /// Trusted authority only. Eligibility is not delivery; this records one actor
+    /// learning exact source facts. Replays keep the original receipt time.
+    pub fn ingest_report(
+        &mut self,
+        actor: &str,
+        event: &crate::game_master::Event,
+        received_at: u64,
+    ) -> Result<()> {
+        self.can_ingest_report(actor, event, received_at)?;
+        if self
+            .saved
+            .reports
+            .iter()
+            .any(|r| r.event.id == event.id && r.deliveries.iter().any(|d| d.actor == actor))
+        {
+            return Ok(());
+        }
         let mut next = self.saved.clone();
         let delivery = ReportDelivery {
             actor: actor.into(),

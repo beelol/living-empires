@@ -183,3 +183,69 @@ Final verification caught a shared-cache run executing only the old 16-test
 binary despite 23 tests in source; that run was discarded as candidate evidence.
 Rebuilding in this stream's private cache compiled the actual current source and
 passed all 23 tests, including the real GM consumer check, plus targeted clippy.
+
+## Live adapter checkpoint (contract v2)
+
+The README was revised on main at 99b9fa8: three empires, camera only, cities and
+usable generated buildings/units. Primary FAC-03/FAC-12/GEN-07 and affected
+FAC-02/FAC-06/FAC-09/LIVE-01/UX-04/WORLD-05 remain supporting work, not passes.
+Owned paths remain this module subtree, its test and these two stream documents.
+G owns atomic publication of actual private FactionView v1 inputs; GM owns polling
+on the existing worker and durable ingest acknowledgements. No second scheduler
+or World writer is authorized. The producer and hook remain pending handoffs.
+
+Pending safety fix: disallow Lua metatable registration because __gc finalizers
+can run during VM teardown with instruction hooks disabled. The regression first
+reproduced a three-second child-process hang; the guarded sandbox passes. Its
+last-good assertion now first promotes a custom hauler policy, so resetting to the
+packaged default cannot falsely pass. Final fresh verification follows.
+
+Adapter correction agreed with G: all durable outboxes remain World-owned. This
+module adds a read-only LivePlanner instead of a second retry-state writer.
+Proposed input is {schema_version:1, observed_at:<persisted source UTC seconds>,
+views:[FactionView v1]}, published atomically from actual authority. Poll time
+cannot replace observed_at. poll(path, now) rejects future observations, duplicate
+factions, private evidence, unsupported schemas and oversized/nonregular files.
+At most three views and 2 MiB are read; the optional explicit policy path is
+limited to 64 KiB. No ambient repository watcher or model call is added.
+
+LivePlanner::new(Option<PathBuf>) -> Self; poll(&Path,u64) -> Result<Vec<NeedReport>>;
+policy_error() -> Option<&str>. Each faction keeps its own last-good runtime Lua
+planner. Event IDs hash the entire immutable envelope with a fixed placeholder ID,
+including original source time, policy hash/rejection and private ACL. Repeated
+polls intentionally return the same immutable envelope for durable GM dedup.
+Callers must retain full reports until acknowledgement; G owns that persistence.
+Missing source is empty, never fabricated needs. Syntax-invalid policy retains
+last good and exposes a separate diagnostic; no world state is mutated.
+
+Initial adapter red: unresolved LivePlanner import. Implementation green: all 27
+focused checks, including real GM ingest dedup across repoll/restart. Added a
+per-faction choice/privacy batch and duplicate-view check. Clippy caught one
+needless test borrow, corrected before final verification. Producer observed_at
+contract and worker integration are still awaiting explicit owner confirmation;
+these tests use labeled fixtures and establish no live city/Foundry or D0 pass.
+
+G and GM both explicitly confirmed the final observed_at v1 contract. G retains
+actual filtered producer/outbox ownership; GM retains its sole worker hook. G's
+urgent hot-Lua checkpoint 8aceb19 is published; canonical city promotion has
+priority before this adapter's integration slot. Fresh adapter verification is
+28/28 focused tests plus targeted clippy -D warnings; diff/rustfmt checks pass.
+A same-packet new-instance test compares the complete reports, not merely IDs.
+Independent review is in progress. Actual live source/hook/delivery still pending.
+
+Independent review found no actionable blocker under the agreed durable-outbox
+contract. Explicit limitation: restart-stable reports require unchanged selected
+policy/report facts. A custom in-memory last-good policy does not survive restart
+if its source is missing or malformed; that case can select packaged rules and a
+different report ID. The owning caller must retry its retained full envelope,
+not recompute an acknowledged/pending action from a new policy. Actual World
+execution still revalidates revision, rights, resources and idempotency.
+Frozen a93f8d6 plus only the five owned files passes 28/28 tests and targeted
+clippy -D warnings. Later 8894494 drift touches the separate asset lane only.
+
+Integration checkpoint: fetched origin/main c0b802d95f4e5e614e3d42a6e09ca31778edb060
+under the integration lock. Intervening asset-lane changes do not alter faction
+inputs, GM schema or these owned files. Froze that exact committed base plus only
+the five owned files: all 28 focused tests and clippy -D warnings pass again,
+with exit zero. Formatting and diff checks pass. Foreign dirty files remain
+unstaged. No solo-colony work is included. Publication follows normal main push.

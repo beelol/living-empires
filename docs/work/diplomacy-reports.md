@@ -62,3 +62,42 @@ Combined checks pass: 34 runtime unit tests, 10 report tests, 14 GM tests, and
 runtime all-target clippy with warnings denied. Final diff against that exact
 integration base contains only the three claimed files. Main-checkout Studio
 work is preserved; publication uses the isolated checkout under the shared lock.
+
+Follow-up owner bilal-diplomacy-preflight, same three paths; primary FAC-02/DIP-03,
+affected FAC-06/DIP-14/WORLD-05/EVENT-02. GM owner agreed a pure
+can_ingest_report(&self, actor, event, received_at) -> Result<()> with the exact
+same validation, duplicate, clock and capacity checks as ingestion. GM preflights
+routes before acceptance and owns rejected receipts and continued scheduling.
+Reproduced the mismatch with the real ledgers: GM accepted an event whose ACL
+contained helios and studio, then faction ingestion rejected that envelope.
+No source ACL rewriting, new schema, new worker or additional provider spending.
+GM also agreed can_ingest_reports(actor, &[Event], received_at), with single-report
+preflight delegating to it. It checks the whole route's distinct new deliveries
+against remaining capacity and rejects conflicting IDs within the batch. Pure
+preflight does not reserve delivery or guarantee future persistence; accepted
+route intent and individual idempotent delivery saves remain GM's recovery path.
+
+Thirteen report tests and runtime all-target clippy pass. Both new public paths
+were first exercised with failing stubs. The single-report test's initial
+file-absence assumption was corrected: loading a fresh ledger already saves it;
+the actual assertion is unchanged saved bytes and no learned knowledge.
+The workspace run of the single-report candidate passed other suites but retained
+three failures: native_collection_operations_cannot_bypass_instruction_limits,
+native_pattern_work_cannot_stall_loading_or_movement (both one-second guards),
+and activation_authority_idempotency_reload_and_crash_recovery_over_lightyear
+(server never healthy). The later batch delta is covered by the 13-test run.
+
+Combined final batch candidate on main baseline 153aa86: runtime 40, reports 13,
+GM 14, content guards 15, and native library 20 all pass; remaining successful
+suites are in /private/tmp/argon-preflight-integrated-workspace.log. Full run
+finishes with network::activation_authority_idempotency_reload_and_crash_recovery_over_lightyear
+(server never healthy) and terrain_network::two_clients_verify_identical_terrain_move_and_reconnect_without_reset
+(terrain convergence timeout) failing. These paths are unchanged by this stream.
+Earlier failures remain above. Integrated runtime library/report-test clippy and
+independent review pass; preflight neither reserves capacity nor promises disk I/O.
+
+Final integration base 99b9fa8 includes public event envelopes and README contract
+v2. Read the revised checklist in full. This helper supports FAC-02/FAC-06 knowledge
+separation and WORLD-05 recovery; earlier DIP references are historical scope,
+not passes for v2's future leader conversations. No event feature or leader-panel
+scope is added here. Existing reports remain exact source facts with no effects.

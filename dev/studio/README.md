@@ -242,3 +242,21 @@ as explicitly blocked until the producer and authoritative actor/behavior format
 support them. No sensor outpost is relabelled as a unit. Native capture uses the
 new `game/examples/foundry_audit.rs` example with exact box/frustum/cone mapping;
 three images alone do not replace independent review or functional checks.
+
+For native visual review inside the original repair cycle, build
+`cargo build --locked -p living-empires --example foundry_audit`, then start
+Foundry with `AUDIT_RENDERER=bevy` and optionally `NATIVE_AUDIT_BIN` pointing to
+that executable. Missing, mismatched, oversized or incomplete native captures
+fail the job; there is no fallback approval. Three browser movement checks remain
+a separately labelled functional harness. Native traversal is not yet checked.
+Each candidate's actual three native PNGs go to the existing reviewer before
+the same bounded repair decision. The candidate hash, renderer binary hash,
+image hashes and timestamps remain attached to the attempt and frozen delivery.
+Fixture review remains simulated even when the images come from Bevy.
+
+When sponsored credits are explicitly authorized, start the same server with
+`GOOGLE_SPONSORED_CREDITS=1`. It records reservations, raw usage and unknown
+outcomes without inventing a dollar ceiling or applying another model's price.
+The setting must be explicitly supplied on each server start; saved usage never
+enables it. Existing capped operation stays the default. This does not change
+the per-job three-candidate, six-call or twenty-minute limits.

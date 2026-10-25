@@ -10,6 +10,24 @@ pub struct Recipe {
     pub description: String,
     pub sensor_radius: f64,
     pub parts: Vec<Part>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<RecipeScene>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipeScene {
+    pub half_extent: f64,
+    pub components: Vec<SceneComponent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneComponent {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub part_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -133,7 +151,39 @@ fn validate_recipe(recipe: &Recipe) -> Result<(), String> {
     if !recipe.sensor_radius.is_finite() || !(1.0..=20.0).contains(&recipe.sensor_radius) {
         return Err("Sensor radius must be 1–20 metres".into());
     }
-    if !(4..=48).contains(&recipe.parts.len()) { return Err("Provide 4–48 parts".into()); }
+    let max_parts = if recipe.scene.is_some() { 128 } else { 48 };
+    if !(4..=max_parts).contains(&recipe.parts.len()) { return Err(format!("Provide 4–{max_parts} parts")); }
+    let extent = if let Some(scene) = &recipe.scene {
+        if !scene.half_extent.is_finite() || !(4.0..=16.0).contains(&scene.half_extent) {
+            return Err("Scene halfExtent must be 4–16 metres".into());
+        }
+        if scene.components.is_empty() || scene.components.len() > 32 {
+            return Err("Scene must contain 1–32 components".into());
+        }
+        let mut component_ids = HashSet::new();
+        let mut covered = HashSet::new();
+        for component in &scene.components {
+            let slug = component.id.as_bytes();
+            if slug.is_empty() || slug.len() > 64 || !slug[0].is_ascii_lowercase()
+                || !slug.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+                || component.id.ends_with('-') || component.id.contains("--")
+                || !component_ids.insert(&component.id) {
+                return Err("Scene component IDs must be unique lowercase hyphenated slugs".into());
+            }
+            if component.name.trim().is_empty() || component.name.len() > 100
+                || component.role.trim().is_empty() || component.role.len() > 80
+                || component.part_ids.is_empty() {
+                return Err("Scene component names, roles, and part membership must be bounded and non-empty".into());
+            }
+            for id in &component.part_ids {
+                if !covered.insert(id) { return Err("Each part must belong to exactly one scene component".into()); }
+            }
+        }
+        if covered.len() != recipe.parts.len() || recipe.parts.iter().any(|p| !covered.contains(&p.id)) {
+            return Err("Scene components must cover every part exactly once".into());
+        }
+        Some(scene.half_extent)
+    } else { None };
     let mut ids = HashSet::new();
     for p in &recipe.parts {
         if p.id.len() > 80 || !ids.insert(&p.id) { return Err("Part IDs must be unique".into()); }
@@ -142,9 +192,14 @@ fn validate_recipe(recipe: &Recipe) -> Result<(), String> {
             || !["shell", "frame", "accent"].contains(&p.material.as_str()) {
             return Err("Unsupported geometry or theme material".into());
         }
-        if p.position.iter().any(|v| !v.is_finite() || v.abs() > 10.0)
+        if p.position.iter().any(|v| !v.is_finite()) || p.position[1].abs() > 10.0
+            || p.position[0].abs() > 28.0 || p.position[2].abs() > 28.0
             || p.size.iter().any(|v| !v.is_finite() || *v <= 0.0 || *v > 12.0) {
             return Err("Invalid build envelope or dimensions".into());
+        }
+        let bound = extent.unwrap_or(4.0) + 0.05;
+        if p.position[0].abs() + p.size[0]/2.0 > bound || p.position[2].abs() + p.size[2]/2.0 > bound {
+            return Err(if extent.is_some() { "Part exceeds scene halfExtent".into() } else { "Part exceeds legacy ±4m outpost bounds".into() });
         }
         if p.position[1] - p.size[1]/2.0 < -0.05 { return Err("Geometry intersects ground".into()); }
     }
@@ -205,7 +260,7 @@ mod tests {
     use super::*;
     fn recipe() -> Recipe {
         let parts=(0..4).map(|i|Part{id:format!("post-{i}"),shape:"box".into(),role:"support".into(),position:[if i%2==0{-2.0}else{2.0},1.5,if i<2{-2.0}else{2.0}],size:[0.5,3.0,0.5],material:"frame".into()}).collect();
-        Recipe{theme_id:"argonaut".into(),name:"Test outpost".into(),description:"A sensor outpost".into(),sensor_radius:12.0,parts}
+        Recipe{theme_id:"argonaut".into(),name:"Test outpost".into(),description:"A sensor outpost".into(),sensor_radius:12.0,parts,scene:None}
     }
     #[test] fn open_entrance_is_reachable(){assert!(access_scenario(&recipe()).0);}
     #[test] fn blocked_entrance_prevents_movement(){let mut r=recipe();r.parts.push(Part{id:"blocker".into(),shape:"box".into(),role:"wall".into(),position:[0.0,1.0,2.5],size:[2.0,2.0,0.5],material:"frame".into()});assert!(!access_scenario(&r).0);}
@@ -213,4 +268,22 @@ mod tests {
     #[test] fn arbitrary_material_is_rejected(){let mut r=recipe();r.parts[0].material="#ff00ff".into();assert!(validate(&r,"argonaut").is_err());}
     #[test] fn floating_support_fails_gate(){let mut r=recipe();r.parts[0].position[1]+=0.5;assert_eq!(evaluate(&r,"argonaut").unwrap()[2].status,"fail");}
     #[test] fn short_sensor_fails_gate(){let mut r=recipe();r.sensor_radius=2.0;assert_eq!(evaluate(&r,"argonaut").unwrap()[3].status,"fail");}
+    #[test] fn legacy_recipe_keeps_its_bounded_extent_and_omits_scene_on_serialize(){
+        let mut r=recipe();r.parts[0].position[0]=4.0;
+        assert!(validate(&r,"argonaut").is_err());
+        r.parts[0].position[0]=2.0;
+        let value=serde_json::to_value(r).unwrap();
+        assert!(value.get("scene").is_none());
+    }
+    #[test] fn bounded_scene_accepts_more_than_legacy_part_limit(){
+        let mut r=recipe();
+        for i in 4..50 { r.parts.push(Part{id:format!("detail-{i}"),shape:"box".into(),role:"detail".into(),position:[(i as f64%7.0)-3.0,0.5,(i as f64%5.0)-2.0],size:[0.2,0.2,0.2],material:"accent".into()}); }
+        r.scene=Some(RecipeScene{half_extent:8.0,components:vec![SceneComponent{id:"main-outpost".into(),name:"Main outpost".into(),role:"sensor station".into(),part_ids:r.parts.iter().map(|p|p.id.clone()).collect()}]});
+        assert!(validate(&r,"argonaut").is_ok());
+    }
+    #[test] fn scene_membership_must_cover_each_part_once(){
+        let mut r=recipe();
+        r.scene=Some(RecipeScene{half_extent:8.0,components:vec![SceneComponent{id:"main-outpost".into(),name:"Main outpost".into(),role:"sensor station".into(),part_ids:r.parts.iter().take(3).map(|p|p.id.clone()).collect()}]});
+        assert!(validate(&r,"argonaut").unwrap_err().contains("cover every part"));
+    }
 }

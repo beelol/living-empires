@@ -2,7 +2,7 @@
 mod faction_brain;
 
 use faction_brain::{
-    plan, Action, Candidate, FactionView, Need, NeedCategory, Observation, Planner,
+    plan, Action, Candidate, FactionView, LivePlanner, Need, NeedCategory, Observation, Planner,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -517,4 +517,206 @@ fn building_report_enters_real_gm_once_and_cannot_route_to_another_faction() {
     let restored = GameMaster::load(&path).unwrap();
     assert_eq!(restored.deliveries("helios"), vec![event]);
     assert!(restored.deliveries("tide").is_empty());
+}
+
+#[test]
+fn lua_finalizer_cannot_hold_policy_reload_or_shutdown() {
+    const MARKER: &str = "ARGON_FACTION_FINALIZER_MARKER";
+    if let Some(marker) = std::env::var_os(MARKER) {
+        std::fs::write(marker, "started").unwrap();
+        let mut planner = Planner::new("helios").unwrap();
+        planner
+            .stage_policy(
+                r#"return {schema_version=1, choose=function(options)
+            for _, option in ipairs(options) do
+                if option.role == 'hauler' then return option.id end
+            end
+            return options[1].id
+        end}"#,
+            )
+            .unwrap();
+        let active = planner
+            .plan("helios", &view(), "before-hostile", 99)
+            .unwrap();
+        assert_eq!(active.action.unwrap().candidate_id, "request-hauler");
+        let hostile = r#"
+            local object = setmetatable({}, {__gc=function() while true do end end})
+            return {schema_version=1, choose=function(options) return options[1].id end}
+        "#;
+        assert!(planner.stage_policy(hostile).is_err());
+        let retained = planner.plan("helios", &view(), "report-1", 100).unwrap();
+        assert_eq!(retained.policy_version, active.policy_version);
+        assert_eq!(retained.action.unwrap().candidate_id, "request-hauler");
+        return;
+    }
+    use std::{
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("child-started");
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "lua_finalizer_cannot_hold_policy_reload_or_shutdown",
+            "--nocapture",
+        ])
+        .env(MARKER, &marker)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let startup = Instant::now();
+    let mut running_since = None;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "sandbox child failed");
+            break;
+        }
+        if marker.exists() && running_since.is_none() {
+            running_since = Some(Instant::now());
+        }
+        let hung = running_since.is_some_and(|started| started.elapsed() > Duration::from_secs(3));
+        if hung || startup.elapsed() > Duration::from_secs(15) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            assert!(
+                !hung,
+                "Lua finalizer held policy reload/shutdown beyond its execution bound"
+            );
+            panic!("sandbox test child did not start within startup allowance");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn write_live_view(path: &std::path::Path, input: FactionView) {
+    std::fs::write(
+        path,
+        serde_json::to_vec(&json!({
+            "schema_version":1,"observed_at":100,"views":[input]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn live_reports_retain_original_facts_across_repoll_restart_and_gm_ingest() {
+    use argon_dev::game_master::{Event, GameMaster};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("views.json");
+    let mut live = LivePlanner::new(None);
+    assert!(live.poll(&path, 101).unwrap().is_empty());
+    write_live_view(&path, city_view());
+    let first = live.poll(&path, 101).unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].at, 100);
+    assert_eq!(first[0].allowed_recipients, ["helios"]);
+    assert_eq!(live.poll(&path, 200).unwrap(), first);
+    assert_eq!(LivePlanner::new(None).poll(&path, 300).unwrap(), first);
+    let mut gm = GameMaster::load(dir.path().join("gm.json")).unwrap();
+    let event: Event = serde_json::from_value(serde_json::to_value(&first[0]).unwrap()).unwrap();
+    gm.ingest(event.clone()).unwrap();
+    gm.ingest(event).unwrap();
+    assert_eq!(gm.revision(), 1);
+    let mut next = city_view();
+    next.revision += 1;
+    write_live_view(&path, next);
+    assert_ne!(live.poll(&path, 301).unwrap()[0].id, first[0].id);
+}
+
+#[test]
+fn live_input_rejects_private_corrupt_future_or_oversized_contexts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("views.json");
+    let mut live = LivePlanner::new(None);
+    let mut private = city_view();
+    private.observations[0].allowed_recipients = vec!["tide".into()];
+    write_live_view(&path, private);
+    assert!(live.poll(&path, 101).is_err());
+    write_live_view(&path, city_view());
+    assert!(live.poll(&path, 99).is_err());
+    std::fs::write(&path, b"{").unwrap();
+    assert!(live.poll(&path, 101).is_err());
+    std::fs::write(&path, vec![b' '; 2 * 1024 * 1024 + 1]).unwrap();
+    assert!(live.poll(&path, 101).is_err());
+    assert!(live.poll(dir.path(), 101).is_err());
+    #[cfg(unix)]
+    {
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(live.poll(&link, 101).is_err());
+    }
+}
+
+#[test]
+fn live_batch_is_private_per_faction_and_rejects_duplicates_before_policy_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("views.json");
+    let helios = view();
+    let mut tide = view();
+    tide.faction_id = "tide".into();
+    tide.observations[0].allowed_recipients = vec!["tide".into()];
+    tide.priorities.insert("hauler".into(), 10);
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "schema_version":1,"observed_at":100,"views":[helios,tide]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut live = LivePlanner::new(None);
+    let reports = live.poll(&path, 101).unwrap();
+    assert_eq!(reports.len(), 2);
+    for report in reports {
+        let actor = report.payload["faction_id"].as_str().unwrap();
+        assert_eq!(report.allowed_recipients, [actor]);
+        assert_eq!(report.payload["proposal"]["faction_id"], actor);
+        let expected = if actor == "tide" {
+            "request-hauler"
+        } else {
+            "build-defense"
+        };
+        assert_eq!(report.payload["proposal"]["candidate_id"], expected);
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "schema_version":1,"observed_at":100,"views":[view(),view()]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(live.poll(&path, 101).is_err());
+}
+
+#[test]
+fn live_policy_reload_uses_last_good_and_reports_actual_policy_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("views.json");
+    let policy = dir.path().join("policy.lua");
+    write_live_view(&path, view());
+    let mut live = LivePlanner::new(Some(policy.clone()));
+    let original = live.poll(&path, 101).unwrap();
+    std::fs::write(
+        &policy,
+        r#"return {schema_version=1, choose=function(options)
+        for _, option in ipairs(options) do
+            if option.role == 'hauler' then return option.id end
+        end
+        return options[1].id
+    end}"#,
+    )
+    .unwrap();
+    let changed = live.poll(&path, 102).unwrap();
+    assert_eq!(
+        changed[0].payload["proposal"]["candidate_id"],
+        "request-hauler"
+    );
+    assert_ne!(changed[0].id, original[0].id);
+    std::fs::write(&policy, "malformed Lua!").unwrap();
+    assert_eq!(live.poll(&path, 103).unwrap(), changed);
+    assert!(live.policy_error().is_some());
 }

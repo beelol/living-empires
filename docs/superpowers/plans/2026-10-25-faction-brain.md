@@ -65,4 +65,24 @@ Terrain/G retain legal placement/site/nav/rights; real city placement stays bloc
   higher-scoring unit need; implement the preference in policy.lua.
 - [x] Verify focused tests, clippy, formatting and a frozen combined workspace;
   review the delta, preserving preexisting timing failures and actual blockers.
-- [ ] Serialize fetch/drift/check/explicit commit/normal main push under lock.
+- [x] Serialize fetch/drift/check/explicit commit/normal main push under lock (city checkpoint 661de33).
+
+### Task 3: Existing-worker live input adapter
+
+Owned files: faction_brain/live.rs, its parent export, existing test and work record.
+G owns the actual World publisher and all durable outboxes; GM owns the existing
+worker hook. No extra writer, scheduler, provider call or world effect here.
+Input v1 is an atomic JSON envelope with schema_version, persisted observed_at
+(UTC seconds from authority), and views (FactionView v1). Poll time is never the
+event time. Event IDs hash the complete immutable report, including its original
+observation time and policy fingerprint, so restart/retry cannot change an ID's facts.
+
+- [x] Write adapter tests: missing input, stable full envelope across restart,
+  real GM duplicate ingest, private-view rejection, bounded/nonregular input,
+  valid policy reload and invalid-policy last-good fallback.
+- [x] Run red, implement bounded regular-file input plus per-faction planners,
+  run green and clippy, inspect failure paths and review the owned delta.
+- [ ] Hand exact API/source contract to G/GM, connect only through their owners;
+  verify actual state-derived report delivery before claiming live acceptance.
+- [ ] Publish verified checkpoints normally under the integration lock after
+  the currently queued critical G/infra changes; preserve foreign edits.
