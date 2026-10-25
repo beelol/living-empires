@@ -210,6 +210,43 @@ fn validate_recipe(recipe: &Recipe) -> Result<(), String> {
 /// Additional repair guidance only. Saved validation strings/checks remain stable for integrity.
 pub fn geometry_repair_diagnostics(recipe: &Recipe) -> Vec<String> {
     let mut details = Vec::new();
+    if let Some(scene) = &recipe.scene {
+        let mut component_ids = HashSet::new();
+        let mut covered = HashSet::new();
+        let part_ids: HashSet<_> = recipe.parts.iter().map(|part| &part.id).collect();
+        for component in &scene.components {
+            let slug = component.id.as_bytes();
+            if slug.is_empty() || slug.len() > 64 || !slug[0].is_ascii_lowercase()
+                || !slug.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+                || component.id.ends_with('-') || component.id.contains("--") {
+                details.push(format!("Component '{}': id length {} bytes; require 1..64 bytes, lowercase letter first, lowercase letters/digits/single hyphens, no trailing hyphen.", component.id, slug.len()));
+            }
+            if !component_ids.insert(&component.id) {
+                details.push(format!("Component '{}': duplicate component ID; each component needs a unique ID.", component.id));
+            }
+            for (field, value, limit) in [("name", &component.name, 100), ("role", &component.role, 80)] {
+                if value.trim().is_empty() || value.len() > limit {
+                    details.push(format!("Component '{}': {field} length {} bytes; require non-empty text with at most {limit} bytes. Shorten only this metadata (a concise 5-8 word role is enough); preserve its geometry and membership.", component.id, value.len()));
+                }
+            }
+            if component.part_ids.is_empty() {
+                details.push(format!("Component '{}': partIds is empty; assign its actual geometry parts.", component.id));
+            }
+            for id in &component.part_ids {
+                if !covered.insert(id) {
+                    details.push(format!("Component '{}': partIds repeats already assigned part '{}'; every part must belong to exactly one component.", component.id, id));
+                }
+                if !part_ids.contains(id) {
+                    details.push(format!("Component '{}': partIds references nonexistent part '{}'; use an existing exact part ID.", component.id, id));
+                }
+            }
+        }
+        for part in &recipe.parts {
+            if !covered.contains(&part.id) {
+                details.push(format!("Part '{}': missing from every component partIds; assign it exactly once without changing geometry.", part.id));
+            }
+        }
+    }
     let bound = recipe.scene.as_ref().map_or(4.0, |scene| scene.half_extent) + 0.05;
     for part in &recipe.parts {
         for (axis, name) in ["x", "y", "z"].iter().enumerate() {
@@ -316,6 +353,17 @@ mod tests {
         assert!(notes.contains("Part 'post-2' (support) has bottom y=0.5"));
         assert!(notes.contains("< 0.08 metres"));
         assert_eq!(evaluate(&r,"argonaut").unwrap()[2].detail,"Wall/support bases must meet ground within 8cm.");
+    }
+    #[test] fn component_repair_names_metadata_and_membership_without_changing_validation() {
+        let mut r=recipe();
+        r.scene=Some(RecipeScene{half_extent:8.0,components:vec![SceneComponent{id:"corner-floodlight-pylons".into(),name:"Floodlights".into(),role:"x".repeat(82),part_ids:vec!["post-0".into(),"post-0".into(),"missing-post".into()]}]});
+        assert_eq!(validate(&r,"argonaut").unwrap_err(),"Scene component names, roles, and part membership must be bounded and non-empty");
+        let notes=geometry_repair_diagnostics(&r).join("\n");
+        assert!(notes.contains("Component 'corner-floodlight-pylons': role length 82 bytes"));
+        assert!(notes.contains("at most 80 bytes"));
+        assert!(notes.contains("already assigned part 'post-0'"));
+        assert!(notes.contains("nonexistent part 'missing-post'"));
+        assert!(notes.contains("Part 'post-1': missing from every component"));
     }
     #[test] fn open_entrance_is_reachable(){assert!(access_scenario(&recipe()).0);}
     #[test] fn blocked_entrance_prevents_movement(){let mut r=recipe();r.parts.push(Part{id:"blocker".into(),shape:"box".into(),role:"wall".into(),position:[0.0,1.0,2.5],size:[2.0,2.0,0.5],material:"frame".into()});assert!(!access_scenario(&r).0);}
