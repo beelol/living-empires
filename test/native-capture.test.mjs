@@ -6,13 +6,22 @@ import os from 'node:os';
 import path from 'node:path';
 import {captureNative} from '../lib/native-capture.mjs';
 
-function setup(t, mismatch=false){
+function setup(t, {mismatch=false, mode='success'}={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'foundry-native-adapter-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const binary=path.join(root,'fixture-renderer.mjs');
   fs.writeFileSync(binary,`#!/usr/bin/env node
 import fs from 'node:fs'; import path from 'node:path';
 const p=JSON.parse(fs.readFileSync(process.argv[2],'utf8')),out=process.argv[3];
+const attemptDir=path.dirname(process.argv[2]);
+fs.writeFileSync(path.join(attemptDir,'started'),String(process.pid));
+if(${JSON.stringify(mode)}==='fail'){process.stderr.write('fixture renderer diagnostic\\n'+'x'.repeat(40000),()=>process.exit(7));}
+if(${JSON.stringify(mode)}==='ignore-term'){
+  process.on('SIGTERM',()=>fs.writeFileSync(path.join(attemptDir,'term-received'),'yes'));
+  process.stderr.write('renderer waiting for termination\\n');
+  setInterval(()=>{},1000);
+  setTimeout(()=>process.exit(0),3000);
+}
 fs.mkdirSync(out,{recursive:true});
 const names=['front','three-quarter','rear'];
 const views=names.map((n,i)=>{const file='view-'+(i+1)+'-'+n+'.png';fs.writeFileSync(path.join(out,file),Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.from('fixture-'+i)]));return {file};});
@@ -22,6 +31,20 @@ fs.writeFileSync(path.join(out,'capture-manifest.json'),JSON.stringify({package:
   const job={id:'job-test-1',provider:'fixture',model:'fixture',themeId:'argonaut',theme:{id:'argonaut'},sourceRevision:'fixture'};
   const attempt={number:1,hash:'a'.repeat(64),recipe:{themeId:'argonaut',parts:[]}};
   return {root,binary,job,attempt,movement:{pass:true,trace:[[0,0],[1,0]]}};
+}
+
+function attemptFolder(input){
+  return fs.readdirSync(path.join(input.root,'.data',input.job.id))
+    .map(name=>path.join(input.root,'.data',input.job.id,name))
+    .find(folder=>nameIsAttempt(folder,input.attempt.number));
+}
+
+function nameIsAttempt(folder,number){return path.basename(folder).startsWith(`native-${number}-`);}
+
+async function waitForFile(file,timeoutMs=2000){
+  const deadline=Date.now()+timeoutMs;
+  while(Date.now()<deadline){if(fs.existsSync(file))return;await new Promise(resolve=>setTimeout(resolve,10));}
+  assert.fail(`Timed out waiting for ${file}`);
 }
 
 test('native adapter binds exact candidate and all three PNGs without inventing native movement',async t=>{
@@ -37,9 +60,70 @@ test('native adapter binds exact candidate and all three PNGs without inventing 
 });
 
 test('wrong native candidate identity never replaces public evidence',async t=>{
-  const input=setup(t,true);
+  const input=setup(t,{mismatch:true});
   await assert.rejects(captureNative(input),/candidate/);
   assert.equal(fs.existsSync(path.join(input.root,'.data',input.job.id,'1-0.png')),false);
+});
+
+test('renderer failure retains bounded stderr and the previous public evidence',async t=>{
+  const input=setup(t,{mode:'fail'}),folder=path.join(input.root,'.data',input.job.id);
+  fs.mkdirSync(folder,{recursive:true});fs.writeFileSync(path.join(folder,'1-0.png'),'prior evidence');
+  await assert.rejects(captureNative(input),/Native renderer failed \(7\)/);
+  const evidenceDir=attemptFolder(input),log=fs.readFileSync(path.join(evidenceDir,'renderer.log'),'utf8');
+  assert.match(log,/fixture renderer diagnostic/);
+  assert.match(log,/Native renderer failed \(7\)/);
+  assert.ok(Buffer.byteLength(log)<=32768);
+  assert.equal(fs.readFileSync(path.join(folder,'1-0.png'),'utf8'),'prior evidence');
+});
+
+test('timeout escalates termination and waits for renderer exit before rejecting',async t=>{
+  const input=setup(t,{mode:'ignore-term'}),folder=path.join(input.root,'.data',input.job.id);
+  fs.mkdirSync(folder,{recursive:true});fs.writeFileSync(path.join(folder,'1-0.png'),'prior evidence');
+  await assert.rejects(captureNative({...input,timeoutMs:800}),/Native capture deadline exceeded/);
+  const evidenceDir=attemptFolder(input),pid=Number(fs.readFileSync(path.join(evidenceDir,'started'),'utf8'));
+  assert.ok(fs.existsSync(path.join(evidenceDir,'term-received')));
+  const log=fs.readFileSync(path.join(evidenceDir,'renderer.log'),'utf8');
+  assert.match(log,/renderer waiting for termination/);
+  assert.match(log,/Native capture deadline exceeded/);
+  assert.throws(()=>process.kill(pid,0),{code:'ESRCH'});
+  assert.equal(fs.readFileSync(path.join(folder,'1-0.png'),'utf8'),'prior evidence');
+});
+
+test('cancellation terminates and waits for a running renderer before rejecting',async t=>{
+  const input=setup(t,{mode:'ignore-term'}),controller=new AbortController();
+  const publicFolder=path.join(input.root,'.data',input.job.id);
+  fs.mkdirSync(publicFolder,{recursive:true});fs.writeFileSync(path.join(publicFolder,'1-0.png'),'prior evidence');
+  const capture=captureNative({...input,timeoutMs:5000,signal:controller.signal});
+  const dir=publicFolder;
+  await waitForFile(path.join(dir,fs.readdirSync(dir).find(name=>name.startsWith('native-1-')),'started'));
+  controller.abort();
+  await assert.rejects(capture,/Native capture cancelled/);
+  const evidenceDir=attemptFolder(input),pid=Number(fs.readFileSync(path.join(evidenceDir,'started'),'utf8'));
+  assert.ok(fs.existsSync(path.join(evidenceDir,'term-received')));
+  const log=fs.readFileSync(path.join(evidenceDir,'renderer.log'),'utf8');
+  assert.match(log,/renderer waiting for termination/);
+  assert.match(log,/Native capture cancelled/);
+  assert.throws(()=>process.kill(pid,0),{code:'ESRCH'});
+  assert.equal(fs.readFileSync(path.join(publicFolder,'1-0.png'),'utf8'),'prior evidence');
+});
+
+test('an already-aborted capture never starts the renderer and retains the cancellation reason',async t=>{
+  const input=setup(t),controller=new AbortController();controller.abort();
+  await assert.rejects(captureNative({...input,signal:controller.signal}),/Native capture cancelled/);
+  const evidenceDir=attemptFolder(input);
+  assert.equal(fs.existsSync(path.join(evidenceDir,'started')),false);
+  assert.match(fs.readFileSync(path.join(evidenceDir,'renderer.log'),'utf8'),/Native capture cancelled/);
+});
+
+test('spawn failure retains its diagnostic and leaves public evidence untouched',async t=>{
+  const input=setup(t),folder=path.join(input.root,'.data',input.job.id);
+  fs.mkdirSync(folder,{recursive:true});fs.writeFileSync(path.join(folder,'1-0.png'),'prior evidence');
+  fs.chmodSync(input.binary,0o644);
+  await assert.rejects(captureNative(input),/Native renderer could not start/);
+  const evidenceDir=attemptFolder(input),log=fs.readFileSync(path.join(evidenceDir,'renderer.log'),'utf8');
+  assert.match(log,/Native renderer could not start/);
+  assert.ok(Buffer.byteLength(log)<=32768);
+  assert.equal(fs.readFileSync(path.join(folder,'1-0.png'),'utf8'),'prior evidence');
 });
 
 test('baseline capture uses attempt zero and the frozen wider review extent',async t=>{
