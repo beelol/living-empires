@@ -95,3 +95,9 @@ finishes with network::activation_authority_idempotency_reload_and_crash_recover
 (terrain convergence timeout) failing. These paths are unchanged by this stream.
 Earlier failures remain above. Integrated runtime library/report-test clippy and
 independent review pass; preflight neither reserves capacity nor promises disk I/O.
+
+Final integration base 99b9fa8 includes public event envelopes and README contract
+v2. Read the revised checklist in full. This helper supports FAC-02/FAC-06 knowledge
+separation and WORLD-05 recovery; earlier DIP references are historical scope,
+not passes for v2's future leader conversations. No event feature or leader-panel
+scope is added here. Existing reports remain exact source facts with no effects.
