@@ -153,7 +153,7 @@ export class FoundryController{
  request.startedAtMs??=Date.now();this.save();
  if(!request.theme){
  const faction=factionOf(this.world,request.factionId);
- if(!request.drivesFactionDirection){const source=this.world.buildings.find(b=>b.asset?.hash===faction.designOrigin?.sourceHash);request.familyPalette??=structuredClone(source?.asset?.theme?.palette||faction.theme?.palette||null);}
+ if(!request.drivesFactionDirection){const source=faction.designOrigin?.requestId===faction.designIntentId?this.world.buildings.find(b=>b.asset?.hash===faction.designOrigin?.sourceHash):null;request.familyPalette??=structuredClone(source?.asset?.theme?.palette||faction.theme?.palette||null);}
  {
  request.status='preparing-theme';this.progress(request,null,'Resolving the faction art direction.');this.save();let themeResponseReceived=false;
  try{const draft=await this.read(request,()=>this.api('/api/themes/resolve',{prompt:themeInferencePrompt(request,faction)}));themeResponseReceived=true;request.theme=validateTheme(draft.theme);request.themeDraftId=draft.draftId;if(!request.drivesFactionDirection){validateSharedTheme(request.theme);const palette=request.familyPalette;if(palette)for(const key of ['shell','frame','accent'])requireThat(request.theme.palette[key].toLowerCase()===palette[key].toLowerCase(),'Target theme changed the approved faction building palette.');}request.status='queued';this.save();}
