@@ -91,6 +91,19 @@ derived views. Export returns the archive SHA256 and refuses to overwrite an
 existing delivery. No network upload or Pulkit endpoint is assumed. Importing
 the archive must independently verify hashes before trusting bytes.
 
+The receiver-side integrity checker is available without opening a database:
+
+```sh
+python3 dev/studio/verifier.py /private/operator-state/delivery-001.zip --sha256 EXACT_PRODUCER_ARCHIVE_SHA256
+```
+
+It checks the outer archive hash, every linked event and state fingerprint,
+derived diff, referenced image bytes and capture time/content binding. Duplicate,
+missing or unexpected archive members fail. It reads within explicit size limits
+and never extracts files or activates assets. Pass the producer's archive hash
+through a trusted channel; a hash supplied by an untrusted archive cannot prove
+authenticity. This is transport integrity, not independent visual/gameplay review.
+
 `reconstruct` prints the last recorded state. `Journal.reconstruct(hash)` retrieves
 an earlier state. `Journal.replay(reducer, pinned_identity)` runs recorded actions
 through the caller's exact pinned rules and verifies every resulting state hash.
@@ -111,6 +124,42 @@ The immutable event hash is the ID. No global sequence, full state, parent hash
 or private evidence is exported. Unknown recipients receive `[]`. GM ingestion
 deduplicates IDs and must preserve recipient restrictions. Repeat exports are
 safe; consumers need durable dedup. This adapter does not trust model-chosen ACLs.
+
+The GM owner has settled its host intake as `<world-state>.gm-inbox.json` and its
+sidecar as `<world-state>.game-master.json`. Publish a deduplicated union of
+explicitly named factions to that intake from the producer worker:
+
+```sh
+python3 dev/studio/bridge.py /private/operator-state/world-history.sqlite export-gm --recipient helios --recipient tide --output /private/operator-state/world.json.gm-inbox.json
+```
+
+This writes a complete JSON array by owner-only temporary file, file sync,
+atomic replacement and directory sync. Existing ACLs remain unchanged; unknown
+factions' private events and empty-ACL operator records stay excluded. The GM
+owns durable import/dedup and routing; do not delete source history after export.
+Publication is serialized with journal writes so older concurrent deliveries
+cannot overwrite newer history. The command returns event count, SHA256,
+`last_id` and `has_more`;
+it does not start an automatic loop or call a model. Host worker wiring is still
+owned by the GM stream and must be verified against actual events.
+
+GM v1 limits are enforced: at most 1024 events and 1MiB per delivery,
+16KiB serialized payload per event, 64 unique recipient IDs, and IDs/source/kind
+of 1–160 ASCII letters/digits or `-_.:/`. When `has_more` is true, wait for the
+GM's durable import receipt, then publish the next page with
+`--after-event PREVIOUS_LAST_ID` and the **same** recipient set. Publishing alone
+is not a receipt; do not advance based on the command's success or elapsed time.
+Retry the same page after uncertainty. The GM deduplicates event IDs. Unknown
+cursors and incompatible source records fail explicitly; no silent omission.
+Single-recipient stdout exports fail if paging is needed; use the file publisher.
+
+The current GM demo ledger also has a **lifetime cap of 1024 unique events**.
+Pagination does not remove that cap. Its durable receipt is the imported IDs in
+`<world-state>.game-master.json` under `events[].id` (upcoming operator status:
+`game_master.events[].id`). When full, the consumer must report blocked and keep
+history; do not rotate/delete IDs or advance past unacknowledged events. Sustained
+world operation needs the GM owner's durable indexing/retention upgrade before
+this can be called a continuously integrated production loop.
 
 Only the existing release authority may append `kind: content.activated` after
 the exact approved file fingerprint really activates. Required payload fields:

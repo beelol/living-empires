@@ -40,6 +40,47 @@ def name(value):
     return isinstance(value, str) and 0 < len(value) <= 256 and '*' not in value
 
 
+def validate_evidence_metadata(metadata):
+    require(isinstance(metadata, dict) and set(metadata) == {
+        'media_type', 'view', 'client', 'assets', 'at', 'tick'},
+        'missing render provenance')
+    require(metadata['media_type'] in ('image/png', 'image/jpeg', 'image/webp') and
+            name(metadata['view']) and name(metadata['client']) and
+            is_hash(metadata['assets']) and all(type(metadata[k]) is int and
+            0 <= metadata[k] < 2**63 for k in ('at', 'tick')), 'invalid render provenance')
+
+
+def gm_page(envelopes, after_event=None):
+    """Page the exact GM v1 contract; cursor advancement needs durable GM receipt."""
+    start = 0
+    if after_event is not None:
+        matches = [n for n, e in enumerate(envelopes) if e['id'] == after_event]
+        require(bool(matches), 'unknown scoped GM cursor')
+        start = matches[0] + 1
+    page = []
+    size = 2  # JSON array brackets
+    for event in envelopes[start:]:
+        valid_id = lambda s: isinstance(s, str) and re.fullmatch(
+            r'[A-Za-z0-9_.:/-]{1,160}', s) is not None
+        require(set(event) == {'id', 'source', 'at', 'kind', 'payload',
+                               'allowed_recipients'}, 'invalid GM envelope')
+        require(all(valid_id(event[k]) for k in ('id', 'source', 'kind')) and
+                type(event['at']) is int and 0 <= event['at'] < 2**64,
+                'event cannot be represented by GM v1')
+        acl = event['allowed_recipients']
+        require(isinstance(acl, list) and len(acl) <= 64 and
+                all(valid_id(x) for x in acl) and len(set(acl)) == len(acl),
+                'GM v1 recipients exceed permitted format/count')
+        require(isinstance(event['payload'], dict) and
+                len(canonical(event['payload'])) <= 16384, 'GM v1 payload exceeds 16KiB')
+        event_size = len(canonical(event)) + (1 if page else 0)
+        if len(page) == 1024 or size + event_size > 1048576:
+            break
+        page.append(event)
+        size += event_size
+    return page, start + len(page) < len(envelopes)
+
+
 class Journal:
     def __init__(self, path):
         self.path = Path(path)
@@ -115,7 +156,8 @@ class Journal:
     def verify(self):
         return len(self.records())
 
-    def _validate(self, event):
+    @staticmethod
+    def _validate(event):
         canonical(event)
         require(isinstance(event, dict) and set(event) == {
             'key', 'source', 'at', 'tick', 'kind', 'payload', 'allowed_recipients',
@@ -144,7 +186,8 @@ class Journal:
                     name(event['payload'].get('activation_id')),
                     'activation requires authority activation ID and exact fingerprint')
 
-    def _check_successor(self, old, new):
+    @staticmethod
+    def _check_successor(old, new):
         require(old['identity']['world'] == new['identity']['world'] and
                 old['identity']['seed'] == new['identity']['seed'],
                 'world/seed changed; start another journal')
@@ -155,6 +198,7 @@ class Journal:
         require(row is not None, 'missing evidence blob')
         data, metadata = row
         metadata = json.loads(metadata)
+        validate_evidence_metadata(metadata)
         require(fingerprint({'bytes_hash': hashlib.sha256(data).hexdigest(),
                              'metadata': metadata}) == digest, 'evidence fingerprint mismatch')
         return dict(bytes=data, metadata=metadata)
@@ -169,13 +213,7 @@ class Journal:
     def store_evidence(self, data, metadata):
         require(isinstance(data, bytes) and 0 < len(data) <= 20 * 1024 * 1024,
                 'evidence must be 1..20MiB')
-        require(isinstance(metadata, dict) and set(metadata) == {
-            'media_type', 'view', 'client', 'assets', 'at', 'tick'},
-            'missing render provenance')
-        require(metadata['media_type'] in ('image/png', 'image/jpeg', 'image/webp') and
-                name(metadata['view']) and name(metadata['client']) and
-                is_hash(metadata['assets']) and all(type(metadata[k]) is int and
-                metadata[k] >= 0 for k in ('at', 'tick')), 'invalid render provenance')
+        validate_evidence_metadata(metadata)
         digest = fingerprint({'bytes_hash': hashlib.sha256(data).hexdigest(),
                               'metadata': metadata})
         with self._transaction() as db:
@@ -292,8 +330,49 @@ class Journal:
 
     def export_gm(self, recipient):
         require(name(recipient), 'explicit recipient required')
-        return [self._envelope(r) for r in self.records()
-                if recipient in r['event']['allowed_recipients']]
+        events = [self._envelope(r) for r in self.records()
+                  if recipient in r['event']['allowed_recipients']]
+        page, more = gm_page(events)
+        require(not more, 'GM export needs bounded pages; use --output and --after-event')
+        return page
+
+    def publish_gm(self, destination, recipients, after_event=None):
+        """Atomically replace the agreed host intake with a scoped, deduped array.
+
+        Call from the existing producer worker, never from the simulation tick.
+        The GM owns intake deduplication and routing. No new scheduler is started.
+        """
+        require(isinstance(recipients, list) and 0 < len(recipients) <= 256 and
+                all(name(r) for r in recipients), 'explicit known recipient IDs required')
+        destination = Path(destination)
+        protected = [self.path, Path(str(self.path) + '-journal'),
+                     Path(str(self.path) + '-wal'), Path(str(self.path) + '-shm')]
+        require(destination.resolve() not in [p.resolve() for p in protected],
+                'intake destination cannot replace history storage')
+        with self._transaction() as db:
+            # Serialize capture and publication, preventing a delayed older export
+            # from replacing a newer one from a concurrent publisher.
+            events = [self._envelope(r) for r in self._records(db)
+                      if set(recipients).intersection(r['event']['allowed_recipients'])]
+            events, more = gm_page(events, after_event)
+            data = canonical(events)
+            fd, temporary = tempfile.mkstemp(prefix='.gm-inbox-', dir=destination.parent)
+            try:
+                with os.fdopen(fd, 'wb') as output:
+                    output.write(data)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, destination)
+                directory = os.open(destination.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        return dict(events=len(events), sha256=hashlib.sha256(data).hexdigest(),
+                    last_id=events[-1]['id'] if events else after_event, has_more=more)
 
     def _pending(self, db, recipient, records):
         seen = set()
@@ -329,15 +408,21 @@ def main():
     parser.add_argument('database', type=Path)
     parser.add_argument('command', choices=['verify', 'export-gm', 'operator',
                                           'reconstruct', 'export-studio', 'append'])
-    parser.add_argument('--recipient')
+    parser.add_argument('--recipient', action='append')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--input', type=Path)
+    parser.add_argument('--after-event')
     args = parser.parse_args()
     journal = Journal(args.database)
     if args.command == 'verify':
         result = dict(version=1, verified_events=journal.verify())
     elif args.command == 'export-gm':
-        result = journal.export_gm(args.recipient)
+        if args.output is not None:
+            result = journal.publish_gm(args.output, args.recipient, args.after_event)
+        else:
+            require(args.recipient is not None and len(args.recipient) == 1,
+                    'use one recipient for stdout; use --output for host intake union')
+            result = journal.export_gm(args.recipient[0])
     elif args.command == 'operator':
         result = dict(version=1, records=journal.records())
     elif args.command == 'export-studio':
