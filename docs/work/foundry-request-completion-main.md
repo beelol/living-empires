@@ -121,3 +121,38 @@ raising browser windows while they record; all further checks stay in background
 The newly requested distant autonomous colony is additional main-only work after
 the completion port, with its own resources and reachable location; no such AI
 feature is claimed as implemented by this port.
+
+## Live completion proved on main 51ba97d
+
+Both actual services were upgraded only after an idle guard and durable backup.
+Game and Foundry reported the same revision, compatible source/binary/models,
+with sponsoredCredits=false and the shared $1,000 cap intact. Actual launcher
+reuse succeeded without creating another service.
+
+Normal game regeneration of failed windmill plot
+32e71946-7080-4af5-980d-c8df74926f4f created request
+creation-7bc587df-a109-4752-994a-b3ec2028dc8a and job
+job-eolian-dynamo-family-1792970203496. Candidate 1 failed independent image
+review because the upper rotor was clipped by the actual overview camera and
+pilaster surfaces overlapped. Candidate 2 repaired those defects, passed review,
+and installed hash 57464dc3662907179850f3a02abaaa98ff9c42b87b463cc10c944e0b6ead4a66.
+Two candidates, four pipeline calls plus theme inference; about 3m17s from game
+regeneration to installed. The new frozen 30/60/no-overall-deadline profile was
+verified, as were exported package/core validation and all three exact PNG hashes.
+All preexisting building IDs/coordinates and other assets were preserved.
+
+Evidence is in the local visualization folder `foundry-completion-main` beside
+this thread: observations.json, final-request.json, final-job.json,
+verified-result.json, pair-proof.json, migration-proof.json, evidence/view-1..3.png.
+This check used the normal game HTTP command and API observations; the user asked
+us not to raise windows while recording, so it is not claimed as a new browser
+interaction/video pass. Earlier recorded browser/video evidence remains tied to
+its original b2f76c4 revision. The user subsequently requested a fresh colony,
+with the old colony backed up and Foundry history/spending retained.
+
+Visual-quality limitation: after the independent reviewer approved candidate 2,
+parent inspection of the saved first renderer image still shows the uppermost
+assembly touching/cropping at the top edge. Delivery, exact evidence binding and
+installation are proved; the reviewer's framing improvement should not be read
+as a guarantee that all visual-quality defects are gone. No further Foundry change
+is included in the subsequent gameplay-only port requested by the user.
