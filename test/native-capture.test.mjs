@@ -14,7 +14,6 @@ function setup(t, {mismatch=false, mode='success'}={}){
 import fs from 'node:fs'; import path from 'node:path';
 const p=JSON.parse(fs.readFileSync(process.argv[2],'utf8')),out=process.argv[3];
 const attemptDir=path.dirname(process.argv[2]);
-fs.writeFileSync(path.join(attemptDir,'started'),String(process.pid));
 if(${JSON.stringify(mode)}==='fail'){process.stderr.write('fixture renderer diagnostic\\n'+'x'.repeat(40000),()=>process.exit(7));}
 if(${JSON.stringify(mode)}==='ignore-term'){
   process.on('SIGTERM',()=>fs.writeFileSync(path.join(attemptDir,'term-received'),'yes'));
@@ -22,6 +21,7 @@ if(${JSON.stringify(mode)}==='ignore-term'){
   setInterval(()=>{},1000);
   setTimeout(()=>process.exit(0),3000);
 }
+fs.writeFileSync(path.join(attemptDir,'started'),String(process.pid));
 fs.mkdirSync(out,{recursive:true});
 const names=['front','three-quarter','rear'];
 const views=names.map((n,i)=>{const file='view-'+(i+1)+'-'+n+'.png';fs.writeFileSync(path.join(out,file),Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.from('fixture-'+i)]));return {file};});

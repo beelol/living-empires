@@ -32,6 +32,15 @@ test('new frozen budgets are displayed without assuming the ordinary candidate c
   const limited={...job,status:'exhausted',calls:60,pipeline:{contract:{limits:{maxAttempts:30,maxProviderCalls:60,timeBudgetMs:300000}}},stopReason:'Limit exhausted'};
   assert.match(describeJob(limited).reason,/API call limit reached \(60\/60\)/);
 });
+test('untimed style completion reports an exhausted call ceiling without inventing a time limit',()=>{
+  const limited={...job,status:'exhausted',deadline:null,calls:60,pipeline:{contract:{deadlineMs:0,limits:{maxAttempts:30,maxProviderCalls:60,timeBudgetMs:0}}},events:[...job.events,{state:'exhausted',at:new Date(start+3600000).toISOString()}]};
+  const result=describeJob(limited);
+  assert.match(result.reason,/API call limit reached \(60\/60\)/);assert.doesNotMatch(result.reason,/Time limit/);
+});
+test('historical timed jobs still explain their actual elapsed deadline',()=>{
+  const limited={...job,status:'exhausted',deadline:start+1200000,pipeline:{contract:{limits:{maxAttempts:3,maxProviderCalls:6,timeBudgetMs:1200000}}},events:[...job.events,{state:'exhausted',at:new Date(start+1201000).toISOString()}]};
+  assert.match(describeJob(limited).reason,/Time limit reached \(20 minutes\)/);
+});
 test('a routine successful poll retains a failed operator action',()=>{
   assert.equal(jobErrorText(job,{previousJob:job,currentError:'Cancel failed; status is unknown',pollError:''}),'Cancel failed; status is unknown');
 });

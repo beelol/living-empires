@@ -15,7 +15,7 @@ export function describeJob(job,now=Date.now()) {
   if(job.status==='exhausted'){
     if(attempts>=(limits.maxAttempts??3))reached.push(`Candidate limit reached (${attempts}/${limits.maxAttempts??3})`);
     if(calls>=(limits.maxProviderCalls??6))reached.push(`API call limit reached (${calls}/${limits.maxProviderCalls??6})`);
-    if(Number.isFinite(deadline)&&Number.isFinite(end)&&end>=deadline)reached.push(`Time limit reached (${Math.round((limits.timeBudgetMs??1200000)/60000)} minutes)`);
+    if(limits.timeBudgetMs!==0&&Number.isFinite(deadline)&&deadline>0&&Number.isFinite(end)&&end>=deadline)reached.push(`Time limit reached (${Math.round((limits.timeBudgetMs??1200000)/60000)} minutes)`);
   }
   const reason=stopped?[...reached,job.stopReason||phase,failure&&`Last issue: ${failure}`].filter(Boolean).join('. '):job.status==='reviewing'?'The critic is inspecting three actual renderer views.':!finished?events.at(-1)?.message||'Work is in progress.':job.stopReason||'';
   return {phase,reason,limits,timing,errorText:stopped?reason:''};
