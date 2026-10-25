@@ -25,6 +25,9 @@ use std::{
 #[cfg(feature = "native")]
 #[path = "visual.rs"]
 mod visual;
+#[cfg(feature = "native")]
+#[path = "city_visual.rs"]
+mod city_visual;
 
 #[derive(Clone, Debug)]
 pub struct ClientConfig {
@@ -38,6 +41,7 @@ pub struct ProbeResult {
     pub player: Player,
     pub next_sequence: u64,
     pub players: Vec<Player>,
+    pub buildings: Vec<argon_dev::settlement::BuildingView>,
     pub terrain_fingerprint: Option<String>,
     pub content_version: String,
     pub world_name: String,
@@ -160,6 +164,7 @@ struct ClientState {
     pending: Option<PendingMove>,
     movement_error: Option<String>,
     players: Vec<Player>,
+    buildings: Vec<argon_dev::settlement::BuildingView>,
     content_version: String,
     world_name: String,
     release: String,
@@ -193,6 +198,7 @@ impl ClientState {
             pending: None,
             movement_error: None,
             players: Vec::new(),
+            buildings: Vec::new(),
             content_version: String::new(),
             world_name: String::new(),
             release: String::new(),
@@ -232,6 +238,7 @@ impl ClientState {
                 }
                 if self.terrain_info != info {
                     self.terrain = None;
+                    self.buildings.clear();
                     self.terrain_chunks.clear();
                 }
                 self.terrain_requested.clear();
@@ -335,12 +342,14 @@ impl ClientState {
             }
             ServerUpdate::Snapshot {
                 players,
+                buildings,
                 content_version,
                 world_name,
                 release,
                 content_error,
             } => {
                 self.players = players;
+                self.buildings = buildings;
                 self.content_version = content_version;
                 self.world_name = world_name;
                 self.release = release;
@@ -370,6 +379,7 @@ impl ClientState {
             player: player.clone(),
             next_sequence: self.next_sequence,
             players: self.players.clone(),
+            buildings: self.buildings.clone(),
             terrain_fingerprint: self.terrain.as_ref().map(|t| t.info().fingerprint),
             content_version: self.content_version.clone(),
             world_name: self.world_name.clone(),
@@ -635,6 +645,7 @@ pub fn run(config: ClientConfig) -> Result<()> {
     }));
     configure(&mut app, config)?;
     visual::install(&mut app);
+    city_visual::install(&mut app);
     app.run();
     Ok(())
 }

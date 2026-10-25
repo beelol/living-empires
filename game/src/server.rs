@@ -44,6 +44,9 @@ struct Authority {
     reload_error: Option<String>,
     last_reload: Instant,
     last_snapshot: Instant,
+    city_steps: u64,
+    city_error: Option<String>,
+    city_halted: bool,
     sessions: HashMap<Entity, String>,
     health: Health,
 }
@@ -60,6 +63,7 @@ impl Authority {
         // must be introduced at this boundary before adding private gameplay.
         ServerUpdate::Snapshot {
             players: self.world.snapshot(),
+            buildings: self.world.buildings(),
             content_version: self.content.version().to_owned(),
             world_name: self.content.world_name().to_owned(),
             release: self.release.clone(),
@@ -77,6 +81,9 @@ impl Authority {
             "world_name":self.content.world_name(),
             "release":self.release,
             "content_error":self.reload_error,
+            "city_error":self.city_error,
+            "city_halted":self.city_halted,
+            "buildings":self.world.buildings().len(),
         }));
     }
 
@@ -227,6 +234,81 @@ fn authoritative_update(
     authority.publish_health();
 }
 
+// The existing authority owns fixed construction work and a bounded authored
+// starter plan. This adds no model worker, second world writer or content loop.
+fn advance_city(mut authority: NonSendMut<Authority>) {
+    use argon_dev::settlement::Role;
+    if !authority.accepting_commands()
+        || authority.world.terrain().is_none()
+        || authority.city_halted
+    {
+        return;
+    }
+    authority.city_steps = authority.city_steps.saturating_add(1);
+    let planning = authority.city_steps % 60 == 1;
+    let outcome = (|| -> Result<Vec<String>> {
+        let mut blockers = Vec::new();
+        if authority.world.buildings().is_empty() {
+            if !planning {
+                return Ok(blockers);
+            }
+            authority.world.initialize_settlements()?;
+        }
+        authority.world.tick_settlements(1)?;
+        if !planning {
+            return Ok(blockers);
+        }
+        for faction in ["helios", "tide", "cinder"] {
+            let buildings = authority.world.buildings();
+            let own: Vec<_> = buildings
+                .iter()
+                .filter(|b| b.faction_id == faction)
+                .collect();
+            if !own.iter().any(|b| b.role == Role::Core && b.complete) {
+                continue;
+            }
+            let next = if !own.iter().any(|b| b.role == Role::Generator) {
+                Some((Role::Generator, "starter-generator"))
+            } else if own.iter().any(|b| b.role == Role::Generator && b.complete)
+                && !own.iter().any(|b| b.role == Role::Storehouse)
+            {
+                Some((Role::Storehouse, "starter-storehouse"))
+            } else {
+                None
+            };
+            if let Some((role, request)) = next {
+                let id = authority.world.plan_settlement(faction, request, role)?;
+                if id.is_none() {
+                    blockers.push(format!(
+                        "{faction}: {role:?} expansion blocked; no legal affordable site"
+                    ));
+                }
+            }
+        }
+        Ok(blockers)
+    })();
+    match outcome {
+        Ok(blockers) if planning => {
+            let message = (!blockers.is_empty()).then(|| blockers.join("; "));
+            if message != authority.city_error
+                && let Some(message) = &message
+            {
+                eprintln!("City expansion blocked: {message}");
+            }
+            authority.city_error = message;
+        }
+        Ok(_) => {}
+        Err(error) => {
+            let message = format!("{error:#}");
+            if authority.city_error.as_deref() != Some(&message) {
+                eprintln!("City construction blocked: {message}");
+            }
+            authority.city_error = Some(message);
+            authority.city_halted = true;
+        }
+    }
+}
+
 /// Blocking headless host used by the same executable's `host` mode.
 pub fn run(config: HostConfig) -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
@@ -259,9 +341,14 @@ pub fn run_with_stop(mut config: HostConfig, stop: Arc<AtomicBool>) -> Result<()
             reload_error: None,
             last_reload: Instant::now(),
             last_snapshot: Instant::now(),
+            city_steps: 0,
+            city_error: None,
+            city_halted: false,
             sessions: HashMap::new(),
             health: health.clone(),
         })
+        .insert_resource(Time::<Fixed>::from_duration(crate::protocol::TICK))
+        .add_systems(FixedUpdate, advance_city)
         .add_systems(Update, authoritative_update);
     app.finish();
     app.cleanup();
@@ -336,6 +423,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn city_activation_gates_fixed_work_and_failed_save_halts_it() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("manifest.json"),
+            r#"{"schema_version":1,"entry":"rules.lua","files":["rules.lua"]}"#,
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("rules.lua"),"return {schema_version=1,world_name='Test',step=function(x,y,dx,dy) return x+dx,y+dy end}").unwrap();
+        let path = directory.path().join("world.json");
+        let gate = directory.path().join("active");
+        let authority = Authority {
+            world: World::load_terrain(&path, Some(72913)).unwrap(),
+            content: ContentRuntime::load(directory.path()).unwrap(),
+            release: "test".into(),
+            activation_file: Some(gate.clone()),
+            reload_error: None,
+            last_reload: Instant::now(),
+            last_snapshot: Instant::now(),
+            city_steps: 0,
+            city_error: None,
+            city_halted: false,
+            sessions: HashMap::new(),
+            health: Health::new(json!({})),
+        };
+        let mut app = App::new();
+        app.insert_non_send(authority)
+            .add_systems(Update, advance_city);
+        app.update();
+        assert!(
+            app.world()
+                .non_send::<Authority>()
+                .world
+                .buildings()
+                .is_empty()
+        );
+        std::fs::write(&gate, b"active").unwrap();
+        app.update();
+        let snapshot = app
+            .world()
+            .non_send::<Authority>()
+            .world
+            .buildings();
+        assert_eq!(snapshot.len(), 3);
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        app.update();
+        assert!(app.world().non_send::<Authority>().city_halted);
+        assert_eq!(
+            app.world()
+                .non_send::<Authority>()
+                .world
+                .buildings(),
+            snapshot
+        );
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        app.update();
+        assert_eq!(
+            app.world()
+                .non_send::<Authority>()
+                .world
+                .buildings(),
+            snapshot
+        );
+    }
+
+    #[test]
     fn rejected_move_keeps_session_usable_and_reports_authoritative_sequence() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -354,6 +509,9 @@ mod tests {
             reload_error: None,
             last_reload: Instant::now(),
             last_snapshot: Instant::now(),
+            city_steps: 0,
+            city_error: None,
+            city_halted: false,
             sessions: HashMap::new(),
             health: Health::new(json!({"ok":true})),
         };
