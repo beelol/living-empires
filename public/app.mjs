@@ -275,21 +275,27 @@ function preferredSceneAttempt(job){
   const baseline=job.baseline||jobsCache.get(job.baseJobId)?.attempts?.find(attempt=>attempt.hash===job.baseCandidateHash);
   return baseline?.recipe?baseline:attempts.find(attempt=>!attempt.validationError)||attempts[0];
 }
+function selectableSceneAttempts(job){
+  const attempts=(job?.attempts||[]).filter(attempt=>attempt.recipe&&attempt.hash);
+  const baseline=job?.baseline||jobsCache.get(job?.baseJobId)?.attempts?.find(attempt=>attempt.hash===job.baseCandidateHash);
+  if(baseline?.recipe&&baseline.hash===job.baseCandidateHash&&job.baseJobId&&job.baseAttemptNumber&&!attempts.some(attempt=>attempt.hash===baseline.hash))return [{...baseline,number:job.baseAttemptNumber,sourceJobId:job.baseJobId},...attempts];
+  return attempts;
+}
 function renderRefinementControls(job){
-  const selector=$('base-version'),attempts=(job.attempts||[]).filter(attempt=>attempt.recipe&&attempt.hash),signature=attempts.map(attempt=>`${attempt.number}:${attempt.hash}:${attempt.decision||''}:${attempt.review?.comparison?.status||''}`).join('|');
+  const selector=$('base-version'),attempts=selectableSceneAttempts(job),signature=attempts.map(attempt=>`${attempt.number}:${attempt.hash}:${attempt.decision||''}:${attempt.review?.comparison?.status||''}`).join('|');
   const hasScene=!!(attempts.length||preferredSceneAttempt(job)?.recipe);$('refinement-panel').hidden=!hasScene;$('generation-panel').hidden=hasScene;$('new-scene').hidden=!hasScene;$('new-scene').disabled=busy;
   if(selector.dataset.job!==job.id){$('generation-panel').open=!attempts.length;$('generation-panel').classList.toggle('has-scene',!!attempts.length);}
   const oldSelection=selector.value;if(selector.dataset.job!==job.id)selector.dataset.userChosen='false';
   if(selector.dataset.job!==job.id||selector.dataset.signature!==signature){
     selector.replaceChildren();
-    for(const attempt of attempts){const option=el('option',`VERSION ${String(attempt.number).padStart(2,'0')} · ${attempt.recipe.name} · ${attempt.hash.slice(0,10)}`);option.value=attempt.hash;selector.append(option);}
+    for(const attempt of attempts){const option=el('option',`${attempt.sourceJobId?'BASELINE VERSION':'VERSION'} ${String(attempt.number).padStart(2,'0')} · ${attempt.recipe.name} · ${attempt.hash.slice(0,10)}`);option.value=attempt.hash;selector.append(option);}
     selector.dataset.job=job.id;selector.dataset.signature=signature;
     selector.value=selector.dataset.userChosen==='true'&&attempts.some(attempt=>attempt.hash===oldSelection)?oldSelection:preferredSceneAttempt(job)?.hash||attempts.at(-1)?.hash||'';
   }
   const selected=attempts.find(attempt=>attempt.hash===selector.value),ready=!!selected&&!busy&&terminal.includes(job.status);
   selector.disabled=!attempts.length||busy;
   $('refinement-state').textContent=busy?'Finish the current run first':selected?`${job.provider==='fixture'?'OFFLINE REHEARSAL':'SAVED PROVIDER'} · frozen baseline`:'No finished candidate yet';
-  $('base-version-summary').textContent=selected?`Fixed source · job ${job.id} · version ${selected.number} · SHA-256 ${selected.hash}. The source theme and original brief stay frozen.`:'Refinement becomes available after a candidate recipe has been saved.';
+  $('base-version-summary').textContent=selected?`Fixed source · job ${selected.sourceJobId||job.id} · version ${selected.number} · SHA-256 ${selected.hash}. The source theme and original brief stay frozen.`:'Refinement becomes available after a candidate recipe has been saved.';
   const components=selected?.recipe?.scene?.components;
   const listNode=$('component-list');listNode.replaceChildren();
   const componentSelector=$('component-target'),oldTarget=componentSelector.value,componentEntries=Array.isArray(components)?components:[];
@@ -427,7 +433,7 @@ function renderJob(job){
   $('events').replaceChildren(...job.events.slice().reverse().map(event=>{const row=el('div',undefined,'event');row.append(el('time',new Date(event.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})),el('span',event.message));return row;}));
   renderRoleProgress(job);
   const attempt=job.attempts.at(-1);renderChecks(attempt?.checks);
-  const selector=$('base-version'),chosen=selector.dataset.job===job.id&&selector.dataset.userChosen==='true'?job.attempts.find(item=>item.hash===selector.value):null,displayed=chosen||preferredSceneAttempt(job);
+  const selector=$('base-version'),chosen=selector.dataset.job===job.id&&selector.dataset.userChosen==='true'?selectableSceneAttempts(job).find(item=>item.hash===selector.value):null,displayed=chosen||preferredSceneAttempt(job);
   if(displayed?.recipe){if(displayed.hash!==lastHash){world.load(displayed.recipe,job.theme);lastHash=displayed.hash;}$('scene-name').textContent=displayed.recipe.name.toUpperCase();$('scene-theme').textContent=job.theme.name.toUpperCase();$('version-label').textContent=displayed.hash===job.baseCandidateHash||displayed.number===0?'SELECTED BASELINE':displayed.hash===job.acceptedHash||displayed.decision==='accept'?`ACCEPTED VERSION ${displayed.number}`:displayed.review?.comparison?.status==='regressed'?`REJECTED VERSION ${displayed.number}`:displayed!==attempt?`RETAINED VERSION ${displayed.number} · NOT ACCEPTED`:`CANDIDATE ${displayed.number}`;}
   $('activate').disabled=job.status!=='accepted';$('activate').textContent=job.status==='accepted'?(job.provider==='fixture'?'Use rehearsal asset in preview ↗':'Use verified asset in preview ↗'):job.status==='active'?'Asset is active ✓':'Awaiting a verified candidate ↗';
   const packageLink=$('download-package'),downloadable=['accepted','active'].includes(job.status);
@@ -481,7 +487,7 @@ $('start').onclick=async()=>{
 };
 $('cancel').onclick=async()=>{try{renderJob(await api(`/api/jobs/${currentJob.id}/cancel`,{}));}catch(e){error(e);}};
 $('activate').onclick=async()=>{try{const r=await api(`/api/jobs/${currentJob.id}/activate`,{});$('release-label').textContent=(r.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+r.hash.slice(0,10);renderJob(await api('/api/jobs/'+currentJob.id));}catch(e){error(e);}};
-$('base-version').onchange=()=>{if(currentJob){$('base-version').dataset.userChosen='true';renderRefinementControls(currentJob);const selected=currentJob.attempts.find(attempt=>attempt.hash===$('base-version').value);if(selected?.recipe){world.load(selected.recipe,currentJob.theme);lastHash=selected.hash;$('scene-name').textContent=selected.recipe.name.toUpperCase();$('version-label').textContent=`SAVED VERSION ${selected.number}`;}}};
+$('base-version').onchange=()=>{if(currentJob){$('base-version').dataset.userChosen='true';renderRefinementControls(currentJob);const selected=selectableSceneAttempts(currentJob).find(attempt=>attempt.hash===$('base-version').value);if(selected?.recipe){world.load(selected.recipe,currentJob.theme);lastHash=selected.hash;$('scene-name').textContent=selected.recipe.name.toUpperCase();$('version-label').textContent=`SAVED VERSION ${selected.number}`;}}};
 $('new-scene').onclick=()=>{
   if(busy)return;runSummary.hidden=true;currentJob=null;releasePinned=false;sceneRevision++;setEditorLocked(false);$('generation-panel').hidden=false;$('generation-panel').open=true;$('generation-panel').classList.remove('has-scene');$('refinement-panel').hidden=true;$('new-scene').hidden=true;$('prompt').value='';$('error').textContent='';$('use-manual-theme').checked=false;$('inject').checked=false;$('provider').value=config?.keyConfigured?'gemini':'fixture';$('connection').textContent=config?.keyConfigured?'GEMINI · DIRECT':'OFFLINE REHEARSAL';modeNote();clearLocalReference();const url=new URL(location.href);url.searchParams.delete('job');history.replaceState(null,'',url);renderSavedScenes();$('prompt').focus();
 };
@@ -500,9 +506,10 @@ $('component-name').addEventListener('input',()=>{if(currentJob)renderRefinement
 $('reference-file').addEventListener('change',event=>chooseLocalReference(event.target.files?.[0]));
 $('clear-reference').onclick=clearLocalReference;
 function refinementRequest(){
-  const selected=currentJob?.attempts?.find(attempt=>attempt.hash===$('base-version').value&&attempt.recipe),userFeedback=$('user-feedback').value.trim();
+  const selected=selectableSceneAttempts(currentJob).find(attempt=>attempt.hash===$('base-version').value&&attempt.recipe),userFeedback=$('user-feedback').value.trim();
   if(!currentJob||!selected)return null;
-  const request={baseJobId:currentJob.id,baseAttemptNumber:selected.number,baseCandidateHash:selected.hash,userFeedback,prompt:currentJob.prompt,theme:structuredClone(currentJob.theme),provider:$('provider').value,injectDefect:false,...referenceRequestFields()};
+  const sourceJob=jobsCache.get(selected.sourceJobId)||currentJob;
+  const request={baseJobId:sourceJob.id,baseAttemptNumber:selected.number,baseCandidateHash:selected.hash,userFeedback,prompt:sourceJob.prompt,theme:structuredClone(sourceJob.theme),provider:$('provider').value,injectDefect:false,...referenceRequestFields()};
   const scope=$('component-scope').value;
   if(scope==='modify'){
     const component=selected.recipe.scene?.components?.find(item=>item.id===$('component-target').value);
