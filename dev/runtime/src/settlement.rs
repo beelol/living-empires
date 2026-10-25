@@ -10,6 +10,64 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub const STARTER_METAL: u64 = 1000;
+
+/// A visual package reference supplied only after the caller independently checks
+/// an exact activation receipt. Its hash is separate from the gameplay recipe hash.
+/// This type carries the caller's approval result; it does not perform approval.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovedVisualRef {
+    asset_id: String,
+    version: u32,
+    package_sha256: String,
+}
+
+impl ApprovedVisualRef {
+    /// Construct at the boundary that has already verified the exact approved
+    /// package and activation receipt. This checks shape only, not provenance.
+    pub fn from_verified_activation(
+        asset_id: impl Into<String>,
+        version: u32,
+        package_sha256: impl Into<String>,
+    ) -> Result<Self> {
+        let value = Self {
+            asset_id: asset_id.into(),
+            version,
+            package_sha256: package_sha256.into(),
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub fn asset_id(&self) -> &str { &self.asset_id }
+    pub fn version(&self) -> u32 { self.version }
+    pub fn package_sha256(&self) -> &str { &self.package_sha256 }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.asset_id.is_empty()
+                && self.asset_id.len() <= 128
+                && self.asset_id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b)),
+            "invalid visual asset ID"
+        );
+        ensure!(self.version > 0, "visual asset version must be positive");
+        ensure!(
+            self.package_sha256.len() == 64
+                && self.package_sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+            "visual package hash must be SHA-256 hex"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct VisualRevisionReceipt {
+    building_id: String,
+    revision: u64,
+    expected: Option<ApprovedVisualRef>,
+    replacement: ApprovedVisualRef,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Species {
@@ -68,6 +126,9 @@ pub struct BuildingView {
     pub entrance: Bounds,
     pub approach_bounds: Bounds,
     pub content_hash: String,
+    /// Approved appearance reference. `content_hash` remains the gameplay recipe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visual_asset: Option<ApprovedVisualRef>,
     pub completed_ticks: u64,
     pub work_ticks: u64,
     pub complete: bool,
@@ -99,6 +160,8 @@ pub struct SettlementState {
     factions: BTreeMap<String, Faction>,
     buildings: Vec<Building>,
     events: Vec<SettlementEvent>,
+    #[serde(default)]
+    visual_revisions: BTreeMap<String, VisualRevisionReceipt>,
 }
 impl Default for SettlementState {
     fn default() -> Self {
@@ -141,6 +204,7 @@ impl SettlementState {
                     && v.content_hash == recipe.content_hash,
                 "saved building recipe mismatch"
             );
+            if let Some(asset) = &v.visual_asset { asset.validate()?; }
             ensure!(
                 v.ground_height.is_finite()
                     && v.ground_height >= 0.2
@@ -228,6 +292,33 @@ impl SettlementState {
                 "invalid settlement event"
             );
         }
+        let mut latest_visuals = BTreeMap::<&str, (u64, &ApprovedVisualRef)>::new();
+        let mut visual_revision_numbers = std::collections::BTreeSet::new();
+        for (operation_id, receipt) in &self.visual_revisions {
+            ensure!(
+                !operation_id.is_empty()
+                    && operation_id.len() <= 128
+                    && operation_id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b)),
+                "invalid visual revision operation ID"
+            );
+            ensure!(
+                self.buildings.iter().any(|b| b.view.id == receipt.building_id),
+                "visual revision references missing building"
+            );
+            ensure!(receipt.revision > 0 && receipt.revision <= self.revision, "invalid visual revision order");
+            ensure!(visual_revision_numbers.insert(receipt.revision), "duplicate visual revision sequence");
+            receipt.replacement.validate()?;
+            if let Some(old) = &receipt.expected { old.validate()?; }
+            let slot = latest_visuals.entry(receipt.building_id.as_str()).or_insert((0, &receipt.replacement));
+            if receipt.revision > slot.0 { *slot = (receipt.revision, &receipt.replacement); }
+        }
+        for building in &self.buildings {
+            match (building.view.visual_asset.as_ref(), latest_visuals.get(building.view.id.as_str())) {
+                (None, None) => {}
+                (Some(actual), Some((_, recorded))) if actual == *recorded => {}
+                _ => anyhow::bail!("saved visual binding lacks its matching revision receipt"),
+            }
+        }
         Ok(())
     }
     pub fn new() -> Self {
@@ -252,6 +343,7 @@ impl SettlementState {
             .collect(),
             buildings: vec![],
             events: vec![],
+            visual_revisions: BTreeMap::new(),
         }
     }
     pub fn revision(&self) -> u64 {
@@ -408,6 +500,7 @@ impl SettlementState {
                 entrance: site.entrance(),
                 approach_bounds: site.approach_bounds(),
                 content_hash: recipe.content_hash,
+                visual_asset: None,
                 completed_ticks: 0,
                 work_ticks: 120,
                 complete: false,
@@ -425,6 +518,53 @@ impl SettlementState {
         });
         *self = next;
         Ok(id)
+    }
+
+    /// CAS-update only a live building's visual reference. This method does not
+    /// create entities or touch construction, collision, resources, ownership or pose.
+    pub(crate) fn revise_building_visual(
+        &mut self,
+        building_id: &str,
+        operation_id: &str,
+        expected: Option<&ApprovedVisualRef>,
+        replacement: ApprovedVisualRef,
+    ) -> Result<bool> {
+        ensure!(
+            !operation_id.is_empty()
+                && operation_id.len() <= 128
+                && operation_id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b)),
+            "invalid visual revision operation ID"
+        );
+        replacement.validate()?;
+        if let Some(old) = expected { old.validate()?; }
+        let receipt = VisualRevisionReceipt {
+            building_id: building_id.to_owned(),
+            revision: 0,
+            expected: expected.cloned(),
+            replacement: replacement.clone(),
+        };
+        if let Some(prior) = self.visual_revisions.get(operation_id) {
+            ensure!(
+                prior.building_id == receipt.building_id
+                    && prior.expected == receipt.expected
+                    && prior.replacement == receipt.replacement,
+                "visual revision operation ID reused with different terms"
+            );
+            return Ok(false);
+        }
+        let next_revision = self.revision.checked_add(1).context("revision exhausted")?;
+        let receipt = VisualRevisionReceipt { revision: next_revision, ..receipt };
+        let building = self.buildings.iter_mut()
+            .find(|b| b.view.id == building_id)
+            .context("unknown building; visual revisions cannot create entities")?;
+        ensure!(
+            building.view.visual_asset.as_ref() == expected,
+            "stale visual reference"
+        );
+        building.view.visual_asset = Some(replacement);
+        self.visual_revisions.insert(operation_id.to_owned(), receipt);
+        self.revision = next_revision;
+        Ok(true)
     }
     /// Fixed simulation ticks only. Caller determines builder/power availability.
     pub fn advance(

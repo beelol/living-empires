@@ -4,7 +4,7 @@ import {createWorld} from './scene.mjs';
 import {startRenderWorker} from './render-worker.mjs';
 const $=id=>document.getElementById(id),world=createWorld($('world'));
 startRenderWorker();
-let currentJob=null,lastHash='',busy=false,config,releasePinned=false,pollInFlight=false,sceneRevision=0,referenceObjectUrl=null,jobsCache=new Map();
+let currentJob=null,lastHash='',busy=false,config,releasePinned=false,pollInFlight=false,sceneRevision=0,referenceObjectUrl=null,referenceImage=null,referenceReadPending=false,referenceLoadToken=0,jobsCache=new Map();
 let themeContract=null;
 const briefs={
   argonaut:'Build a sensor outpost for our machine civilization. Give it a broad ceramic canopy, a glowing cyan relay, and an entrance our commander can walk through.',
@@ -258,16 +258,41 @@ function renderRefinementControls(job){
   $('clear-reference').disabled=busy;
 }
 function clearLocalReference(){
+  referenceLoadToken++;referenceReadPending=false;
   if(referenceObjectUrl)URL.revokeObjectURL(referenceObjectUrl);
-  referenceObjectUrl=null;$('reference-file').value='';$('reference-image').removeAttribute('src');$('reference-name').textContent='';$('reference-preview').hidden=true;
+  referenceObjectUrl=null;referenceImage=null;$('reference-file').value='';$('reference-image').removeAttribute('src');$('reference-name').textContent='';$('reference-preview').hidden=true;$('reference-consent').checked=false;$('reference-consent').disabled=true;
 }
-function chooseLocalReference(file){
+function readLocalImage(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error('The selected image could not be read locally.'));
+    reader.onload=()=>{const value=String(reader.result||''),comma=value.indexOf(',');if(comma<0)reject(new Error('The selected image could not be encoded.'));else resolve(value.slice(comma+1));};
+    reader.readAsDataURL(file);
+  });
+}
+async function chooseLocalReference(file){
   $('reference-error').textContent='';clearLocalReference();
   if(!file)return;
-  const allowed=['image/png','image/jpeg','image/webp'];
-  if(!allowed.includes(file.type)){ $('reference-error').textContent='Choose a PNG, JPEG, or WebP image.';$('reference-file').value='';return; }
-  if(file.size>5*1024*1024){$('reference-error').textContent='Local preview images must be 5 MiB or smaller.';$('reference-file').value='';return;}
-  referenceObjectUrl=URL.createObjectURL(file);$('reference-image').src=referenceObjectUrl;$('reference-name').textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MiB`;$('reference-preview').hidden=false;
+  const allowed=['image/png','image/jpeg'];
+  if(!allowed.includes(file.type)){ $('reference-error').textContent='Choose a PNG or JPEG image.';$('reference-file').value='';return; }
+  if(file.size>2*1024*1024){$('reference-error').textContent='Reference images must be 2 MiB or smaller.';$('reference-file').value='';return;}
+  const token=referenceLoadToken;referenceReadPending=true;$('reference-name').textContent='Reading locally…';
+  try{
+    const data=await readLocalImage(file);
+    if(token!==referenceLoadToken)return;
+    referenceObjectUrl=URL.createObjectURL(file);referenceImage={mimeType:file.type,data};$('reference-image').src=referenceObjectUrl;$('reference-name').textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MiB`;$('reference-preview').hidden=false;$('reference-consent').disabled=false;
+  }catch(e){if(token===referenceLoadToken){$('reference-error').textContent=e.message;clearLocalReference();}}
+  finally{if(token===referenceLoadToken)referenceReadPending=false;}
+}
+function referenceRequestFields(){return referenceImage&&$('reference-consent').checked?{referenceImages:[{mimeType:referenceImage.mimeType,data:referenceImage.data}],referenceConsent:true}:{};}
+function referenceConsentError(){if(referenceReadPending)return 'The image is still being read locally. Wait for its preview, then choose whether to consent.';return referenceImage&&!$('reference-consent').checked?'A reference image is selected but consent is off. Check the Google Gemini consent box or clear the image to continue text-only.':'';}
+function selectedReferenceMetadata(){return referenceImage?{selected:true,mimeType:referenceImage.mimeType,consent:$('reference-consent').checked,includedInRequest:$('reference-consent').checked,handling:$('reference-consent').checked?'Sent as creative guidance with explicit consent.':'Local only; request is text-only.'}:{selected:false,consent:false,includedInRequest:false};}
+function safePreview(value,key=''){
+  if(/^(data|base64|imageData)$/i.test(key))return '[redacted]';
+  if(key==='referenceImages'&&Array.isArray(value))return value.map(item=>({mimeType:item?.mimeType,data:'[redacted]'}));
+  if(Array.isArray(value))return value.map(item=>safePreview(item));
+  if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([name,item])=>[name,safePreview(item,name)]));
+  return value;
 }
 function renderJob(job){
   const newJob=currentJob?.id!==job.id;
@@ -322,10 +347,10 @@ $('resolve-theme').onclick=async()=>{
   finally{$('resolve-theme').disabled=busy||config?.themeInferenceEnabled!==true;}
 };
 $('start').onclick=async()=>{
-  $('error').textContent='';$('theme-error').textContent='';$('start').disabled=true;releasePinned=false;sceneRevision++;
+  $('error').textContent='';$('theme-error').textContent='';const consentError=referenceConsentError();if(consentError){$('reference-error').textContent=consentError;return;}$('reference-error').textContent='';$('start').disabled=true;releasePinned=false;sceneRevision++;
   try{
     const frozenTheme=validateContract(themeFromForm());renderThemeContract(frozenTheme,{selectPreset:false,preview:false});setEditorLocked(true);
-    const job=await api('/api/jobs',{themeId:frozenTheme.id,theme:frozenTheme,prompt:$('prompt').value,provider:$('provider').value,injectDefect:$('inject').checked});lastHash='';renderJob(job);
+    const job=await api('/api/jobs',{themeId:frozenTheme.id,theme:frozenTheme,prompt:$('prompt').value,provider:$('provider').value,injectDefect:$('inject').checked,...referenceRequestFields()});lastHash='';renderJob(job);
   }catch(e){error(e);$('theme-error').textContent=e.message;$('start').disabled=false;setEditorLocked(false);}
 };
 $('cancel').onclick=async()=>{try{renderJob(await api(`/api/jobs/${currentJob.id}/cancel`,{}));}catch(e){error(e);}};
@@ -337,17 +362,19 @@ $('clear-reference').onclick=clearLocalReference;
 function refinementRequest(){
   const selected=currentJob?.attempts?.find(attempt=>attempt.hash===$('base-version').value&&attempt.recipe),userFeedback=$('user-feedback').value.trim();
   if(!currentJob||!selected)return null;
-  return {baseJobId:currentJob.id,baseAttemptNumber:selected.number,baseCandidateHash:selected.hash,userFeedback,prompt:currentJob.prompt,theme:structuredClone(currentJob.theme),provider:$('provider').value,injectDefect:false};
+  return {baseJobId:currentJob.id,baseAttemptNumber:selected.number,baseCandidateHash:selected.hash,userFeedback,prompt:currentJob.prompt,theme:structuredClone(currentJob.theme),provider:$('provider').value,injectDefect:false,...referenceRequestFields()};
 }
 $('preview-refinement').onclick=async()=>{
   $('refinement-error').textContent='';$('refinement-preview-result').replaceChildren();
   const request=refinementRequest();if(!request)return;
   if(request.userFeedback.length<5){$('refinement-error').textContent='Describe the change in at least five characters.';return;}
+  const consentError=referenceConsentError();if(consentError){$('reference-error').textContent=consentError;return;}$('reference-error').textContent='';
   $('preview-refinement').disabled=true;
   try{
     const result=await api('/api/refinement-preview',request),summary=result.summary||result.message||'Request preview prepared. No generation or provider call was made.';
     $('refinement-preview-result').append(el('p',summary,'preview-summary'));
-    const details=el('details',undefined,'preview-details'),pre=el('pre',JSON.stringify(result.request||result,null,2));details.append(el('summary','Inspect the frozen request fields'),pre);$('refinement-preview-result').append(details);
+    const previewMetadata={...safePreview(result),referenceImage:selectedReferenceMetadata()};
+    const details=el('details',undefined,'preview-details'),pre=el('pre',JSON.stringify(previewMetadata,null,2));details.append(el('summary','Inspect the request metadata · image data hidden'),pre);$('refinement-preview-result').append(details);
   }catch(e){$('refinement-error').textContent=e.message;}
   finally{if(currentJob)renderRefinementControls(currentJob);}
 };
@@ -356,6 +383,7 @@ $('refine-version').onclick=async()=>{
   const request=refinementRequest();
   if(!request||busy)return;
   if(request.userFeedback.length<5){$('refinement-error').textContent='Describe the change in at least five characters.';return;}
+  const consentError=referenceConsentError();if(consentError){$('reference-error').textContent=consentError;return;}$('reference-error').textContent='';
   $('refinement-preview-result').replaceChildren();
   $('refine-version').disabled=true;setEditorLocked(true);
   try{

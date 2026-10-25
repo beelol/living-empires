@@ -1,6 +1,6 @@
 use std::io::{self, Read};
 use living_world_core::{Recipe,ThemeContract,evaluate,evaluate_with_theme,access_scenario};
-use living_world_core::pipeline::{AssetPipeline,Provenance,ReviewDecision,Evidence,RefinementContract};
+use living_world_core::pipeline::{AssetPipeline,JobLimits,Provenance,ReviewDecision,Evidence,RefinementContract,ReferenceContract,RoleModels};
 use living_world_core::provider::{fixture_recipe,repair_fixture};
 use serde::de::DeserializeOwned;
 #[cfg(feature="live-provider")]
@@ -33,15 +33,31 @@ fn run(input:Value)->Result<Value,String>{
     if op=="capabilities"{return Ok(json!({"engine":"living-world-core/0.1.0","nativeProvider":cfg!(feature="live-provider"),"pipelineVersion":1}));}
     if op=="create"{
         let mut pipeline=AssetPipeline::create(field(&input,"theme")?,field(&input,"prompt")?,now)?;
+        if input.get("limits").is_some(){pipeline.set_limits(field::<JobLimits>(&input,"limits")?)?;}
+        if input.get("roleModels").is_some(){pipeline.set_role_models(field::<RoleModels>(&input,"roleModels")?)?;}
         if input.get("sceneHalfExtent").is_some(){pipeline.set_scene_half_extent(field(&input,"sceneHalfExtent")?)?;}
         if input.get("refinement").is_some(){pipeline.set_refinement(field::<RefinementContract>(&input,"refinement")?)?;}
+        if input.get("reference").is_some(){pipeline.set_reference(field::<ReferenceContract>(&input,"reference")?)?;}
         if input.get("provenance").is_some(){pipeline.set_provenance(field::<Provenance>(&input,"provenance")?)?;}
         return Ok(json!({"pipeline":pipeline}));
     }
     if op=="prepare-generation"{
         let request=field::<living_world_core::provider::GenerationRequest>(&input,"request")?;
-        let (endpoint,body)=living_world_core::provider::build_generation_request(&request).map_err(|e|e.to_string())?;
-        return Ok(json!({"endpoint":endpoint,"body":body}));
+        let (endpoint,mut body)=living_world_core::provider::build_generation_request(&request).map_err(|e|e.to_string())?;
+        let mut metadata=Vec::with_capacity(request.reference_images.len());
+        use base64::Engine as _;
+        for image in &request.reference_images {
+            let bytes=base64::engine::general_purpose::STANDARD.decode(&image.data).map_err(|_|"Invalid reference image base64".to_string())?;
+            metadata.push(json!({"sha256":request.reference_sha256,"mimeType":image.mime_type,"bytes":bytes.len(),"destination":"Google Gemini","consent":request.reference_consent}));
+        }
+        if request.managed {
+            if let Some(items)=body["input"].as_array_mut() {
+                for item in items.iter_mut().filter(|item|item["type"]=="image") { item["data"]=json!("[redacted]"); }
+            }
+        } else if let Some(parts)=body["contents"][0]["parts"].as_array_mut() {
+            for part in parts.iter_mut().filter(|part|part["inlineData"].is_object()) { part["inlineData"]["data"]=json!("[redacted]"); }
+        }
+        return Ok(json!({"endpoint":endpoint,"body":body,"referenceImages":metadata}));
     }
     if op=="fixture"{
         let theme=field::<ThemeContract>(&input,"theme")?;
@@ -89,6 +105,31 @@ mod offline_tests {
     use super::*;
 
     #[test]
+    fn create_accepts_and_freezes_role_models_and_remaining_limits() {
+        let input = json!({
+            "op":"create","now":1000,"prompt":"Build one forest relay",
+            "theme":{
+                "id":"custom-forest","name":"Forest relay","genre":"Frontier","description":"A forest sensor relay.",
+                "biome":"Moss forest","shapeLanguage":"Arched timber","materialFinish":"Weathered wood","weathering":"Moss at joints",
+                "technology":"Sensor relay","motifs":["seed pods"],"lighting":"Soft green","scale":"Human scale",
+                "gameplayRole":"Route marker","exclusions":["military insignia"],"visualChecks":["Entry remains visible"],
+                "assumptions":[],"renderingNotes":["Texture is contract metadata"],"referencePreset":"sylvan",
+                "palette":{"shell":"#b4bd92","frame":"#615444","accent":"#ffc577","ground":"#3f614e","rock":"#788475"},
+                "sky":"#b9cdb1","flora":"tree","architecture":"organic"
+            },
+            "limits":{"maxAttempts":2,"timeBudgetMs":400000,"maxProviderCalls":5,"requiredImageHashes":3},
+            "roleModels":{"creator":"gemini-3.8-flash","repair":"gemini-4-argon","reviewer":"gemini-4-argon"}
+        });
+        let output = run(input).unwrap();
+        let pipeline = &output["pipeline"];
+        assert_eq!(pipeline["contract"]["deadlineMs"],401000);
+        assert_eq!(pipeline["contract"]["limits"]["maxProviderCalls"],5);
+        assert_eq!(pipeline["contract"]["roleModels"]["creator"],"gemini-3.8-flash");
+        assert_eq!(pipeline["contract"]["roleModels"]["repair"],"gemini-4-argon");
+        assert_eq!(pipeline["contract"]["roleModels"]["reviewer"],"gemini-4-argon");
+    }
+
+    #[test]
     fn prepare_generation_routes_frozen_feedback_without_credentials_or_network() {
         let input=json!({
             "op":"prepare-generation",
@@ -106,11 +147,24 @@ mod offline_tests {
                 "sceneHalfExtent":10.0,"model":"gemini-test","agent":"test-agent","managed":false
             }
         });
+        let mut input=input;
+        use base64::Engine as _;
+        let reference_bytes=b"\x89PNG\r\n\x1a\nreference";
+        let reference=base64::engine::general_purpose::STANDARD.encode(reference_bytes);
+        input["request"]["referenceImages"]=json!([{"mimeType":"image/png","data":reference}]);
+        input["request"]["referenceConsent"]=json!(true);
+        input["request"]["referenceSha256"]=json!(living_world_core::pipeline::sha256(reference_bytes));
+        input["request"]["referenceMimeType"]=json!("image/png");
         let prepared=run(input).unwrap();
         assert!(prepared["endpoint"].as_str().unwrap().ends_with("/models/gemini-test:generateContent"));
         let prompt=prepared["body"]["contents"][0]["parts"][0]["text"].as_str().unwrap();
         assert!(prompt.contains("Make the arch unmistakable"));
         assert!(prompt.contains("halfExtent of 10 metres"));
+        assert_eq!(prepared["body"]["contents"][0]["parts"][1]["inlineData"]["mimeType"],"image/png");
+        assert_eq!(prepared["body"]["contents"][0]["parts"][1]["inlineData"]["data"],"[redacted]");
+        assert_eq!(prepared["referenceImages"][0]["mimeType"],"image/png");
+        assert_eq!(prepared["referenceImages"][0]["sha256"],living_world_core::pipeline::sha256(reference_bytes));
+        assert_eq!(prepared["referenceImages"][0]["consent"],true);
         assert!(prepared["body"].get("key").is_none());
     }
 }

@@ -126,7 +126,7 @@ async function providerCall(job,label,input){
   try{
     const result=await rustAsync(input,controllers.get(job.id)?.signal,input.op==='generate'&&input.request.managed?330000:120000);
     if(result.providerError){
-      const received=JSON.parse(JSON.stringify(result.providerError.response).replaceAll(apiKey||'__no_key__','[redacted]'));
+      const received=redactReference(job,JSON.parse(JSON.stringify(result.providerError.response).replaceAll(apiKey||'__no_key__','[redacted]')));
       const usage=received?.usageMetadata||received?.usage||received?.usage_metadata||null;
       job.providerResponses.push({kind:'provider-error',response:received,usage});
       job.interactionId=received?.id||job.interactionId;job.environmentId=received?.environment_id||job.environmentId;
@@ -138,6 +138,28 @@ async function providerCall(job,label,input){
   }catch(error){if(entry.status!=='returned_error'){spending.unknown(spendId);entry.status='failed_or_unknown';}job.spending=spending.summary();save(job);throw error;}
 }
 function reviewFindings(value){return typeof value==='string'?value.trim():String(value||'').trim();}
+function referenceInput(input){
+  const images=input.referenceImages??[];
+  if(!Array.isArray(images)||images.length>1)throw new Error('At most one reference image is supported.');
+  if(!images.length){if(input.referenceConsent===true)throw new Error('Select a reference image before consenting.');return {images:[],reference:null};}
+  if(input.referenceConsent!==true)throw new Error('Sending a reference to Google Gemini requires the explicit image consent checkbox.');
+  const image=images[0];
+  if(!image||!['image/png','image/jpeg'].includes(image.mimeType)||typeof image.data!=='string'||image.data.length>2_796_204||!image.data.length||!/^[A-Za-z0-9+/]*={0,2}$/.test(image.data))throw new Error('Reference must be a bounded base64 PNG or JPEG.');
+  const bytes=Buffer.from(image.data,'base64');
+  if(!bytes.length||bytes.length>2*1024*1024||bytes.toString('base64')!==image.data)throw new Error('Reference image is invalid or exceeds 2 MiB.');
+  if(image.mimeType==='image/png'){
+    if(bytes.length<57||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))||bytes.readUInt32BE(8)!==13||bytes.toString('ascii',12,16)!=='IHDR'||!bytes.readUInt32BE(16)||!bytes.readUInt32BE(20))throw new Error('Reference PNG header is invalid.');
+    let offset=8,ended=false,hasData=false;while(offset+12<=bytes.length){const length=bytes.readUInt32BE(offset),type=bytes.toString('ascii',offset+4,offset+8);if(length>bytes.length-offset-12)throw new Error('Reference PNG is truncated.');if(type==='IDAT'&&length>0)hasData=true;offset+=length+12;if(type==='IEND'){ended=length===0&&offset===bytes.length;break;}}
+    if(!ended||!hasData)throw new Error('Reference PNG is incomplete.');
+  }else if(bytes.length<4||bytes[0]!==255||bytes[1]!==216||bytes[2]!==255||bytes.at(-2)!==255||bytes.at(-1)!==217)throw new Error('Reference JPEG signature or end marker is invalid.');
+  return {images:[{mimeType:image.mimeType,data:image.data}],reference:{sha256:createHash('sha256').update(bytes).digest('hex'),mimeType:image.mimeType,bytes:bytes.length,destination:'Google Gemini',consent:true}};
+}
+function redactReference(job,value){let serialized=JSON.stringify(value);for(const image of job.referenceImages||[])serialized=serialized.replaceAll(image.data,'[reference image omitted]');return JSON.parse(serialized);}
+function redactPrepared(value){
+  if(Array.isArray(value))return value.map(redactPrepared);
+  if(value&&typeof value==='object'){const next={};for(const [key,item]of Object.entries(value))next[key]=key==='data'&&typeof item==='string'&&['image/png','image/jpeg'].includes(value.mimeType||value.mime_type)?'[reference image omitted]':redactPrepared(item);return next;}
+  return value;
+}
 function refinementSource(input,theme){
   if(!input.baseJobId)return null;
   const baseJob=jobs.get(input.baseJobId),number=Number(input.baseAttemptNumber),attempt=baseJob?.attempts.find(a=>a.number===number);
@@ -149,7 +171,10 @@ function refinementSource(input,theme){
   if(baseJob.pipeline&&(!record||stableJSON(record.recipe)!==stableJSON(attempt.recipe)))throw new Error('Baseline recipe does not match its Rust candidate record.');
   return {jobId:baseJob.id,number,hash:attempt.hash,recipe:structuredClone(attempt.recipe),images:[...attempt.images],imageHashes:[...attempt.imageHashes],userFeedback:input.userFeedback.trim(),findings:[...attempt.checks.filter(c=>c.status!=='pass').map(c=>`${c.id}: ${c.detail}`),...(attempt.review?.comparison?.defects||[]).map(d=>`View ${d.view}, ${d.location}: ${d.issue}. Repair: ${d.repair}`),...(attempt.review?.comparison?.strengths||[]).map(s=>`Preserve: ${s}`)]};
 }
-function generationRequest(job,previous,findings){return {theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,sceneHalfExtent:job.sceneHalfExtent??job.pipeline?.contract.sceneHalfExtent??null,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),model,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};}
+function generationRequest(job,previous,findings){
+  if(job.pipeline&&stableJSON(job.reference||null)!==stableJSON(job.pipeline.contract.reference||null))throw new Error('The frozen reference image consent or identity changed; create a new job.');
+  return {theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,sceneHalfExtent:job.sceneHalfExtent??job.pipeline?.contract.sceneHalfExtent??null,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),referenceImages:job.referenceImages||[],referenceConsent:job.reference?.consent===true,referenceSha256:job.reference?.sha256||null,referenceMimeType:job.reference?.mimeType||null,model,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};
+}
 async function generate(job,previous,findings){
   if(job.provider==='fixture'){
     const fixtureBase=previous||job.previewRecipe;
@@ -157,10 +182,10 @@ async function generate(job,previous,findings){
     await new Promise(resolve=>setTimeout(resolve,350));ensureCurrent(job);return result.recipe;
   }
   const request=generationRequest(job,previous,findings);
-  job.creatorInputs=job.creatorInputs||[];job.creatorInputs.push({attempt:job.pipeline.attemptCount+1,baselineHash:job.baseline?.hash||null,previousRecipeHash:job.attempts.at(-1)?.hash||job.baseline?.hash||null,userFeedback:request.userFeedback,findings:request.findings,sceneHalfExtent:request.sceneHalfExtent});save(job);
+  job.creatorInputs=job.creatorInputs||[];job.creatorInputs.push({attempt:job.pipeline.attemptCount+1,baselineHash:job.baseline?.hash||null,previousRecipeHash:job.attempts.at(-1)?.hash||job.baseline?.hash||null,userFeedback:request.userFeedback,findings:request.findings,sceneHalfExtent:request.sceneHalfExtent,reference:job.reference||null});save(job);
   const result=await providerCall(job,'Gemini creator',{op:'generate',request});
   job.interactionId=result.interactionId||job.interactionId;job.environmentId=result.environmentId||job.environmentId;
-  job.providerResponses.push({kind:'creator',response:result.response,usage:result.usage||null});save(job);return result.recipe;
+  job.providerResponses.push({kind:'creator',response:redactReference(job,result.response),usage:result.usage||null});save(job);return result.recipe;
 }
 async function getBrowser(){
   if(!browser){
@@ -325,16 +350,17 @@ const server=http.createServer(async(req,res)=>{
     const url=new URL(req.url,base), pathname=decodeURIComponent(url.pathname);
     if(req.method==='POST'){
       if(req.headers.origin && ![base,`http://localhost:${port}`].includes(req.headers.origin))return json(res,403,{error:'Origin rejected'});
-      const input=await body(req,pathname==='/api/render-task'?8_000_000:50000);
+      const input=await body(req,pathname==='/api/render-task'?8_000_000:['/api/jobs','/api/refinement-preview'].includes(pathname)?3_000_000:50000);
       if(pathname==='/api/refinement-preview'){
+        const reference=referenceInput(input);
         const theme=validateTheme(structuredClone(input.theme)),baseline=refinementSource(input,theme);
         if(!baseline)throw new Error('Choose a saved baseline version before previewing a refinement.');
         if(input.provider==='fixture')return json(res,200,{summary:'Offline fixtures do not use artistic feedback. Select Gemini managed agent to inspect the real refinement request; this preview makes no API call.',request:{provider:'fixture',baseCandidateHash:baseline.hash,userFeedback:baseline.userFeedback,referenceImages:'local only; not included'}});
         if(!['managed','gemini'].includes(input.provider))throw new Error('Select a generation engine.');
         const sceneHalfExtent=Number(input.sceneHalfExtent??Math.max(12,baseline.recipe.scene?.halfExtent||4));
-        const request=generationRequest({theme,prompt:input.prompt||jobs.get(baseline.jobId).prompt,provider:input.provider,userFeedback:baseline.userFeedback,sceneHalfExtent},baseline.recipe,baseline.findings);
-        const prepared=rustSync({op:'prepare-generation',request});
-        return json(res,200,{summary:'Prepared locally only: the selected baseline recipe, your feedback, critic targets and frozen scene extent reach the creator request. No API call or reference-image transmission occurred.',request:{baseJobId:baseline.jobId,baseAttemptNumber:baseline.number,baseCandidateHash:baseline.hash,userFeedback:baseline.userFeedback,sceneHalfExtent,referenceImages:'local only; omitted',...prepared}});
+        const request=generationRequest({theme,prompt:input.prompt||jobs.get(baseline.jobId).prompt,provider:input.provider,userFeedback:baseline.userFeedback,sceneHalfExtent,reference:reference.reference,referenceImages:reference.images},baseline.recipe,baseline.findings);
+        const prepared=redactPrepared(rustSync({op:'prepare-generation',request}));
+        return json(res,200,{summary:'Prepared locally only: the selected baseline recipe, your feedback, critic targets and frozen scene extent reach the creator request. No API call or reference-image transmission occurred.',request:{baseJobId:baseline.jobId,baseAttemptNumber:baseline.number,baseCandidateHash:baseline.hash,userFeedback:baseline.userFeedback,sceneHalfExtent,reference:reference.reference,...prepared}});
       }
       if(pathname==='/api/themes/resolve'){
         if(!themeInferenceEnabled)return json(res,403,{error:'Live theme inference is prepared but disabled pending an operator-approved spending ceiling. Use the editable contract or labeled local draft.'});
@@ -361,6 +387,8 @@ const server=http.createServer(async(req,res)=>{
       }
       if(pathname==='/api/jobs'){
         if([...jobs.values()].some(j=>!['accepted','active','failed','blocked','cancelled','exhausted'].includes(j.status)))return json(res,409,{error:'A run is already in progress. Cancel it first.'});
+        const reference=referenceInput(input);
+        if(reference.images.length&&input.provider==='fixture')throw new Error('Reference images require a Gemini engine; clear the image to run an offline fixture.');
         const theme=validateTheme(structuredClone(input.theme||THEMES[input.themeId]));
         if((input.themeId&&input.themeId!==theme.id)||!['fixture','gemini','managed'].includes(input.provider)||typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)return json(res,400,{error:'Provide a matching theme contract, provider, and 5–3000 character prompt.'});
         if(input.provider!=='fixture'&&!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY in .env and restart the server. Offline rehearsal is available now.'});
@@ -369,9 +397,10 @@ const server=http.createServer(async(req,res)=>{
         const sceneHalfExtent=input.provider==='fixture'?(input.previewRecipe?.scene?.halfExtent??null):Number(input.sceneHalfExtent??Math.max(12,baseSource?.recipe.scene?.halfExtent||4));
         if(sceneHalfExtent!==null&&(!Number.isFinite(sceneHalfExtent)||sceneHalfExtent<4||sceneHalfExtent>16))throw new Error('Scene half extent must be 4–16 metres.');
         const now=Math.max(Date.now(),lastPipelineTime+1);lastPipelineTime=now;
-        const createInput={op:'create',theme,prompt:input.prompt,now,...(sceneHalfExtent!==null?{sceneHalfExtent}:{}),provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}};
+        const createInput={op:'create',theme,prompt:input.prompt,now,...(reference.reference?{reference:reference.reference}:{}),...(sceneHalfExtent!==null?{sceneHalfExtent}:{}),provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}};
         const pipeline=rustSync(createInput).pipeline;
-        const job={id:pipeline.contract.jobId,pipeline,createInput,sceneHalfExtent,baseJobId:baseSource?.jobId||null,baseAttemptNumber:baseSource?.number||null,baseCandidateHash:baseSource?.hash||null,userFeedback:baseSource?.userFeedback||null,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:baseSource?'preparing':'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
+        const job={id:pipeline.contract.jobId,pipeline,createInput,sceneHalfExtent,reference:reference.reference,baseJobId:baseSource?.jobId||null,baseAttemptNumber:baseSource?.number||null,baseCandidateHash:baseSource?.hash||null,userFeedback:baseSource?.userFeedback||null,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:baseSource?'preparing':'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
+        Object.defineProperty(job,'referenceImages',{value:reference.images,enumerable:false});
         if(input.previewRecipe){if(input.provider!=='fixture')throw new Error('Authored recipe previews are offline only.');rustChecks(input.previewRecipe,theme.id,theme);job.previewRecipe=structuredClone(input.previewRecipe);job.previewKind='authored_scene';job.sceneHalfExtent=input.previewRecipe.scene?.halfExtent||4;}
         jobs.set(job.id,job);controllers.set(job.id,new AbortController());event(job,job.status,baseSource?'Preparing matched baseline evidence; no generation dispatched yet.':'Brief and theme contract frozen. Job limit: three candidates, six paid calls, twenty minutes.');
         json(res,201,job);void prepareAndRun(job,baseSource);return;
