@@ -19,6 +19,9 @@ const validId=id=>typeof id==='string'&&ID.test(id)&&!['__proto__','constructor'
 const positive=value=>Number.isSafeInteger(value)&&value>=1;
 const bounded=(value,min,max)=>typeof value==='string'&&value.trim().length>=min&&value.length<=max;
 const defaultFaction=()=>({id:'landing',name:'Landing',artDirection:'A coherent ivory ceramic robot settlement on a sunlit mineral coast.',revision:1,theme:structuredClone(THEMES.argonaut)});
+const validArea=area=>!!area&&['minX','maxX','minZ','maxZ'].every(k=>typeof area[k]==='number'&&Number.isFinite(area[k])&&Math.abs(area[k])<=1e6)&&area.minX<area.maxX&&area.minZ<area.maxZ;
+const inArea=(area,x,z)=>x>=area.minX&&x<=area.maxX&&z>=area.minZ&&z<=area.maxZ;
+export function factionAt(w,x,z){return w.factions.filter(f=>f.area&&inArea(f.area,x,z)).reduce((latest,f)=>!latest||f.area.order>latest.area.order?f:latest,null);}
 function factionFor(w,id='landing'){const faction=w.factions.find(f=>f.id===id);if(!faction)throw Error('Unknown visual faction.');return faction;}
 function targetBuildings(w,ids,{empty=false}={}){
  if(!Array.isArray(ids)||(!empty&&!ids.length)||ids.length>100||ids.some(id=>!validId(id))||new Set(ids).size!==ids.length)throw Error('Choose 1–100 unique existing building IDs.');
@@ -43,26 +46,29 @@ export function creationRequest(input,world){
  const target=existing??{id:targetId,kind:'creation',factionId:faction.id,factionAssignment:1};
  return requestFor(world,faction,[target],'creation-'+input.id,input.provider,input.prompt.trim());
 }
-export function queueFactionUpdates(w,factionId,buildingIds,operationId){
+export function queueFactionUpdates(w,factionId,buildingIds,operationId,{reuseDesign=false}={}){
  if(!validId(operationId))throw Error('A stable operation ID is required.');
  const faction=factionFor(w,factionId),buildings=targetBuildings(w,buildingIds,{empty:true});
  if(buildings.some(b=>b.factionId!==faction.id||!positive(b.factionAssignment)))throw Error('Building faction assignment changed.');
  const groups=new Map();for(const b of buildings){const key=b.kind==='creation'?b.id:b.kind;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(b);}
- const requests=[...groups.values()].map((members,index)=>{
+ const retained=[];const requests=[...groups.values()].map((members,index)=>{
+  if(reuseDesign&&members[0].kind==='creation'){const b=members[0],existing=w.foundry.requests.findLast(r=>r.kind==='creation'&&r.factionId===faction.id&&r.factionRevision===faction.revision&&r.status!=='cancelled'&&r.targets?.some(t=>t.id===b.id&&t.assignment===b.factionAssignment));if(existing){retained.push(existing);return null;}}
   if(members[0].kind==='creation'&&!bounded(members[0].prompt,5,2000))throw Error('Creation subject is missing or damaged.');
-  return requestFor(w,faction,members,`faction-${operationId}-${index+1}`,w.foundry.mode,members[0].kind==='creation'?members[0].prompt:undefined);
- });
+  const request=requestFor(w,faction,members,`faction-${operationId}-${index+1}`,w.foundry.mode,members[0].kind==='creation'?members[0].prompt:undefined);
+  if(reuseDesign&&request.kind!=='creation')request.preferExistingDesign=true;return request;
+ }).filter(Boolean);
  const duplicates=requests.filter(r=>w.foundry.requests.some(old=>old.id===r.id));
  if(duplicates.length){
-  if(duplicates.length!==requests.length||requests.some(r=>{const old=w.foundry.requests.find(o=>o.id===r.id);return old.prompt!==r.prompt||JSON.stringify(old.targets)!==JSON.stringify(r.targets)||old.provider!==r.provider;}))throw Error('Faction request ID reused with different data.');
-  return requests.map(r=>w.foundry.requests.find(old=>old.id===r.id));
+  if(duplicates.length!==requests.length||requests.some(r=>{const old=w.foundry.requests.find(o=>o.id===r.id);return old.prompt!==r.prompt||JSON.stringify(old.targets)!==JSON.stringify(r.targets)||old.provider!==r.provider||!!old.preferExistingDesign!==!!r.preferExistingDesign;}))throw Error('Faction request ID reused with different data.');
+  return [...requests.map(r=>w.foundry.requests.find(old=>old.id===r.id)),...retained];
  }
  const targets=new Set(buildings.map(b=>b.id));
  for(const old of w.foundry.requests){
   const overlap=old.targets?.some(t=>targets.has(t.id))||(old.targetId?targets.has(old.targetId):!old.targets&&buildings.some(b=>b.kind===old.kind));
-  if(activeRequests.has(old.status)&&(overlap||old.factionId===faction.id&&old.factionRevision!==faction.revision)){old.status='cancelled';old.reason=`Superseded by faction update ${operationId}.`;}
+  const currentFamily=reuseDesign&&old.factionId===faction.id&&old.factionRevision===faction.revision;
+  if(!currentFamily&&activeRequests.has(old.status)&&(overlap||old.factionId===faction.id&&old.factionRevision!==faction.revision)){old.status='cancelled';old.reason=`Superseded by faction update ${operationId}.`;}
  }
- w.foundry.requests.push(...requests);for(const b of buildings)if(b.kind==='creation')b.creationStatus='queued';return requests;
+ w.foundry.requests.push(...requests);for(const r of requests)if(r.kind==='creation')w.buildings.find(b=>b.id===r.targetId).creationStatus='queued';return [...requests,...retained];
 }
 export function assetForBuilding(world,building){return world.schemaVersion>=2?building.asset:(building.asset??world.assets?.[building.kind]);}
 export function createWorld(){return {schemaVersion:2,id:'colony-'+globalThis.crypto.randomUUID(),revision:0,time:0,paused:false,alloy:200,robot:{x:0,z:18,path:[]},factions:[defaultFaction()],buildings:[{id:'landing-core',kind:'core',x:0,z:8,progress:1,created:0,factionId:'landing',factionAssignment:1}],deposits:[{id:'west-seam',x:-18,z:8,remaining:600},{id:'east-seam',x:26,z:-4,remaining:900},{id:'north-seam',x:-26,z:32,remaining:1200}],assets:{},assetHistory:[],receipts:{},events:[{time:0,text:'Touchdown. Build a solar array, then extract alloy from a mineral seam.'}],foundry:{enabled:false,mode:'fixture',round:1,requests:[],error:null}};}
@@ -102,17 +108,19 @@ export function command(w,input){
  const signature=JSON.stringify(Object.fromEntries(Object.keys(input).sort().map(k=>[k,input[k]])));if(Object.hasOwn(w.receipts,input.id)){if(w.receipts[input.id].signature!==signature)throw Error('Operation ID reused with different data.');return structuredClone(w.receipts[input.id].result);}
  if(Object.keys(w.receipts).length>=4096)throw Error('Command history is full; export this colony before starting a new one.');
  let result={ok:true,id:input.id};
- const creation=input.type==='build'&&input.kind==='creation'?creationRequest(input,w):null;
  if(input.type==='prospect'){
  if(w.alloy<DEFINITIONS.extractor.cost)throw Error('Need 60 alloy to place a mineral extractor.');
  const candidate=structuredClone(w),deposit=mineralCandidates(w).find(d=>d.remaining>0&&canBuild({...w,deposits:[...w.deposits,d]},'extractor',d.x,d.z).ok);if(!deposit)throw Error('No accessible mineral seam nearby. Move your robot to another area.');
  if(!candidate.deposits.some(d=>d.id===deposit.id))candidate.deposits.push(deposit);result=command(candidate,{id:input.id,type:'build',kind:'extractor',x:deposit.x,z:deposit.z,...(input.factionId!==undefined?{factionId:input.factionId}:{})});Object.assign(w,candidate);
  }else if(input.type==='build'){
  if(w.buildings.some(b=>b.id===input.id))throw Error('Building identity already exists.');
- const faction=factionFor(w,input.factionId??'landing');
  const site=canBuild(w,input.kind,input.x,input.z);if(!site.ok)throw Error(site.reason);
+ const areaFaction=factionAt(w,site.x,site.z),faction=areaFaction??factionFor(w,input.factionId??'landing');
+ const creation=input.kind==='creation'?creationRequest({...input,targetId:undefined,factionAssignment:undefined,factionId:faction.id},w):null;
+ const b={id:input.id,kind:input.kind,x:site.x,z:site.z,progress:0,created:w.time,factionId:faction.id,factionAssignment:1,...(input.kind==='extractor'?{depositId:site.depositId}:{})};
+ const inheritance=!creation&&(areaFaction||input.factionId!==undefined)?{...requestFor(w,faction,[b],'building-'+input.id,w.foundry.mode),preferExistingDesign:true}:null;
  if(input.kind==='extractor'&&!w.deposits.some(p=>p.id===site.depositId))w.deposits.push({...site.deposit});
- w.alloy-=DEFINITIONS[input.kind].cost;const b={id:input.id,kind:input.kind,x:site.x,z:site.z,progress:0,created:w.time,factionId:faction.id,factionAssignment:1,...(input.kind==='extractor'?{depositId:site.depositId}:{})};if(creation){b.prompt=creation.userPrompt;b.name=creation.userPrompt.slice(0,70);b.creationStatus='queued';w.foundry.requests.push(creation);}w.buildings.push(b);result.buildingId=b.id;event(w,`${DEFINITIONS[b.kind].name} construction started.`);
+ w.alloy-=DEFINITIONS[input.kind].cost;if(creation){b.prompt=creation.userPrompt;b.name=creation.userPrompt.slice(0,70);b.creationStatus='queued';w.foundry.requests.push(creation);}if(inheritance)w.foundry.requests.push(inheritance);w.buildings.push(b);result.buildingId=b.id;result.factionId=faction.id;result.requestIds=[creation,inheritance].filter(Boolean).map(r=>r.id);event(w,`${DEFINITIONS[b.kind].name} construction started.`);
  // Recalculate the remaining route when a new foundation crosses it.
  if(w.robot.path.length){const destination=w.robot.path.at(-1);w.robot.path=findPath(w,w.robot,destination)||[];}
  }else if(input.type==='faction-create'){
@@ -121,13 +129,23 @@ export function command(w,input){
  if(!bounded(input.artDirection,5,2000))throw Error('Faction art direction must contain 5–2000 characters.');
  w.factions.push({id:input.factionId,name:input.name.trim(),artDirection:input.artDirection.trim(),revision:1,theme:null});result.factionId=input.factionId;
  }else if(input.type==='faction-assign'){
- const faction=factionFor(w,input.factionId),buildings=targetBuildings(w,input.buildingIds);
+ const faction=factionFor(w,input.factionId);
+ if(input.reuseDesign!==undefined&&typeof input.reuseDesign!=='boolean')throw Error('Reuse design must be true or false.');
+ let area,buildings;
+ if(input.area!==undefined){
+  if(!validArea(input.area))throw Error('Choose finite faction area bounds with positive width and depth.');
+  const order=Math.max(0,...w.factions.map(f=>f.area?.order??0))+1;if(!positive(order))throw Error('Faction area order is exhausted.');
+  const {minX,maxX,minZ,maxZ}=input.area;area={minX,maxX,minZ,maxZ,order};buildings=w.buildings.filter(b=>inArea(area,b.x,b.z));
+  if(input.buildingIds!==undefined){const supplied=targetBuildings(w,input.buildingIds,{empty:true});if(supplied.length!==buildings.length||supplied.some(b=>!buildings.includes(b)))throw Error('Selected buildings changed; select the faction area again.');}
+ }else buildings=targetBuildings(w,input.buildingIds);
+ const buildingIds=buildings.map(b=>b.id);
  if(buildings.some(b=>!positive(b.factionAssignment)||b.factionId!==faction.id&&!Number.isSafeInteger(b.factionAssignment+1)))throw Error('Faction assignment counter is exhausted.');
  // Plan all requests on a copy so failed scope or prompt validation mutates nothing.
- const candidate=structuredClone(w);for(const b of candidate.buildings.filter(b=>input.buildingIds.includes(b.id)))if(b.factionId!==faction.id){b.factionId=faction.id;b.factionAssignment++;}
- const requests=queueFactionUpdates(candidate,faction.id,input.buildingIds,input.id);
+ const candidate=structuredClone(w);for(const b of candidate.buildings.filter(b=>buildingIds.includes(b.id)))if(b.factionId!==faction.id){b.factionId=faction.id;b.factionAssignment++;}
+ if(area)factionFor(candidate,faction.id).area=area;
+ const requests=queueFactionUpdates(candidate,faction.id,buildingIds,input.id,{reuseDesign:input.reuseDesign===true});
  for(const b of buildings){const next=candidate.buildings.find(n=>n.id===b.id);b.factionId=next.factionId;b.factionAssignment=next.factionAssignment;if(b.kind==='creation')b.creationStatus=next.creationStatus;}
- commitRequests(w,candidate);result.factionId=faction.id;result.requestIds=requests.map(r=>r.id);
+ if(area)faction.area=area;commitRequests(w,candidate);result.factionId=faction.id;result.requestIds=requests.map(r=>r.id);
  }else if(input.type==='faction-style'){
  const faction=factionFor(w,input.factionId);
  if(!bounded(input.artDirection,5,2000))throw Error('Faction art direction must contain 5–2000 characters.');
@@ -165,6 +183,7 @@ export function validateWorld(w){
  if(!Array.isArray(candidate.factions)||!candidate.factions.length)damaged();
  const factions=new Set();for(const f of candidate.factions){
   if(!f||!validId(f.id)||factions.has(f.id)||!bounded(f.name,1,100)||!bounded(f.artDirection,5,2000)||!positive(f.revision)||f.theme===undefined)damaged();
+  if(f.area!==undefined&&(!validArea(f.area)||!positive(f.area.order)))damaged();
   if(f.theme!==null)validateTheme(f.theme);factions.add(f.id);
  }
  if(!factions.has('landing'))damaged();

@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createWorld,command,creationRequest,assetForBuilding,validateWorld,publicState} from '../model.mjs';
+import {createWorld,command,creationRequest,assetForBuilding,validateWorld,publicState,factionAt} from '../model.mjs';
 import {openStore} from '../store.mjs';
 
 const create=(w,id='orchid')=>command(w,{id:'create-'+id,type:'faction-create',factionId:id,name:id,artDirection:'Layered orchid petal roofs with copper ribs and purple glass.'});
-const build=(w,id,x,factionId='landing')=>command(w,{id,type:'build',kind:'solar',x,z:8,factionId});
+const build=(w,id,x,factionId)=>command(w,{id,type:'build',kind:'solar',x,z:8,...(factionId===undefined?{}:{factionId})});
 const assign=(w,id,factionId,buildingIds)=>command(w,{id,type:'faction-assign',factionId,buildingIds});
 
 test('v1 migration pins inherited appearances before removing global fallback',()=>{
@@ -84,4 +84,53 @@ test('public history exposes rollback evidence and scoped targets without prior 
  assert.equal(entry.jobId,'job-current');assert.equal(entry.rolledBackAt,20);assert.deepEqual(entry.rollbackTargets,['landing-core']);
  assert.deepEqual(entry.previousByTarget,[{id:'landing-core',assignment:1}]);assert.equal(JSON.stringify(entry).includes('large historical recipe'),false);
  assert.equal(w.assetHistory[0].previousByTarget[0].asset.hash,'old-hash');
+});
+
+
+const saveArea=(w,id,factionId,area,extra={})=>command(w,{id,type:'faction-assign',factionId,area,reuseDesign:true,...extra});
+const eastArea={minX:6,maxX:30,minZ:0,maxZ:16};
+
+test('saved area authoritatively assigns inhabitants and latest overlapping area wins',()=>{
+ const w=createWorld();build(w,'solar-a',12);build(w,'solar-b',24);create(w);create(w,'cobalt');
+ saveArea(w,'east','orchid',eastArea,{buildingIds:['solar-b','solar-a']});
+ assert.equal(factionAt(w,12,8).id,'orchid');assert.equal(factionAt(w,0,8),null);assert.equal(w.buildings[1].factionId,'orchid');
+ assert.equal(w.foundry.requests.at(-1).preferExistingDesign,true);
+ saveArea(w,'overlap','cobalt',{minX:20,maxX:40,minZ:0,maxZ:16});
+ assert.equal(factionAt(w,24,8).id,'cobalt');assert.equal(factionAt(w,12,8).id,'orchid');assert.equal(w.buildings[2].factionId,'cobalt');
+ assert.ok(w.factions.find(f=>f.id==='cobalt').area.order>w.factions.find(f=>f.id==='orchid').area.order);
+ const before=structuredClone(w);assert.throws(()=>saveArea(w,'wrong','orchid',eastArea,{buildingIds:['solar-a']}),/changed/);assert.deepEqual(w,before);
+});
+
+test('new area building queues inheritance while existing in-flight work keeps its frozen targets',()=>{
+ const w=createWorld();create(w);saveArea(w,'east','orchid',eastArea);const result=build(w,'solar-a',12,'landing');
+ assert.equal(result.factionId,'orchid');const first=w.foundry.requests[0];first.status='running';first.jobId='active-job';const snapshot=structuredClone(first);
+ const next=build(w,'solar-b',24,'landing');assert.equal(next.factionId,'orchid');assert.deepEqual(first,snapshot);assert.equal(w.foundry.requests.length,2);
+ assert.equal(w.foundry.requests[1].preferExistingDesign,true);assert.deepEqual(w.foundry.requests[1].targets,[{id:'solar-b',assignment:1}]);assert.equal(w.alloy,130);
+ build(w,'solar-b',24,'landing');assert.equal(w.foundry.requests.length,2);assert.equal(w.alloy,130);
+ saveArea(w,'east-again','orchid',eastArea);assert.equal(first.status,'running');assert.deepEqual(first.targets,[{id:'solar-a',assignment:1}]);
+ command(w,{id:'new-style',type:'faction-style',factionId:'orchid',artDirection:'Tall folded brass blades with slate glass seams.'});
+ const latest=w.foundry.requests.at(-1);assert.deepEqual(latest.targets.map(t=>t.id),['solar-a','solar-b']);assert.equal(latest.preferExistingDesign,undefined);assert.equal(latest.factionRevision,2);assert.equal(first.status,'cancelled');
+});
+
+test('default outside-area builds remain unpaid while explicit faction builds request verified inheritance',()=>{
+ const w=createWorld();build(w,'outside',12);assert.equal(w.foundry.requests.length,0);create(w);build(w,'explicit',24,'orchid');
+ assert.equal(w.foundry.requests.length,1);assert.equal(w.foundry.requests[0].preferExistingDesign,true);assert.deepEqual(w.foundry.requests[0].targets,[{id:'explicit',assignment:1}]);
+});
+
+test('creations resolve area membership and retain their subject without duplicate active work',()=>{
+ const w=createWorld();create(w);saveArea(w,'east','orchid',eastArea);
+ command(w,{id:'custom',type:'build',kind:'creation',x:12,z:8,factionId:'landing',prompt:'A flower-shaped observatory with an open telescope',provider:'fixture'});
+ const initial=w.foundry.requests[0];initial.status='running';assert.equal(initial.factionId,'orchid');assert.equal(initial.preferExistingDesign,undefined);
+ const result=saveArea(w,'east-again','orchid',eastArea);assert.deepEqual(result.requestIds,[initial.id]);assert.equal(w.foundry.requests.length,1);assert.equal(initial.status,'running');
+});
+
+test('empty saved areas survive reopen and reject malformed bounds without mutation',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'faction-area-'));let store;
+ try{
+  store=openStore(dir);const w=store.world;create(w);const input={id:'empty-region',type:'faction-assign',factionId:'orchid',area:eastArea,reuseDesign:true,buildingIds:[]};
+  command(w,input);const expected=structuredClone(w);command(w,input);assert.deepEqual(w,expected);assert.equal(w.foundry.requests.length,0);
+  for(const area of [{...eastArea,minX:NaN},{...eastArea,maxX:1e6+1},{...eastArea,maxX:6},{...eastArea,minZ:'0'}])assert.throws(()=>saveArea(w,'bad','orchid',area),/bounds/);
+  assert.deepEqual(w,expected);store.close();store=openStore(dir);assert.deepEqual(store.world,expected);assert.equal(factionAt(store.world,12,8).id,'orchid');
+  const broken=structuredClone(store.world);broken.factions[1].area.order=0;assert.throws(()=>validateWorld(broken),/damaged/);
+ }finally{store?.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
