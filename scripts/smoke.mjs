@@ -27,6 +27,7 @@ async function createFixtureJob(themeId, injectDefect) {
   });
   if (response.status === 409) {
     console.log('SKIP: a run is already in progress; leaving the existing job untouched.');
+    process.exitCode = 2;
     return null;
   }
   assert.equal(response.status, 201, `Job creation failed (${response.status}): ${value.error || JSON.stringify(value)}`);
@@ -91,13 +92,21 @@ async function main() {
 
   const cancelCreated = await createFixtureJob('ember', true);
   if (!cancelCreated) return;
+  const activeBeforeCancel = await request('/api/release');
+  assert.equal(activeBeforeCancel.response.status, 200);
   const cancelled = await request(`/api/jobs/${cancelCreated.id}/cancel`, {method: 'POST', body: {}});
   assert.equal(cancelled.response.status, 200, `Immediate cancellation failed: ${JSON.stringify(cancelled.value)}`);
+  await sleep(500);
   const afterCancel = await request(`/api/jobs/${cancelCreated.id}`);
   assert.equal(afterCancel.response.status, 200);
   assert.equal(afterCancel.value.status, 'cancelled', `Cancelled job ended as ${afterCancel.value.status}`);
   assert.notEqual(afterCancel.value.status, 'accepted', 'Cancelled job must not become accepted');
   assert.equal(afterCancel.value.cancelled, true, 'Cancellation flag must remain set');
+  const cancelledActivation = await request(`/api/jobs/${cancelCreated.id}/activate`, {method: 'POST', body: {}});
+  assert.equal(cancelledActivation.response.status, 409, 'Cancelled job must remain ineligible for activation');
+  const activeAfterCancel = await request('/api/release');
+  assert.equal(activeAfterCancel.response.status, 200);
+  assert.equal(activeAfterCancel.value?.hash, activeBeforeCancel.value?.hash, 'Cancelled work must leave the active release unchanged');
   console.log('PASS: immediate cancellation left the third job cancelled and ineligible for activation.');
   console.log('All offline rehearsal smoke checks passed.');
 }
