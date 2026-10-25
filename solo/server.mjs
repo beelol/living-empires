@@ -35,7 +35,7 @@ export async function createApp({port=Number(process.env.SOLO_PORT||4320),dataDi
  else if(input.action==='regenerate'){
  const building=w.buildings.find(b=>b.id===input.targetId&&b.kind==='creation');if(!building)throw Error('Unknown prompt creation.');
  if(w.foundry.requests.some(r=>r.targetId===building.id&&['queued','preparing-theme','dispatching','running','unknown'].includes(r.status)))throw Error('This creation already has pending work.');
- const request=creationRequest({id:randomUUID(),targetId:building.id,factionId:building.factionId,factionAssignment:building.factionAssignment,prompt:building.prompt,provider:'gemini'},w);request.replacesRequestId=w.foundry.requests.findLast(r=>r.targetId===building.id)?.id;request.revisionReason='User-authorized regeneration after contract repair; prior outcomes retained.';w.foundry.requests.push(request);building.creationStatus='queued';
+ const request=creationRequest({id:randomUUID(),targetId:building.id,factionId:building.factionId,factionAssignment:building.factionAssignment,prompt:building.prompt,provider:'gemini'},w);request.replacesRequestId=w.foundry.requests.findLast(r=>r.targetId===building.id)?.id;request.revisionReason='User-authorized regeneration after contract repair; prior outcomes retained.';w.foundry.requests.push(request);if(request.drivesFactionDirection)w.factions.find(f=>f.id===building.factionId).designIntentId=request.id;building.creationStatus='queued';
  }
  else if(input.action==='reconcile'){
  const request=w.foundry.requests.find(r=>r.id===input.requestId);if(!request||request.status!=='unknown'||request.jobId)throw Error('Only an unknown dispatch without a receipt can be reconciled.');
