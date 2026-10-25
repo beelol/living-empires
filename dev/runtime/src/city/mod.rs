@@ -1,5 +1,6 @@
 //! Bounded city layout proposals; only the caller's authority check grants a site.
 //! No inventory, world persistence, scheduling or asset approval lives here.
+pub mod source;
 use anyhow::{ensure, Context, Result};
 use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,7 @@ use std::{
     },
 };
 
-const DEFAULT_POLICY: &str = include_str!("layout.lua");
+const DEFAULT_POLICY: &str = include_str!("../../../content/city_layout.lua");
 const MAX_ATTEMPTS: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +99,26 @@ impl CityPlanner {
             active: Policy::load(DEFAULT_POLICY)?,
             staged: None,
         })
+    }
+
+    pub fn active_policy_version(&self) -> &str {
+        &self.active.version
+    }
+
+    /// Promote only at an authority tick, including while no build is requested.
+    /// Validation exercises all species/founding branches without world effects.
+    pub fn activate_staged(&mut self, request: &LayoutRequest) -> Result<bool> {
+        ensure!(
+            request.faction_id == self.faction_id,
+            "city planner belongs to another faction"
+        );
+        validate(request)?;
+        let Some(policy) = self.staged.take() else {
+            return Ok(false);
+        };
+        policy.checked_offsets(request)?;
+        self.active = policy;
+        Ok(true)
     }
 
     /// The host reads a changed file and stages it; the next proposal boundary

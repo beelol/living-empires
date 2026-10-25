@@ -284,3 +284,72 @@ fn lua_finalizer_probe() {
     let mut planner = CityPlanner::new("test-empire").unwrap();
     assert!(planner.stage_policy("local x=setmetatable({}, {__gc=function() while true do end end}); return {schema_version=1,offsets=function() return {{0,0}} end}").is_err());
 }
+
+use city::source;
+
+// Detecting changes by timestamp alone can miss an atomic same-size replacement.
+#[test]
+fn one_policy_file_stages_content_changes_once_and_preserves_planner_last_good() {
+    use source::PolicyFile;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("city_layout.lua");
+    let valid="return {schema_version=1, offsets=function(_,f) if f then return {{28,0}} else return {{0,0}} end end}";
+    std::fs::write(&path, valid).unwrap();
+    let mut file = PolicyFile::new(&path);
+    let candidate = file.poll().unwrap().expect("first source stages");
+    assert_eq!(candidate.source, valid);
+    assert_eq!(candidate.sha256.len(), 64);
+    assert!(file.poll().unwrap().is_none());
+    let mut planner = CityPlanner::new("test-empire").unwrap();
+    planner.stage_policy(&candidate.source).unwrap();
+    let good = planner
+        .propose(&request(Species::Robot), Ok::<_, anyhow::Error>)
+        .unwrap();
+    assert_eq!(good.site.unwrap().center, [1528., 1500.]);
+    let replacement = dir.path().join("next.lua");
+    std::fs::write(&replacement, "invalid lua").unwrap();
+    std::fs::rename(&replacement, &path).unwrap();
+    let bad = file.poll().unwrap().unwrap();
+    assert!(planner.stage_policy(&bad.source).is_err());
+    assert!(file.poll().unwrap().is_none());
+    let retained = planner
+        .propose(&request(Species::Robot), Ok::<_, anyhow::Error>)
+        .unwrap();
+    assert_eq!(retained.policy_version, good.policy_version);
+    assert_eq!(retained.site.unwrap().center, [1528., 1500.]);
+}
+
+// File transport must bound reads before letting the Lua validator inspect text.
+#[test]
+fn policy_source_rejects_oversized_non_utf8_and_missing_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("city_layout.lua");
+    let mut file = source::PolicyFile::new(&path);
+    assert!(file.poll().is_err());
+    std::fs::write(&path, vec![b'x'; 65537]).unwrap();
+    assert!(file.poll().is_err());
+    std::fs::write(&path, [255, 254]).unwrap();
+    assert!(file.poll().is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn policy_source_does_not_follow_symlinks_or_wait_on_named_pipes() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target.lua");
+    let path = dir.path().join("city_layout.lua");
+    std::fs::write(&target, "return {}").unwrap();
+    symlink(&target, &path).unwrap();
+    let mut file = source::PolicyFile::new(&path);
+    assert!(file.poll().is_err());
+    std::fs::remove_file(&path).unwrap();
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
+    let started = std::time::Instant::now();
+    assert!(file.poll().is_err());
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+}
