@@ -138,12 +138,26 @@ async function providerCall(job,label,input){
   }catch(error){if(entry.status!=='returned_error'){spending.unknown(spendId);entry.status='failed_or_unknown';}job.spending=spending.summary();save(job);throw error;}
 }
 function reviewFindings(value){return typeof value==='string'?value.trim():String(value||'').trim();}
+function refinementSource(input,theme){
+  if(!input.baseJobId)return null;
+  const baseJob=jobs.get(input.baseJobId),number=Number(input.baseAttemptNumber),attempt=baseJob?.attempts.find(a=>a.number===number);
+  if(!attempt?.recipe||attempt.hash!==input.baseCandidateHash||attempt.images?.length!==3||attempt.imageHashes?.length!==3)throw new Error('Select an existing captured baseline version and its exact candidate hash.');
+  if(stableJSON(baseJob.theme)!==stableJSON(theme))throw new Error('Refinement preserves the selected version’s frozen artistic direction. Start a new scene to change that contract.');
+  if(typeof input.userFeedback!=='string'||input.userFeedback.trim().length<3||input.userFeedback.length>2000)throw new Error('Describe the requested improvement in 3–2000 characters.');
+  for(let i=0;i<3;i++){const file=imagePath(baseJob,attempt.images[i]);if(!file||!fs.existsSync(file)||createHash('sha256').update(fs.readFileSync(file)).digest('hex')!==attempt.imageHashes[i])throw new Error('The selected baseline evidence is missing or changed.');}
+  const record=baseJob.pipeline?.candidates.find(c=>c.candidateHash===attempt.hash);
+  if(baseJob.pipeline&&(!record||stableJSON(record.recipe)!==stableJSON(attempt.recipe)))throw new Error('Baseline recipe does not match its Rust candidate record.');
+  return {jobId:baseJob.id,number,hash:attempt.hash,recipe:structuredClone(attempt.recipe),images:[...attempt.images],imageHashes:[...attempt.imageHashes],userFeedback:input.userFeedback.trim(),findings:[...attempt.checks.filter(c=>c.status!=='pass').map(c=>`${c.id}: ${c.detail}`),...(attempt.review?.comparison?.defects||[]).map(d=>`View ${d.view}, ${d.location}: ${d.issue}. Repair: ${d.repair}`),...(attempt.review?.comparison?.strengths||[]).map(s=>`Preserve: ${s}`)]};
+}
+function generationRequest(job,previous,findings){return {theme:job.theme,prompt:job.prompt,userFeedback:job.userFeedback||null,sceneHalfExtent:job.sceneHalfExtent??job.pipeline?.contract.sceneHalfExtent??null,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),model,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};}
 async function generate(job,previous,findings){
   if(job.provider==='fixture'){
-    const result=rustSync({op:'fixture',theme:job.theme,...(previous?{previous}: {})});
+    const fixtureBase=previous||job.previewRecipe;
+    const result=rustSync({op:'fixture',theme:job.theme,...(fixtureBase?{previous:fixtureBase}: {})});
     await new Promise(resolve=>setTimeout(resolve,350));ensureCurrent(job);return result.recipe;
   }
-  const request={theme:job.theme,prompt:job.prompt,previous:previous||null,findings:findings.map(item=>typeof item==='string'?item:`${item.id}: ${item.detail}`),model,agent,managed:job.provider==='managed',interactionId:job.interactionId||null,environmentId:job.environmentId||null};
+  const request=generationRequest(job,previous,findings);
+  job.creatorInputs=job.creatorInputs||[];job.creatorInputs.push({attempt:job.pipeline.attemptCount+1,baselineHash:job.baseline?.hash||null,previousRecipeHash:job.attempts.at(-1)?.hash||job.baseline?.hash||null,userFeedback:request.userFeedback,findings:request.findings,sceneHalfExtent:request.sceneHalfExtent});save(job);
   const result=await providerCall(job,'Gemini creator',{op:'generate',request});
   job.interactionId=result.interactionId||job.interactionId;job.environmentId=result.environmentId||job.environmentId;
   job.providerResponses.push({kind:'creator',response:result.response,usage:result.usage||null});save(job);return result.recipe;
@@ -192,7 +206,7 @@ async function capture(job,attempt){
     const onAbort=()=>{cleanup();reject(new Error('Cancelled during rendering'));};
     const timer=setTimeout(()=>{cleanup();reject(new Error('Studio renderer timed out. Keep the Studio browser open or finish installing Chromium.'));},60000);
     controllers.get(job.id).signal.addEventListener('abort',onAbort,{once:true});
-    renderTasks.set(token,{token,jobId:job.id,attemptNumber:attempt.number,candidateHash:attempt.hash,recipe:attempt.recipe,theme:job.theme,
+    renderTasks.set(token,{token,jobId:job.id,attemptNumber:attempt.number,candidateHash:attempt.hash,recipe:attempt.recipe,theme:job.theme,sceneHalfExtent:job.sceneHalfExtent??job.pipeline?.contract.sceneHalfExtent??4,
       finish:value=>{cleanup();attempt.renderSource='studio-client';resolve(value);},fail:message=>{cleanup();reject(new Error(message));}});
   });
 }
@@ -208,14 +222,33 @@ async function review(job,attempt){
     if(hash!==record.imageHashes[i])throw new Error('Comparison evidence changed after capture.');
     return bytes.toString('base64');
   });
-  const prior=job.attempts.at(-2);
+  const prior=job.attempts.at(-2)||job.baseline;
   const previous=prior?{candidateHash:prior.hash,imageHashes:prior.imageHashes,images:imageInputs(prior),strengths:prior.review?.comparison?.strengths||[]}:null;
   const request={theme:job.theme,prompt:job.prompt,candidateHash:attempt.hash,imageHashes:attempt.imageHashes,images:imageInputs(attempt),previous,model};
   const result=await providerCall(job,'independent comparative visual reviewer',{op:'review',request});
   job.providerResponses.push({kind:'reviewer',response:result.response,usage:result.usage||null});save(job);return result;
 }
+function geometryDelta(previous,current){
+  const diff=(before,after)=>{const old=new Map(before.map(p=>[p.id,p])),next=new Map(after.map(p=>[p.id,p]));return {added:[...next.keys()].filter(id=>!old.has(id)),changed:[...next.keys()].filter(id=>old.has(id)&&stableJSON(old.get(id))!==stableJSON(next.get(id))),removed:[...old.keys()].filter(id=>!next.has(id))};};
+  const parts=diff(previous?.parts||[],current.parts),components=diff(previous?.scene?.components||[],current.scene?.components||[]);
+  return {addedParts:parts.added,changedParts:parts.changed,removedParts:parts.removed,componentsAdded:components.added,componentsChanged:components.changed,componentsRemoved:components.removed};
+}
+async function prepareAndRun(job,baseSource){
+  if(!baseSource)return run(job);
+  try{
+    event(job,'preparing','Recapturing the selected baseline with this scene’s frozen review cameras before generation.');
+    const baseline={number:0,hash:baseSource.hash,recipe:baseSource.recipe,findings:baseSource.findings,images:[],imageHashes:[]};
+    job.baseline=baseline;save(job);
+    const captured=await capture(job,baseline);ensureCurrent(job);baseline.images=captured.images;baseline.movement=captured.movement;
+    baseline.imageHashes=baseline.images.map(url=>createHash('sha256').update(fs.readFileSync(imagePath(job,url))).digest('hex'));
+    const refinement={userFeedback:job.userFeedback,baselineRecipe:baseline.recipe,baselineEvidence:{candidateHash:baseline.hash,imageHashes:baseline.imageHashes,imageUrls:baseline.images}};
+    job.pipeline=rustSync({...job.createInput,refinement}).pipeline;job.baseline=baseline;
+    event(job,'queued','Artistic direction, feedback, selected baseline and matched-camera evidence frozen.');
+    return run(job);
+  }catch(error){job.stopReason=error.message;if(job.pipeline?.status==='active')try{syncPipeline(job,'cancel');}catch{}event(job,job.cancelled?'cancelled':'blocked',error.message);controllers.delete(job.id);}
+}
 async function run(job){
-  let previous=null,findings=[];
+  let previous=job.baseline?.recipe||null,findings=job.baseline?.findings||[];
   try{
     while(true){
       const canContinue=syncPipeline(job,'continue');
@@ -229,7 +262,7 @@ async function run(job){
       let candidate=await generate(job,previous,findings);ensureCurrent(job);
       if(job.injectDefect&&attempt.number===1)candidate=injectDefect(candidate);
       const record=syncPipeline(job,'submit',{recipe:candidate});
-      candidate=record.recipe;attempt.recipe=candidate;attempt.hash=record.candidateHash;attempt.validationError=record.validationError||null;
+      candidate=record.recipe;attempt.delta=geometryDelta(previous,candidate);attempt.recipe=candidate;attempt.hash=record.candidateHash;attempt.validationError=record.validationError||null;
       attempt.checks=record.checks||[];
       if(record.validationError)attempt.checks=[{id:'THEME-01',status:'fail',label:'Valid recipe and frozen theme',detail:record.validationError}];
       job.attempts.push(attempt);previous=candidate;save(job);
@@ -293,6 +326,16 @@ const server=http.createServer(async(req,res)=>{
     if(req.method==='POST'){
       if(req.headers.origin && ![base,`http://localhost:${port}`].includes(req.headers.origin))return json(res,403,{error:'Origin rejected'});
       const input=await body(req,pathname==='/api/render-task'?8_000_000:50000);
+      if(pathname==='/api/refinement-preview'){
+        const theme=validateTheme(structuredClone(input.theme)),baseline=refinementSource(input,theme);
+        if(!baseline)throw new Error('Choose a saved baseline version before previewing a refinement.');
+        if(input.provider==='fixture')return json(res,200,{summary:'Offline fixtures do not use artistic feedback. Select Gemini managed agent to inspect the real refinement request; this preview makes no API call.',request:{provider:'fixture',baseCandidateHash:baseline.hash,userFeedback:baseline.userFeedback,referenceImages:'local only; not included'}});
+        if(!['managed','gemini'].includes(input.provider))throw new Error('Select a generation engine.');
+        const sceneHalfExtent=Number(input.sceneHalfExtent??Math.max(12,baseline.recipe.scene?.halfExtent||4));
+        const request=generationRequest({theme,prompt:input.prompt||jobs.get(baseline.jobId).prompt,provider:input.provider,userFeedback:baseline.userFeedback,sceneHalfExtent},baseline.recipe,baseline.findings);
+        const prepared=rustSync({op:'prepare-generation',request});
+        return json(res,200,{summary:'Prepared locally only: the selected baseline recipe, your feedback, critic targets and frozen scene extent reach the creator request. No API call or reference-image transmission occurred.',request:{baseJobId:baseline.jobId,baseAttemptNumber:baseline.number,baseCandidateHash:baseline.hash,userFeedback:baseline.userFeedback,sceneHalfExtent,referenceImages:'local only; omitted',...prepared}});
+      }
       if(pathname==='/api/themes/resolve'){
         if(!themeInferenceEnabled)return json(res,403,{error:'Live theme inference is prepared but disabled pending an operator-approved spending ceiling. Use the editable contract or labeled local draft.'});
         if(!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY to resolve a theme with Gemini.'});
@@ -321,11 +364,17 @@ const server=http.createServer(async(req,res)=>{
         const theme=validateTheme(structuredClone(input.theme||THEMES[input.themeId]));
         if((input.themeId&&input.themeId!==theme.id)||!['fixture','gemini','managed'].includes(input.provider)||typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)return json(res,400,{error:'Provide a matching theme contract, provider, and 5–3000 character prompt.'});
         if(input.provider!=='fixture'&&!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY in .env and restart the server. Offline rehearsal is available now.'});
+        const baseSource=refinementSource(input,theme);
+        if(baseSource&&input.provider==='fixture')return json(res,400,{error:'Offline fixtures only demonstrate the known obstruction repair; they cannot apply artistic feedback. Select a live engine after the specific paid request is approved.'});
+        const sceneHalfExtent=input.provider==='fixture'?(input.previewRecipe?.scene?.halfExtent??null):Number(input.sceneHalfExtent??Math.max(12,baseSource?.recipe.scene?.halfExtent||4));
+        if(sceneHalfExtent!==null&&(!Number.isFinite(sceneHalfExtent)||sceneHalfExtent<4||sceneHalfExtent>16))throw new Error('Scene half extent must be 4–16 metres.');
         const now=Math.max(Date.now(),lastPipelineTime+1);lastPipelineTime=now;
-        const pipeline=rustSync({op:'create',theme,prompt:input.prompt,now,provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}}).pipeline;
-        const job={id:pipeline.contract.jobId,pipeline,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
-        jobs.set(job.id,job);controllers.set(job.id,new AbortController());event(job,'queued','Brief and theme contract frozen. Job limit: three candidates, six paid calls, twenty minutes.');
-        json(res,201,job);void run(job);return;
+        const createInput={op:'create',theme,prompt:input.prompt,now,...(sceneHalfExtent!==null?{sceneHalfExtent}:{}),provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}};
+        const pipeline=rustSync(createInput).pipeline;
+        const job={id:pipeline.contract.jobId,pipeline,createInput,sceneHalfExtent,baseJobId:baseSource?.jobId||null,baseAttemptNumber:baseSource?.number||null,baseCandidateHash:baseSource?.hash||null,userFeedback:baseSource?.userFeedback||null,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:baseSource?'preparing':'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
+        if(input.previewRecipe){if(input.provider!=='fixture')throw new Error('Authored recipe previews are offline only.');rustChecks(input.previewRecipe,theme.id,theme);job.previewRecipe=structuredClone(input.previewRecipe);job.previewKind='authored_scene';job.sceneHalfExtent=input.previewRecipe.scene?.halfExtent||4;}
+        jobs.set(job.id,job);controllers.set(job.id,new AbortController());event(job,job.status,baseSource?'Preparing matched baseline evidence; no generation dispatched yet.':'Brief and theme contract frozen. Job limit: three candidates, six paid calls, twenty minutes.');
+        json(res,201,job);void prepareAndRun(job,baseSource);return;
       }
       const match=pathname.match(/^\/api\/jobs\/([\da-z-]{1,128})\/(cancel|activate)$/);
       if(match){
@@ -353,7 +402,7 @@ const server=http.createServer(async(req,res)=>{
     if(pathname==='/api/config')return json(res,200,{keyConfigured:!!apiKey,model,agent,themes:THEMES,themeInferenceEnabled,spending:spending.summary()});
     if(pathname==='/api/render-task'){
       lastRendererSeen=Date.now();const task=renderTasks.values().next().value;
-      return json(res,200,task?{token:task.token,jobId:task.jobId,attemptNumber:task.attemptNumber,candidateHash:task.candidateHash,recipe:task.recipe,theme:task.theme}:null);
+      return json(res,200,task?{token:task.token,jobId:task.jobId,attemptNumber:task.attemptNumber,candidateHash:task.candidateHash,recipe:task.recipe,theme:task.theme,sceneHalfExtent:task.sceneHalfExtent}:null);
     }
     if(pathname==='/api/jobs')return json(res,200,[...jobs.values()].sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).map(({providerResponses,lastCreatorPrompt,...job})=>job));
     if(pathname==='/api/release')return json(res,200,releases.at(-1)||null);

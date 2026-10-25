@@ -1,7 +1,10 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><title>World audit renderer</title><style>html,body,#world{margin:0;width:100%;height:100%;overflow:hidden}canvas{display:block}</style></head><body><div id="world"></div><script type="module">
 import {createWorld} from './scene.mjs';
 const q=new URLSearchParams(location.search),job=await fetch('/api/jobs/'+q.get('job')).then(r=>r.json());
-const candidate=job.attempts.find(a=>a.number===Number(q.get('attempt')));
-const world=createWorld(document.querySelector('#world'),{audit:true});world.load(candidate.recipe,job.theme);
+const attemptNumber=Number(q.get('attempt'));
+const candidate=job.attempts.find(a=>a.number===attemptNumber)||(attemptNumber===0?job.baseline:null);
+if(!candidate?.recipe)throw new Error(`Audit candidate for attempt ${attemptNumber} is missing.`);
+const reviewHalfExtent=job.sceneHalfExtent??job.pipeline?.contract?.sceneHalfExtent;
+const world=createWorld(document.querySelector('#world'),{audit:true,reviewHalfExtent});world.load(candidate.recipe,job.theme);
 window.audit={ready:true,view:world.view,traverse:world.traverse};
 </script></body></html>

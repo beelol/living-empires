@@ -25,7 +25,7 @@ fn theme() -> ThemeContract {
 
 fn request(managed: bool) -> GenerationRequest {
     GenerationRequest {
-        theme: theme(), prompt: "Build a forest relay".into(), previous: None,
+        theme: theme(), prompt: "Build a forest relay".into(), user_feedback: None, scene_half_extent: Some(12.0), previous: None,
         findings: Some(vec!["clear front path".into()]), model: "gemini-test".into(),
         agent: "antigravity-preview-09-2026".into(), managed,
         interaction_id: None, environment_id: None,
@@ -54,13 +54,18 @@ fn png_view(label: &[u8]) -> (String, String) {
 
 #[test]
 fn direct_payload_contains_the_full_frozen_theme_and_structured_schema() {
-    let request=request(false);
+    let mut request=request(false);
+    request.user_feedback=Some("Give the roof a distinct arch while preserving the clear entrance".into());
     let (url,body)=build_generation_request(&request).unwrap();
     assert!(url.ends_with("/models/gemini-test:generateContent"));
     assert_eq!(body["generationConfig"]["responseMimeType"],"application/json");
     let prompt=body["contents"][0]["parts"][0]["text"].as_str().unwrap();
     for field in ["custom-forest","Temperate moss forest","Central path is open","Build a forest relay"] { assert!(prompt.contains(field),"missing {field}"); }
-    assert_eq!(body["generationConfig"]["responseJsonSchema"]["properties"]["parts"]["maxItems"],48);
+    assert!(prompt.contains("Give the roof a distinct arch"));
+    assert!(prompt.contains("halfExtent of 12 metres"));
+    assert_eq!(body["generationConfig"]["responseJsonSchema"]["properties"]["parts"]["maxItems"],128);
+    assert!(prompt.contains("complete, cohesive 3D sensor-outpost scene"));
+    assert_eq!(body["generationConfig"]["responseJsonSchema"]["required"].as_array().unwrap().iter().any(|v|v=="scene"),true);
 }
 
 #[test]
@@ -145,7 +150,7 @@ fn malformed_or_invalid_provider_recipes_are_rejected_without_retry() {
 #[test]
 fn reviewer_request_uses_three_actual_inline_pngs_and_checks_verdicts() {
     let views: Vec<_> = [b"a".as_slice(),b"b".as_slice(),b"c".as_slice()].iter().map(|label| png_view(label)).collect();
-    let request=ReviewRequest {theme:theme(),prompt:"Forest relay".into(),images:views.iter().map(|view|view.0.clone()).collect(),candidate_hash:"d".repeat(64),image_hashes:views.iter().map(|view|view.1.clone()).collect(),previous:None,model:"gemini-review".into()};
+    let request=ReviewRequest {theme:theme(),prompt:"Forest relay".into(),user_feedback:None,scene_half_extent:Some(12.0),images:views.iter().map(|view|view.0.clone()).collect(),candidate_hash:"d".repeat(64),image_hashes:views.iter().map(|view|view.1.clone()).collect(),previous:None,baseline:None,model:"gemini-review".into()};
     let (url,body)=build_review_request(&request).unwrap();
     assert!(url.ends_with(":generateContent"));
     assert_eq!(body["contents"][0]["parts"].as_array().unwrap().len(),7);
@@ -169,16 +174,44 @@ fn reviewer_request_uses_three_actual_inline_pngs_and_checks_verdicts() {
 fn reviewer_hashes_decoded_png_bytes_and_binds_matched_previous_views() {
     let current: Vec<_> = [b"new-a".as_slice(),b"new-b".as_slice(),b"new-c".as_slice()].iter().map(|label| png_view(label)).collect();
     let previous: Vec<_> = [b"old-a".as_slice(),b"old-b".as_slice(),b"old-c".as_slice()].iter().map(|label| png_view(label)).collect();
-    let mut request = ReviewRequest { theme: theme(), prompt: "Forest relay".into(), images: current.iter().map(|v|v.0.clone()).collect(),
+    let mut request = ReviewRequest { theme: theme(), prompt: "Forest relay".into(), user_feedback:Some("Keep the open arch; make the roof less repetitive".into()), scene_half_extent:Some(12.0), images: current.iter().map(|v|v.0.clone()).collect(),
         candidate_hash: "a".repeat(64), image_hashes: current.iter().map(|v|v.1.clone()).collect(),
-        previous: Some(PreviousReviewEvidence { candidate_hash:"b".repeat(64), image_hashes:previous.iter().map(|v|v.1.clone()).collect(), images:previous.iter().map(|v|v.0.clone()).collect(), strengths:vec!["Open entry".into()] }), model:"gemini-review".into() };
+        previous: Some(PreviousReviewEvidence { candidate_hash:"b".repeat(64), image_hashes:previous.iter().map(|v|v.1.clone()).collect(), images:previous.iter().map(|v|v.0.clone()).collect(), strengths:vec!["Open entry".into()] }), baseline:None, model:"gemini-review".into() };
     let (_, body) = build_review_request(&request).unwrap();
     let parts = body["contents"][0]["parts"].as_array().unwrap();
     assert!(parts.iter().any(|part|part["text"]=="PREVIOUS VIEW 1"));
     assert!(parts.iter().any(|part|part["text"]=="CURRENT VIEW 1"));
     assert_eq!(parts.iter().filter(|part|part["inlineData"].is_object()).count(),6);
+    let prompt=parts[0]["text"].as_str().unwrap();
+    assert!(prompt.contains("Frozen user feedback: Keep the open arch"));
+    assert!(prompt.contains("Frozen review camera halfExtent: 12"));
     request.image_hashes[0] = "c".repeat(64);
     assert!(build_review_request(&request).unwrap_err().to_string().contains("hash does not match"));
+}
+
+#[test]
+fn refinement_reviewer_receives_frozen_user_feedback_and_labeled_accepted_baseline_views() {
+    let current: Vec<_> = [b"current-a".as_slice(),b"current-b".as_slice(),b"current-c".as_slice()].iter().map(|v|png_view(v)).collect();
+    let baseline: Vec<_> = [b"base-a".as_slice(),b"base-b".as_slice(),b"base-c".as_slice()].iter().map(|v|png_view(v)).collect();
+    let request=ReviewRequest {
+        theme:theme(), prompt:"Relay at a forest edge".into(),
+        user_feedback:Some("Replace repeated posts with a recognizable arch while keeping the clear entrance".into()),
+        scene_half_extent:Some(10.0), images:current.iter().map(|v|v.0.clone()).collect(),
+        candidate_hash:"a".repeat(64), image_hashes:current.iter().map(|v|v.1.clone()).collect(),
+        previous:None, baseline:Some(PreviousReviewEvidence {
+            candidate_hash:"b".repeat(64), image_hashes:baseline.iter().map(|v|v.1.clone()).collect(),
+            images:baseline.iter().map(|v|v.0.clone()).collect(), strengths:vec!["Entrance is already readable".into()],
+        }), model:"gemini-review".into(),
+    };
+    let (_,body)=build_review_request(&request).unwrap();
+    let parts=body["contents"][0]["parts"].as_array().unwrap();
+    let prompt=parts[0]["text"].as_str().unwrap();
+    assert!(prompt.contains("Frozen user feedback: Replace repeated posts"));
+    assert!(prompt.contains("Accepted baseline candidate hash"));
+    assert!(prompt.contains("Entrance is already readable"));
+    assert!(parts.iter().any(|part|part["text"]=="BASELINE VIEW 1"));
+    assert!(parts.iter().any(|part|part["text"]=="CURRENT VIEW 1"));
+    assert_eq!(parts.iter().filter(|part|part["inlineData"].is_object()).count(),6);
 }
 
 #[test]

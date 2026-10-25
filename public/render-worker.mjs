@@ -12,7 +12,7 @@ export function startRenderWorker({interval=700}={}){
     return response;
   }
   async function processTask(task){
-    const {token,jobId,attemptNumber,candidateHash,recipe,theme}=task;
+    const {token,jobId,attemptNumber,candidateHash,recipe,theme,sceneHalfExtent}=task;
     const key=String(token);
     if(submitted.has(key))return;
     let host,world;
@@ -20,7 +20,7 @@ export function startRenderWorker({interval=700}={}){
       host=document.createElement('div');
       Object.assign(host.style,{position:'fixed',left:'-20000px',top:'0',width:'1000px',height:'740px',overflow:'hidden',pointerEvents:'none'});
       document.body.append(host);
-      world=createWorld(host,{audit:true});
+      world=createWorld(host,{audit:true,reviewHalfExtent:sceneHalfExtent});
       world.load(recipe,theme);
       await frame();
       const images=[];
