@@ -130,6 +130,42 @@ mod offline_tests {
     }
 
     #[test]
+    fn create_freezes_optional_component_edit_descriptor_with_its_baseline() {
+        let theme = json!({
+            "id":"custom-forest","name":"Forest relay","genre":"Frontier","description":"A forest sensor relay.",
+            "biome":"Moss forest","shapeLanguage":"Arched timber","materialFinish":"Weathered wood","weathering":"Moss at joints",
+            "technology":"Sensor relay","motifs":["seed pods"],"lighting":"Soft green","scale":"Human scale",
+            "gameplayRole":"Route marker","exclusions":["military insignia"],"visualChecks":["Entry remains visible"],
+            "assumptions":[],"renderingNotes":["Texture is contract metadata"],"referencePreset":"sylvan",
+            "palette":{"shell":"#b4bd92","frame":"#615444","accent":"#ffc577","ground":"#3f614e","rock":"#788475"},
+            "sky":"#b9cdb1","flora":"tree","architecture":"organic"
+        });
+        let recipe = living_world_core::Recipe {
+            theme_id:"custom-forest".into(), name:"Forest relay".into(), description:"A forest sensor relay.".into(), sensor_radius:12.0,
+            parts:(0..4).map(|i| living_world_core::Part {
+                id:format!("post-{i}"), shape:"box".into(), role:"support".into(),
+                position:[if i%2==0{-2.0}else{2.0},1.5,if i<2{-2.0}else{2.0}], size:[0.5,3.0,0.5], material:"frame".into(),
+            }).collect(),
+            scene:Some(living_world_core::RecipeScene { half_extent:12.0, components:vec![living_world_core::SceneComponent {
+                id:"main-outpost".into(),name:"Main outpost".into(),role:"sensor structure".into(),part_ids:(0..4).map(|i|format!("post-{i}")).collect(),
+            }] }),
+        };
+        let candidate_hash = living_world_core::pipeline::sha256_json(&recipe).unwrap();
+        let input = json!({
+            "op":"create","now":20,"theme":theme,"prompt":"Modify the relay component",
+            "refinement":{
+                "userFeedback":"Change the target geometry only",
+                "baselineRecipe":recipe,
+                "baselineEvidence":{"candidateSha256":candidate_hash,"imageSha256":["1".repeat(64),"2".repeat(64),"3".repeat(64)],"imageUrls":[]},
+                "componentEdit":{"mode":"modify","componentId":"main-outpost"}
+            }
+        });
+        let output = run(input).unwrap();
+        assert_eq!(output["pipeline"]["contract"]["refinement"]["componentEdit"]["mode"],"modify");
+        assert_eq!(output["pipeline"]["contract"]["refinement"]["componentEdit"]["componentId"],"main-outpost");
+    }
+
+    #[test]
     fn prepare_generation_routes_frozen_feedback_without_credentials_or_network() {
         let input=json!({
             "op":"prepare-generation",

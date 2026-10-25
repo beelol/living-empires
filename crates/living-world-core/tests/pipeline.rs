@@ -1,7 +1,7 @@
 use living_world_core::{
     Architecture, AssetPipeline, Evidence, EvidenceStatus, Flora, Palette, PipelineStatus,
     Provenance, Recipe, RecipeScene, SceneComponent, ReferencePreset, ReviewDecision, ReviewVerdict, ThemeContract,
-    pipeline::{ComparisonStatus, JobLimits, ReviewComparison, RoleModels, VisualDefect},
+    pipeline::{ComparisonStatus, ComponentEdit, ComponentEditMode, JobLimits, ReviewComparison, RoleModels, VisualDefect},
 };
 use serde_json;
 
@@ -119,6 +119,44 @@ fn limits_are_bounded_frozen_before_work_and_can_preserve_remaining_budget() {
 
     pipeline.charge_call(1_001).unwrap();
     assert!(pipeline.set_limits(remaining).unwrap_err().contains("before provider work"));
+}
+
+#[test]
+fn frozen_component_edit_selection_and_candidate_guard_enforce_exact_scope() {
+    let frozen_theme = theme();
+    let baseline = recipe(&frozen_theme.id);
+    let baseline_hash = living_world_core::pipeline::sha256_json(&baseline).unwrap();
+    let baseline_evidence = evidence(baseline_hash);
+    let mut refinement = living_world_core::pipeline::RefinementContract {
+        user_feedback: "Add or refine one named component only".into(),
+        baseline_recipe: baseline.clone(),
+        baseline_evidence,
+        component_edit: Some(ComponentEdit { mode: ComponentEditMode::Modify, component_id: "main-outpost".into() }),
+    };
+
+    let mut invalid_selection = refinement.clone();
+    invalid_selection.component_edit = Some(ComponentEdit { mode: ComponentEditMode::Add, component_id: "main-outpost".into() });
+    let mut pipeline = AssetPipeline::create(frozen_theme.clone(), "Update the relay".into(), 0).unwrap();
+    assert!(pipeline.set_refinement(invalid_selection).unwrap_err().contains("already exists"));
+
+    let original_hash = pipeline.contract.frozen_sha256.clone();
+    pipeline.set_refinement(refinement.clone()).unwrap();
+    assert_ne!(pipeline.contract.frozen_sha256, original_hash);
+    pipeline.charge_call(1).unwrap();
+    refinement.user_feedback = "mutated after dispatch".into();
+    assert!(pipeline.set_refinement(refinement).unwrap_err().contains("frozen"));
+
+    let mut bad = baseline.clone();
+    bad.name = "Renamed relay".into();
+    bad.parts[0].size[0] += 0.1;
+    let bad_record = pipeline.submit_candidate(bad, 2).unwrap();
+    assert!(bad_record.validation_error.as_deref().unwrap().contains("Edit changed theme or unrelated recipe metadata"));
+    assert_eq!(pipeline.decide(review(), evidence(bad_record.candidate_sha256), 3).unwrap(), ReviewVerdict::Repair);
+
+    let mut good = baseline;
+    good.parts[0].size[0] += 0.1;
+    let good_record = pipeline.submit_candidate(good, 4).unwrap();
+    assert_eq!(good_record.validation_error, None);
 }
 
 #[test]
@@ -348,7 +386,7 @@ fn refinement_freezes_feedback_baseline_camera_and_requires_improvement_over_acc
     };
     let refinement=living_world_core::pipeline::RefinementContract {
         user_feedback:"Replace the repeated posts with a recognizable arch but keep the entrance open".into(),
-        baseline_recipe:baseline_recipe.clone(), baseline_evidence:baseline_evidence.clone(),
+        baseline_recipe:baseline_recipe.clone(), baseline_evidence:baseline_evidence.clone(), component_edit:None,
     };
     let mut pipeline=AssetPipeline::create(frozen_theme.clone(),"Design the Orchard Relay".into(),100).unwrap();
     pipeline.set_scene_half_extent(10.0).unwrap();

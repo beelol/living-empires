@@ -1,5 +1,5 @@
 //! Stateful, deterministic acceptance and export pipeline for generated assets.
-use crate::{evaluate_with_theme, validate_theme, Check, Recipe, ThemeContract};
+use crate::{component_edit_guard::{validate_component_edit, EditScope}, evaluate_with_theme, validate_theme, Check, Recipe, ThemeContract};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -97,6 +97,19 @@ pub struct RefinementContract {
     pub user_feedback: String,
     pub baseline_recipe: Recipe,
     pub baseline_evidence: Evidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_edit: Option<ComponentEdit>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ComponentEditMode { Add, Modify }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComponentEdit {
+    pub mode: ComponentEditMode,
+    pub component_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -431,7 +444,8 @@ impl AssetPipeline {
         }
         self.attempt_count += 1;
         let candidate_sha256 = sha256_json(&recipe)?;
-        let evaluation = evaluate_candidate(&recipe, &self.contract.theme, self.contract.provenance.rehearsal, self.contract.scene_half_extent);
+        let evaluation = evaluate_frozen_candidate(&recipe, &self.contract.theme, self.contract.provenance.rehearsal,
+            self.contract.scene_half_extent, self.contract.refinement.as_ref());
         let (checks, validation_error) = match evaluation { Ok(checks) => (checks, None), Err(error) => (Vec::new(), Some(error)) };
         let record = CandidateRecord { recipe, candidate_sha256, checks, validation_error, reviewed_evidence: None, comparison: None };
         self.candidates.push(record.clone());
@@ -610,7 +624,8 @@ impl AssetPipeline {
         }
         for (index, candidate) in self.candidates.iter().enumerate() {
             if sha256_json(&candidate.recipe)? != candidate.candidate_sha256 { return Err("Candidate hash integrity check failed".into()); }
-            match evaluate_candidate(&candidate.recipe, &self.contract.theme, self.contract.provenance.rehearsal, self.contract.scene_half_extent) {
+            match evaluate_frozen_candidate(&candidate.recipe, &self.contract.theme, self.contract.provenance.rehearsal,
+                self.contract.scene_half_extent, self.contract.refinement.as_ref()) {
                 Ok(checks) if candidate.validation_error.is_none() && checks == candidate.checks => {}
                 Err(error) if candidate.validation_error.as_deref() == Some(error.as_str()) && candidate.checks.is_empty() => {}
                 _ => return Err("Candidate evaluation record was tampered with".into()),
@@ -701,12 +716,40 @@ fn evaluate_candidate(recipe: &Recipe, theme: &ThemeContract, rehearsal: bool, s
     Ok(checks)
 }
 
+fn evaluate_frozen_candidate(recipe: &Recipe, theme: &ThemeContract, rehearsal: bool, scene_half_extent: Option<f64>, refinement: Option<&RefinementContract>) -> Result<Vec<Check>, String> {
+    let checks = evaluate_candidate(recipe, theme, rehearsal, scene_half_extent)?;
+    if let Some(edit) = refinement.and_then(|value| value.component_edit.as_ref()) {
+        let scope = match edit.mode {
+            ComponentEditMode::Add => EditScope::Append { component_id: edit.component_id.clone() },
+            ComponentEditMode::Modify => EditScope::Modify { component_id: edit.component_id.clone() },
+        };
+        validate_component_edit(&refinement.expect("component edit has refinement").baseline_recipe, recipe, &scope)
+            .map_err(|error| format!("Frozen component edit failed: {error}"))?;
+    }
+    Ok(checks)
+}
+
 fn validate_refinement(refinement: &RefinementContract, theme: &ThemeContract) -> Result<(), String> {
     if refinement.user_feedback.trim().is_empty() || refinement.user_feedback.len() > 3_000 {
         return Err("Refinement feedback must be non-empty and at most 3,000 bytes".into());
     }
     evaluate_with_theme(&refinement.baseline_recipe, theme)
         .map_err(|_| "Refinement baseline recipe does not match the frozen theme or deterministic contract".to_string())?;
+    if let Some(edit) = &refinement.component_edit {
+        let id = edit.component_id.as_str();
+        if id.is_empty() || id.len() > 64 || !id.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+            || !id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            || id.ends_with('-') || id.contains("--") {
+            return Err("Component edit componentId must be a lowercase hyphenated component ID".into());
+        }
+        let components = refinement.baseline_recipe.scene.as_ref().ok_or("Component edits require a baseline scene")?;
+        let exists = components.components.iter().any(|component| component.id == id);
+        match edit.mode {
+            ComponentEditMode::Add if exists => return Err("Added componentId already exists in baseline".into()),
+            ComponentEditMode::Modify if !exists => return Err("Modified componentId must exist in baseline".into()),
+            _ => {}
+        }
+    }
     let evidence = &refinement.baseline_evidence;
     if evidence.candidate_sha256 != sha256_json(&refinement.baseline_recipe)?
         || !valid_sha256(&evidence.candidate_sha256)
