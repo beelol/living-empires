@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createWorld,command,creationRequest,assetForBuilding,validateWorld} from '../model.mjs';
+import {createWorld,command,creationRequest,assetForBuilding,validateWorld,publicState} from '../model.mjs';
 import {openStore} from '../store.mjs';
 
 const create=(w,id='orchid')=>command(w,{id:'create-'+id,type:'faction-create',factionId:id,name:id,artDirection:'Layered orchid petal roofs with copper ribs and purple glass.'});
@@ -74,4 +74,14 @@ test('damaged membership is rejected without partially migrating a v1 save',()=>
  const w=createWorld();w.schemaVersion=1;delete w.factions;w.buildings.push({...w.buildings[0]});const before=structuredClone(w);
  assert.throws(()=>validateWorld(w),/Damaged/);assert.deepEqual(w,before);
  const v2=createWorld();v2.buildings[0].factionId='missing';assert.throws(()=>validateWorld(v2),/Damaged/);
+});
+
+
+test('public history exposes rollback evidence and scoped targets without prior asset payloads',()=>{
+ const w=createWorld();
+ w.assetHistory.push({kind:'core',factionId:'landing',hash:'current-hash',jobId:'job-current',rehearsal:false,at:10,rolledBackAt:20,rollbackTargets:['landing-core'],previousByTarget:[{id:'landing-core',assignment:1,asset:{hash:'old-hash',recipe:{parts:['large historical recipe']}}}]});
+ const entry=publicState(w).assetHistory[0];
+ assert.equal(entry.jobId,'job-current');assert.equal(entry.rolledBackAt,20);assert.deepEqual(entry.rollbackTargets,['landing-core']);
+ assert.deepEqual(entry.previousByTarget,[{id:'landing-core',assignment:1}]);assert.equal(JSON.stringify(entry).includes('large historical recipe'),false);
+ assert.equal(w.assetHistory[0].previousByTarget[0].asset.hash,'old-hash');
 });
