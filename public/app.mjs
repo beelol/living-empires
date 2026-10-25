@@ -5,7 +5,7 @@ import {startRenderWorker} from './render-worker.mjs';
 const $=id=>document.getElementById(id),world=createWorld($('world'));
 startRenderWorker();
 let currentJob=null,lastHash='',busy=false,config,releasePinned=false,pollInFlight=false,sceneRevision=0,referenceObjectUrl=null,referenceImage=null,referenceReadPending=false,referenceLoadToken=0,jobsCache=new Map();
-let themeContract=null,localThemeTimer=null;
+let themeContract=null,localThemeTimer=null,draftDirty=false,pendingNewRun=null;
 const briefs={
   argonaut:'Build a sensor outpost for our machine civilization. Give it a broad ceramic canopy, a glowing cyan relay, and an entrance our commander can walk through.',
   sylvan:'Build a forest watch sanctuary. Use mossy stone, timber supports, warm amber light, and an open entrance our ranger can walk through.',
@@ -165,14 +165,14 @@ function movementSummary(movement){
   if(points.length>4)row.title=`Full trace: ${points.map(format).join(' → ')}`;
   return row;
 }
-function renderLatestComparison(job){
-  const attempts=job.attempts||[],attempt=attempts.at(-1),comparison=attempt?.review?.comparison,previous=attempt&&(comparisonPrior(job,attempt,comparison)||job.baseline||null);
+function renderLatestComparison(job,selectedAttempt){
+  const attempts=job.attempts||[],attempt=selectedAttempt||attempts.at(-1),comparison=attempt?.review?.comparison,previous=attempt&&(comparisonPrior(job,attempt,comparison)||job.baseline||null);
   const unchanged=!!attempt&&noVisibleChange(previous,attempt),authored=isAuthoredSample(job,attempt);
   const host=$('attempt-comparison'),signature=JSON.stringify({provider:job.provider,previewKind:job.previewKind,status:job.status,stopReason:job.stopReason,spending:job.spending||config?.spending,baseJobId:job.baseJobId,baseAttemptNumber:job.baseAttemptNumber,baseCandidateHash:job.baseCandidateHash,userFeedback:job.userFeedback,baseline:job.baseline&&{hash:job.baseline.hash,images:job.baseline.images,imageHashes:job.baseline.imageHashes,parts:job.baseline.recipe?.parts},attempt:attempt&&{number:attempt.number,hash:attempt.hash,images:attempt.images,imageHashes:attempt.imageHashes,checks:attempt.checks,review:attempt.review,repairRequested:attempt.repairRequested,decision:attempt.decision,decisionReason:attempt.decisionReason,previousHash:attempt.previousHash,delta:attempt.delta}});
   if(host.dataset.signature===signature)return;
   host.dataset.signature=signature;host.replaceChildren();
   $('evidence-mode').textContent=authored?'AUTHORED SAMPLE':job.provider==='fixture'?'OFFLINE REHEARSAL':'LIVE REVIEW';
-  if(!attempt){host.append(el('p','No candidate evidence has been captured yet.','empty-event'));return;}
+  if(!attempt){host.append(el('p','No candidate evidence has been captured yet.','empty-event'));if(job.stopReason)host.append(el('p',job.stopReason,'stop-reason'));return;}
   const review=attempt.review,head=el('div',undefined,'comparison-heading');
   const title=el('div');title.append(el('span',`VERSION ${String(attempt.number).padStart(2,'0')} · ${attempt.recipe?.name||'Untitled candidate'}`,'eyebrow'),el('p',attempt.hash?`Candidate SHA-256 · ${attempt.hash}`:'Candidate hash pending.','full-hash'));
   if(job.baseCandidateHash)title.append(el('p',`Refines ${job.baseJobId||'saved job'} · version ${job.baseAttemptNumber??'?'} · ${job.baseCandidateHash}`,'lineage-note'));
@@ -292,8 +292,8 @@ function renderRefinementControls(job){
     selector.dataset.job=job.id;selector.dataset.signature=signature;
     selector.value=selector.dataset.userChosen==='true'&&attempts.some(attempt=>attempt.hash===oldSelection)?oldSelection:preferredSceneAttempt(job)?.hash||attempts.at(-1)?.hash||'';
   }
-  const selected=attempts.find(attempt=>attempt.hash===selector.value),ready=!!selected&&!busy&&terminal.includes(job.status);
-  selector.disabled=!attempts.length||busy;
+  const selected=attempts.find(attempt=>attempt.hash===selector.value),ready=!!selected&&!runningJob()&&terminal.includes(job.status);
+  selector.disabled=!attempts.length;
   $('refinement-state').textContent=busy?'Finish the current run first':selected?`${job.provider==='fixture'?'OFFLINE REHEARSAL':'SAVED PROVIDER'} · frozen baseline`:'No finished candidate yet';
   $('base-version-summary').textContent=selected?`Fixed source · job ${selected.sourceJobId||job.id} · version ${selected.number} · SHA-256 ${selected.hash}. The source theme and original brief stay frozen.`:'Refinement becomes available after a candidate recipe has been saved.';
   const components=selected?.recipe?.scene?.components;
@@ -409,20 +409,105 @@ function renderRoleProgress(job){
   if(!job.artDirection&&!calls.length)host.append(el('p',job.provider==='fixture'?'Offline rehearsal · no model calls were recorded.':'No model calls have been recorded yet.','empty-event'));
   if(job.agent)host.append(el('p',`Managed agent · ${job.agent}`,'role-model-note'));
 }
-function renderSavedScenes(){
-  const selector=$('saved-scene');selector.replaceChildren();
-  for(const job of jobsCache.values()){
-    const attempt=job.attempts?.at(-1),label=attempt?.recipe?.name||job.prompt?.slice(0,70)||job.id;
-    const option=el('option',`${label} · ${job.status} · ${job.id}`);option.value=job.id;selector.append(option);
+function runningJob(){return [...jobsCache.values()].find(job=>!terminal.includes(job.status));}
+function historyParent(job){return job.baseJobId||job.retryOf||null;}
+function historyRoot(job){
+  const visited=new Set();let current=job;
+  while(current&&!visited.has(current.id)){visited.add(current.id);const parent=historyParent(current);if(!parent)return current.id;if(!jobsCache.has(parent))return parent;current=jobsCache.get(parent);}
+  return job.id;
+}
+function sceneHistory(job){
+  if(!job)return [];
+  const root=historyRoot(job);
+  return [...jobsCache.values()].filter(item=>historyRoot(item)===root).sort((a,b)=>Date.parse(a.createdAt||0)-Date.parse(b.createdAt||0)||a.id.localeCompare(b.id));
+}
+function historyTime(value){return value&&Number.isFinite(Date.parse(value))?new Date(value).toLocaleString():'Time not recorded';}
+function inspectSavedScene(job,hash,{follow=false}={}){
+  releasePinned=false;sceneRevision++;lastHash='';draftDirty=false;$('follow-runs').checked=follow;
+  $('provider').value=job.provider;modeNote();renderJob(job);
+  if(hash&&selectableSceneAttempts(job).some(attempt=>attempt.hash===hash)){
+    $('base-version').value=hash;$('base-version').dataset.userChosen='true';renderJob(job);
   }
-  selector.value=currentJob?.id||'';
-  selector.disabled=busy||!jobsCache.size;
+}
+function renderSceneEvolution(){
+  const host=$('evolution-timeline'),family=sceneHistory(currentJob);
+  const signature=JSON.stringify([currentJob?.id,...family.map(job=>[job.id,job.status,job.prompt,job.userFeedback,job.stopReason,job.baseCandidateHash,job.events,job.callLog,job.artDirection,job.reference,(job.attempts||[]).map(a=>[a.number,a.hash,a.images,a.review,a.decision,a.decisionReason,a.checks,a.delta])])]);
+  if(host.dataset.signature===signature)return;
+  const openIds=new Set([...host.querySelectorAll('details[open]')].map(item=>item.dataset.job));
+  host.dataset.signature=signature;host.replaceChildren();
+  $('evolution-count').textContent=family.length?`${family.length} RUNS · ${family.reduce((sum,job)=>sum+(job.attempts?.length||0),0)} VERSIONS`:'';
+  $('evolution-note').textContent=family.length?'Every saved attempt in this scene’s revision family, oldest first. Branches and rejected versions remain visible. Inspect a version to see its exact model, checks and matched-camera evidence.':'Select a saved run to see its complete revision history. API requests appear here automatically.';
+  for(const job of family){
+    const section=el('article',undefined,'evolution-run');section.dataset.job=job.id;
+    const header=el('div',undefined,'evolution-run-heading'),title=el('div');
+    title.append(el('strong',job.userFeedback?'Scene revision':job.retryOf?'Recorded retry':'Original generation'),el('time',historyTime(job.createdAt)),el('code',job.id));
+    const button=el('button',job.id===currentJob.id?'Viewing run':'View run','quiet');button.type='button';button.onclick=()=>inspectSavedScene(job);
+    header.append(title,el('span',job.status,'review-status status-'+job.status),button);section.append(header);
+    if(job.baseJobId)section.append(el('p',`Branches from ${job.baseJobId} · version ${job.baseAttemptNumber??'?'} · ${job.baseCandidateHash||'hash unavailable'}`,'lineage-note'));
+    else if(job.retryOf)section.append(el('p',`Retry of ${job.retryOf}; earlier outcome and limits remain recorded.`,'lineage-note'));
+    const request=el('p',job.userFeedback||job.prompt||'No prompt recorded.','evolution-request');section.append(request);
+    const log=el('details',undefined,'evolution-log');log.dataset.job=job.id;log.open=openIds.has(job.id);log.append(el('summary','Prompt, model calls & complete run log'));
+    log.append(el('h4','Original prompt'),el('p',job.prompt||'Not recorded.'));
+    if(job.userFeedback)log.append(el('h4','Requested changes'),el('p',job.userFeedback));
+    if(job.reference)log.append(el('p',`Selected reference · ${job.reference.sha256||'identity recorded'} · consent ${job.reference.consent===true?'recorded':'not recorded'}`));
+    if(job.artDirection)log.append(el('p',`Art direction · ${job.artDirection.model||job.artDirection.modelId||'model recorded'} · ${job.theme?.name||''}`));
+    for(const call of job.callLog||[])log.append(el('p',`${historyTime(call.at)} · Call ${call.number??'?'} · ${call.role||call.label} · ${call.model||job.model||'model unrecorded'} · ${call.status}${call.usage?` · usage ${JSON.stringify(call.usage)}`:''}`,'history-call'));
+    if(!(job.callLog||[]).length)log.append(el('p',job.provider==='fixture'?'Offline rehearsal: no live model calls.':'No provider calls recorded.'));
+    for(const event of job.events||[])log.append(el('p',`${historyTime(event.at)} · ${event.state} · ${event.message}`,'history-event'));
+    section.append(log);
+    if(job.stopReason)section.append(el('p',job.stopReason,'decision-note'));
+    const cards=el('div',undefined,'evolution-versions');
+    for(const attempt of job.attempts||[]){
+      const previous=comparisonPrior(job,attempt,attempt.review?.comparison)||(attempt.number===1?job.baseline:null),unchanged=noVisibleChange(previous,attempt);
+      const verdict=unchanged?'no visible change':attempt.review?.comparison?.status||attempt.decision||(attempt.validationError?'invalid':'review pending');
+      const card=el('article',undefined,'evolution-version'),head=el('div',undefined,'evolution-version-heading');
+      head.append(el('strong',`Version ${attempt.number}`),el('span',verdict,'review-status status-'+String(verdict).replaceAll(' ','-')));card.append(head,el('time',historyTime(attempt.createdAt)),el('code',attempt.hash||'Hash pending','full-hash'));
+      const images=el('div',undefined,'evolution-images');
+      for(const [index,url] of (attempt.images||[]).entries()){const link=el('a');link.href=url;link.target='_blank';link.rel='noopener';const img=el('img');img.src=url;img.loading='lazy';img.alt=`${job.id} version ${attempt.number} ${viewNames[index]||'render'}`;link.append(img);images.append(link);}card.append(images);
+      if(!attempt.images?.length)card.append(el('p','Renderer evidence pending.','muted-copy'));
+      card.append(el('p',job.provider==='fixture'?'OFFLINE REHEARSAL · simulated visual judgment':'LIVE PROVIDER','provenance-tag'));
+      const failures=(attempt.checks||[]).filter(check=>check.status!=='pass');
+      if(failures.length)card.append(el('p',failures.map(check=>`${check.id}: ${check.detail||check.status}`).join(' · '),'evidence-warning'));
+      const summary=unchanged?'The recorded parts or rendered images are unchanged.':attempt.review?.comparison?.summary||attempt.decisionReason||attempt.validationError||'Awaiting independent review.';
+      card.append(el('p',summary,'muted-copy'));
+      if(attempt.delta)card.append(el('p',`${attempt.delta.addedParts?.length||0} parts added · ${attempt.delta.changedParts?.length||0} changed · ${attempt.delta.removedParts?.length||0} removed`,'lineage-note'));
+      if(attempt.decision)card.append(el('p',`Recorded decision: ${attempt.decision}`,'decision-note'));
+      const inspect=el('button',`Inspect version ${attempt.number}`,'quiet');inspect.type='button';inspect.onclick=()=>{inspectSavedScene(job,attempt.hash);document.querySelector('.run-details').open=true;$('attempt-comparison').scrollIntoView({behavior:'smooth',block:'start'});};card.append(inspect);cards.append(card);
+    }
+    if(!cards.childElementCount)cards.append(el('p','No candidate returned. The prompt, calls and failure or pending state above are retained.','evidence-warning'));
+    section.append(cards);host.append(section);
+  }
+}
+function renderSavedScenes(){
+  const selector=$('saved-scene'),signature=JSON.stringify([...jobsCache.values()].map(job=>[job.id,job.status,job.attempts?.at(-1)?.recipe?.name]));
+  if(selector.dataset.signature!==signature){selector.dataset.signature=signature;selector.replaceChildren();const empty=el('option','Choose a saved scene or run');empty.value='';selector.append(empty);
+    for(const job of jobsCache.values()){
+      const attempt=job.attempts?.at(-1),label=attempt?.recipe?.name||job.prompt?.slice(0,70)||job.id;
+      const option=el('option',`${label} · ${job.status} · ${historyTime(job.createdAt)} · ${job.id}`);option.value=job.id;selector.append(option);
+    }
+  }
+  selector.value=currentJob?.id||'';selector.disabled=!jobsCache.size;
+}
+async function refreshDashboard(){
+  if(pollInFlight)return;pollInFlight=true;const revision=sceneRevision;
+  try{
+    const jobs=await api('/api/jobs'),newest=jobs.find(job=>!jobsCache.has(job.id));
+    jobsCache=new Map(jobs.map(job=>[job.id,job]));
+    $('history-sync').textContent=`Live · ${jobs.length} saved runs · updated ${new Date().toLocaleTimeString()}`;
+    if(newest){pendingNewRun=newest.id;$('new-run-notice').hidden=false;$('new-run-notice').textContent=`View new run · ${newest.prompt?.slice(0,50)||newest.id}`;}
+    if(revision===sceneRevision&&!releasePinned){
+      if(newest&&$('follow-runs').checked&&!draftDirty){inspectSavedScene(newest,undefined,{follow:true});pendingNewRun=null;$('new-run-notice').hidden=true;}
+      else if(currentJob&&jobsCache.has(currentJob.id))renderJob(jobsCache.get(currentJob.id));
+    }
+    renderSavedScenes();renderSceneEvolution();$('start').disabled=!!runningJob();
+  }catch(e){$('history-sync').textContent=`Updates paused · ${e.message}. Retrying automatically.`;}
+  finally{pollInFlight=false;}
 }
 function renderJob(job){
   const newJob=currentJob?.id!==job.id;
   if(newJob&&typeof job.prompt==='string'){$('prompt').value=job.prompt;displayedBrief=Object.values(briefs).includes(job.prompt)?job.prompt:'';$('user-feedback').value=job.userFeedback||'';$('refinement-preview-result').replaceChildren();$('refinement-error').textContent='';}
   jobsCache.set(job.id,job);
-  currentJob=job;busy=!terminal.includes(job.status);renderSavedScenes();const savedUrl=new URL(location.href);savedUrl.searchParams.set('job',job.id);history.replaceState(null,'',savedUrl);$('start').disabled=busy;$('cancel').hidden=!busy;setEditorLocked(busy);$('contract-version').textContent=`CONTRACT v${job.contractVersion||1}`;
+  currentJob=job;busy=!terminal.includes(job.status);renderSavedScenes();const savedUrl=new URL(location.href);savedUrl.searchParams.set('job',job.id);history.replaceState(null,'',savedUrl);$('start').disabled=!!runningJob();$('cancel').hidden=!busy;setEditorLocked(busy);$('contract-version').textContent=`CONTRACT v${job.contractVersion||1}`;
   const editorContract=editorTheme(job.theme,job.themeId);
   if(JSON.stringify(themeContract)!==JSON.stringify(editorContract))renderThemeContract(editorContract,{selectPreset:true,preview:false});
   $('run-status').textContent=job.status.toUpperCase();renderRunSummary(job);
@@ -432,16 +517,19 @@ function renderJob(job){
   if(job.artDirection){const model=job.artDirection.model||job.artDirection.modelId||job.artDirection.providerModel||job.model||'model metadata unavailable';$('theme-draft-note').textContent=`ART DIRECTION · ${typeof model==='string'?model:'Model metadata recorded'} inferred and recorded for this job; its theme is frozen.`;}
   $('events').replaceChildren(...job.events.slice().reverse().map(event=>{const row=el('div',undefined,'event');row.append(el('time',new Date(event.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})),el('span',event.message));return row;}));
   renderRoleProgress(job);
-  const attempt=job.attempts.at(-1);renderChecks(attempt?.checks);
+  const attempt=job.attempts.at(-1);
   const selector=$('base-version'),chosen=selector.dataset.job===job.id&&selector.dataset.userChosen==='true'?selectableSceneAttempts(job).find(item=>item.hash===selector.value):null,displayed=chosen||preferredSceneAttempt(job);
+  $('world').style.visibility=displayed?.recipe?'visible':'hidden';$('scene-waiting').hidden=!!displayed?.recipe;
+  if(!displayed?.recipe){$('scene-name').textContent=job.theme?.name||'Awaiting candidate';$('version-label').textContent='NO CANDIDATE';$('scene-waiting').textContent=`${job.status} · No candidate has been generated for this run.`;}
   if(displayed?.recipe){if(displayed.hash!==lastHash){world.load(displayed.recipe,job.theme);lastHash=displayed.hash;}$('scene-name').textContent=displayed.recipe.name.toUpperCase();$('scene-theme').textContent=job.theme.name.toUpperCase();$('version-label').textContent=displayed.hash===job.baseCandidateHash||displayed.number===0?'SELECTED BASELINE':displayed.hash===job.acceptedHash||displayed.decision==='accept'?`ACCEPTED VERSION ${displayed.number}`:displayed.review?.comparison?.status==='regressed'?`REJECTED VERSION ${displayed.number}`:displayed!==attempt?`RETAINED VERSION ${displayed.number} · NOT ACCEPTED`:`CANDIDATE ${displayed.number}`;}
-  $('activate').disabled=job.status!=='accepted';$('activate').textContent=job.status==='accepted'?(job.provider==='fixture'?'Use rehearsal asset in preview ↗':'Use verified asset in preview ↗'):job.status==='active'?'Asset is active ✓':'Awaiting a verified candidate ↗';
+  $('activate').disabled=job.status!=='accepted';$('activate').textContent=job.status==='accepted'?(job.provider==='fixture'?'Use rehearsal asset in preview ↗':'Use accepted asset in preview ↗'):job.status==='active'?'Asset is active ✓':'Awaiting a verified candidate ↗';
   const packageLink=$('download-package'),downloadable=['accepted','active'].includes(job.status);
   packageLink.hidden=!downloadable;packageLink.href=downloadable?`/api/jobs/${encodeURIComponent(job.id)}/package`:'';
-  packageLink.textContent=job.provider==='fixture'?'Download rehearsal asset package ↓':'Download asset package ↓';
+  packageLink.textContent=job.provider==='fixture'?'Download accepted rehearsal package ↓':'Download accepted asset package ↓';packageLink.title=`Accepted candidate ${job.acceptedHash||'pending'}`;
   if(job.provider==='fixture')$('connection').textContent='OFFLINE REHEARSAL';
   else $('connection').textContent='GEMINI · '+(job.provider==='managed'?'MANAGED':'DIRECT');
-  renderLatestComparison(job);renderAttemptHistory(job);renderRefinementControls(job);
+  const visible=displayed||attempt,sourceId=chosen?.sourceJobId||(visible?.hash===job.baseCandidateHash?job.baseJobId:null),evidenceJob=jobsCache.get(sourceId)||job,inspected=evidenceJob.attempts?.find(item=>item.hash===visible?.hash)||visible;renderChecks(inspected?.checks);renderLatestComparison(evidenceJob,inspected);renderAttemptHistory(job);renderRefinementControls(job);renderSceneEvolution();
+  const versionUrl=new URL(location.href);if(chosen?.hash)versionUrl.searchParams.set('version',chosen.hash);else versionUrl.searchParams.delete('version');history.replaceState(null,'',versionUrl);
   $('error').textContent='';
 }
 for(const t of Object.values(THEMES)){const option=el('option',t.name+' · '+t.genre);option.value=t.id;$('theme').append(option);}
@@ -477,27 +565,27 @@ $('resolve-theme').onclick=async()=>{
   finally{$('resolve-theme').disabled=busy||config?.themeInferenceEnabled!==true;}
 };
 $('start').onclick=async()=>{
+  if(runningJob())return;
   $('error').textContent='';$('theme-error').textContent='';const consentError=referenceConsentError();if(consentError){$('reference-error').textContent=consentError;return;}$('reference-error').textContent='';$('start').disabled=true;releasePinned=false;sceneRevision++;
   try{
     const inferTheme=!$('use-manual-theme').checked,request={prompt:$('prompt').value,inferTheme,provider:$('provider').value,...referenceRequestFields()};
     if(!inferTheme){const frozenTheme=validateContract(themeFromForm());renderThemeContract(frozenTheme,{selectPreset:false,preview:false});Object.assign(request,{themeId:frozenTheme.id,theme:frozenTheme,injectDefect:$('inject').checked});}
     $('theme-draft-note').textContent=inferTheme?'Prompt-based art direction requested; waiting for the job record to confirm its inferred theme.':'Manual theme contract submitted for this job.';setEditorLocked(true);
-    const job=await api('/api/jobs',request);lastHash='';renderJob(job);
+    const job=await api('/api/jobs',request);lastHash='';draftDirty=false;$('follow-runs').checked=true;renderJob(job);
   }catch(e){error(e);$('theme-error').textContent=e.message;$('start').disabled=false;setEditorLocked(false);}
 };
 $('cancel').onclick=async()=>{try{renderJob(await api(`/api/jobs/${currentJob.id}/cancel`,{}));}catch(e){error(e);}};
 $('activate').onclick=async()=>{try{const r=await api(`/api/jobs/${currentJob.id}/activate`,{});$('release-label').textContent=(r.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+r.hash.slice(0,10);renderJob(await api('/api/jobs/'+currentJob.id));}catch(e){error(e);}};
-$('base-version').onchange=()=>{if(currentJob){$('base-version').dataset.userChosen='true';renderRefinementControls(currentJob);const selected=selectableSceneAttempts(currentJob).find(attempt=>attempt.hash===$('base-version').value);if(selected?.recipe){world.load(selected.recipe,currentJob.theme);lastHash=selected.hash;$('scene-name').textContent=selected.recipe.name.toUpperCase();$('version-label').textContent=`SAVED VERSION ${selected.number}`;}}};
+$('base-version').onchange=()=>{if(currentJob){$('base-version').dataset.userChosen='true';$('follow-runs').checked=false;renderJob(currentJob);}};
 $('new-scene').onclick=()=>{
-  if(busy)return;runSummary.hidden=true;currentJob=null;releasePinned=false;sceneRevision++;setEditorLocked(false);$('generation-panel').hidden=false;$('generation-panel').open=true;$('generation-panel').classList.remove('has-scene');$('refinement-panel').hidden=true;$('new-scene').hidden=true;$('prompt').value='';$('error').textContent='';$('use-manual-theme').checked=false;$('inject').checked=false;$('provider').value=config?.keyConfigured?'gemini':'fixture';$('connection').textContent=config?.keyConfigured?'GEMINI · DIRECT':'OFFLINE REHEARSAL';modeNote();clearLocalReference();const url=new URL(location.href);url.searchParams.delete('job');history.replaceState(null,'',url);renderSavedScenes();$('prompt').focus();
+  if(busy)return;draftDirty=false;$('follow-runs').checked=false;$('world').style.visibility='visible';$('scene-waiting').hidden=true;runSummary.hidden=true;currentJob=null;releasePinned=false;sceneRevision++;setEditorLocked(false);$('generation-panel').hidden=false;$('generation-panel').open=true;$('generation-panel').classList.remove('has-scene');$('refinement-panel').hidden=true;$('new-scene').hidden=true;$('prompt').value='';$('error').textContent='';$('use-manual-theme').checked=false;$('inject').checked=false;$('provider').value=config?.keyConfigured?'gemini':'fixture';$('connection').textContent=config?.keyConfigured?'GEMINI · DIRECT':'OFFLINE REHEARSAL';modeNote();clearLocalReference();const url=new URL(location.href);url.searchParams.delete('job');history.replaceState(null,'',url);renderSavedScenes();renderSceneEvolution();$('prompt').focus();
 };
-$('saved-scene').onchange=async()=>{
-  if(busy)return;
-  try{releasePinned=false;sceneRevision++;lastHash='';$('error').textContent='';const job=await api('/api/jobs/'+encodeURIComponent($('saved-scene').value));$('provider').value=job.provider;modeNote();renderJob(job);}catch(e){error(e);}
-};
-$('refresh-scenes').onclick=async()=>{
-  try{const jobs=await api('/api/jobs');jobsCache=new Map(jobs.map(job=>[job.id,job]));renderSavedScenes();}catch(e){error(e);}
-};
+$('saved-scene').onchange=()=>{const job=jobsCache.get($('saved-scene').value);if(job)inspectSavedScene(job);};
+$('refresh-scenes').onclick=refreshDashboard;
+$('new-run-notice').onclick=()=>{const job=jobsCache.get(pendingNewRun);if(job){inspectSavedScene(job,undefined,{follow:true});pendingNewRun=null;$('new-run-notice').hidden=true;}};
+$('follow-runs').onchange=()=>{if($('follow-runs').checked&&pendingNewRun&&!draftDirty)$('new-run-notice').click();};
+$('prompt').addEventListener('input',()=>{draftDirty=true;});
+$('user-feedback').addEventListener('input',()=>{draftDirty=true;});
 $('user-feedback').addEventListener('input',()=>{if(currentJob)renderRefinementControls(currentJob);});
 $('component-scope').addEventListener('change',()=>{if(currentJob)renderRefinementControls(currentJob);});
 $('component-target').addEventListener('change',()=>{if(currentJob)renderRefinementControls(currentJob);});
@@ -543,13 +631,13 @@ $('preview-refinement').onclick=async()=>{
 $('refine-version').onclick=async()=>{
   $('refinement-error').textContent='';
   const request=refinementRequest();
-  if(!request||busy)return;
+  if(!request||runningJob())return;
   if(request.userFeedback.length<5){$('refinement-error').textContent='Describe the change in at least five characters.';return;}
   const consentError=referenceConsentError();if(consentError){$('reference-error').textContent=consentError;return;}$('reference-error').textContent='';
   $('refinement-preview-result').replaceChildren();
   $('refine-version').disabled=true;setEditorLocked(true);
   try{
-    const job=await api('/api/jobs',request);lastHash='';renderJob(job);
+    const job=await api('/api/jobs',request);lastHash='';draftDirty=false;$('follow-runs').checked=true;renderJob(job);
   }catch(e){$('refinement-error').textContent=e.message;setEditorLocked(false);if(currentJob)renderRefinementControls(currentJob);}
 };
 window.addEventListener('beforeunload',()=>{if(referenceObjectUrl)URL.revokeObjectURL(referenceObjectUrl);});
@@ -557,7 +645,8 @@ $('rollback').onclick=async()=>{releasePinned=true;sceneRevision++;try{const r=a
 try{
   config=await api('/api/config');$('connection').textContent=config.keyConfigured?'GEMINI · CONFIGURED':'OFFLINE REHEARSAL';$('provider').value=config.keyConfigured?'gemini':'fixture';
   $('resolve-theme').disabled=config.themeInferenceEnabled!==true;$('theme-draft-note').textContent=config.themeInferenceEnabled?'GEMINI RESOLUTION AVAILABLE · Costs one request. Review recorded assumptions before use.':'Gemini theme resolution is disabled until an explicit spending cap is enabled. Local keyword drafts use the selected preset fallback.';modeNote();
-  const jobs=await api('/api/jobs');jobsCache=new Map(jobs.map(job=>[job.id,job]));if(jobs.length){const requestedId=new URLSearchParams(location.search).get('job'),selected=jobs.find(job=>job.id===requestedId);if(selected?.theme)renderThemeContract(selected.theme,{selectPreset:true,preview:false});if(selected){$('provider').value=selected.provider;modeNote();renderJob(selected);}else renderSavedScenes();}
+  const jobs=await api('/api/jobs');jobsCache=new Map(jobs.map(job=>[job.id,job]));if(jobs.length){const requestedId=new URLSearchParams(location.search).get('job'),selected=jobs.find(job=>job.id===requestedId);if(selected?.theme)renderThemeContract(selected.theme,{selectPreset:true,preview:false});if(selected){inspectSavedScene(selected,new URLSearchParams(location.search).get('version'),{follow:!new URLSearchParams(location.search).has('version')});}else renderSavedScenes();}renderSceneEvolution();$('history-sync').textContent=`Live · ${jobs.length} saved runs`;
   const release=await api('/api/release');if(release){$('release-label').textContent=(release.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+release.hash.slice(0,10);if(!currentJob){renderThemeContract(editorTheme(release.theme,release.theme?.id),{selectPreset:true,preview:false});world.load(release.recipe,release.theme);$('scene-name').textContent=release.recipe.name.toUpperCase();$('scene-theme').textContent=release.theme.name.toUpperCase();$('version-label').textContent='ACTIVE RELEASE';}}
 }catch(e){error(e);}
-setInterval(async()=>{if(currentJob&&busy&&!releasePinned&&!pollInFlight){pollInFlight=true;const revision=sceneRevision,jobId=currentJob.id;try{const job=await api('/api/jobs/'+jobId);if(revision===sceneRevision&&!releasePinned)renderJob(job);}catch(e){if(revision===sceneRevision)error(e);}finally{pollInFlight=false;}}},900);
+window.addEventListener('popstate',()=>{const params=new URLSearchParams(location.search),job=jobsCache.get(params.get('job'));if(job)inspectSavedScene(job,params.get('version'));});
+setInterval(refreshDashboard,3000);
