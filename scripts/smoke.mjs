@@ -71,6 +71,16 @@ async function main() {
   const first = await expectFixtureSuccess(firstCreated, 2);
   assert.equal(first.attempts[0].checks.find(check => check.id === 'GEN-05.access')?.status, 'fail', 'Injected first candidate should fail access');
   assert.equal(first.attempts[1].checks.find(check => check.id === 'GEN-05.access')?.status, 'pass', 'Repaired candidate should pass access');
+  const exported=await request(`/api/jobs/${first.id}/package`);
+  assert.equal(exported.response.status,200,'Accepted asset package should export');
+  assert.equal(exported.value.format,'living-empires.asset');
+  assert.equal(exported.value.schemaVersion,1);
+  assert.equal(exported.value.manifest.rehearsal,true,'Fixture package must remain visibly marked');
+  assert.equal(exported.value.manifest.contentSha256,first.acceptedHash);
+  assert.equal(exported.value.manifest.evidence.length,3);
+  assert.equal(exported.value.themeId,'argonaut');
+  const staleRender=await request('/api/render-task',{method:'POST',body:{token:'stale',jobId:first.id,attemptNumber:1,candidateHash:first.attempts[0].hash}});
+  assert.equal(staleRender.response.status,409,'Stale rendering evidence must be rejected');
 
   const {response: activationResponse, value: release} = await request(`/api/jobs/${first.id}/activate`, {method: 'POST', body: {}});
   assert.equal(activationResponse.status, 200, `Accepted candidate activation failed: ${JSON.stringify(release)}`);
@@ -104,6 +114,8 @@ async function main() {
   assert.equal(afterCancel.value.cancelled, true, 'Cancellation flag must remain set');
   const cancelledActivation = await request(`/api/jobs/${cancelCreated.id}/activate`, {method: 'POST', body: {}});
   assert.equal(cancelledActivation.response.status, 409, 'Cancelled job must remain ineligible for activation');
+  const cancelledExport=await request(`/api/jobs/${cancelCreated.id}/package`);
+  assert.equal(cancelledExport.response.status,409,'Cancelled candidates cannot export approved asset packages');
   const activeAfterCancel = await request('/api/release');
   assert.equal(activeAfterCancel.response.status, 200);
   assert.equal(activeAfterCancel.value?.hash, activeBeforeCancel.value?.hash, 'Cancelled work must leave the active release unchanged');

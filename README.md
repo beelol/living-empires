@@ -2,7 +2,7 @@
 
 A game that agents build, inspect, play, and improve against explicit acceptance criteria. A user describes what they want; Gemini produces a candidate; independent reviewers examine the running game; failures become bounded repair jobs; only verified versions reach players.
 
-**Current status:** local prototype in progress. The repo now includes a Three.js world preview, frozen world-theme contracts, a first-party Rust acceptance core, Gemini generation/review adapters, bounded job orchestration, and a Studio. This is a single-player outpost-generation slice; the complete multiplayer game and checklist below remain unimplemented unless supported by specific evidence. Offline rehearsal uses explicitly simulated generation and visual verdicts.
+**Current deliverable: the asset generator.** The local prototype includes frozen world-theme contracts, a first-party Rust acceptance core, Gemini generation/review adapters, bounded job orchestration, a Three.js asset-testing scene, and an operator Studio. The current milestone is one complete themed outpost generation–review–repair–export lifecycle. Offline end-to-end rehearsal passes with real Rust checks, renderer captures, activation, cancellation, and rollback; generation and visual verdicts in that mode are explicitly simulated. One live managed creator call has succeeded. The live independent image-review/repair lifecycle remains unverified. The 122-criterion multiplayer game below remains downstream scope.
 
 ## Run the prototype
 
@@ -19,7 +19,9 @@ npm run dev
 
 Open the printed local URL (default `http://127.0.0.1:4317`). Choose a theme and edit the brief. Use **Gemini managed agent** for the intended managed workflow, **Gemini direct** for the smaller recipe-generation path, or **Offline rehearsal** for a clearly labeled fixture demonstration without API calls. Both live modes use a separate Gemini image review. The theme freezes when a job starts; generated geometry must use its saved material palette, and visual review also checks architectural/biome consistency.
 
-The optional challenge checkbox inserts a blocked entrance after initial generation. The runner records three actual rendered views, the Rust core rejects blocked traversal, and the repair receives the observed failure. Click **Activate** only after the candidate passes all six demo gates. Rollback becomes available after two releases. Run limits are three candidates, six live API calls, and twenty minutes per job; this is a call ceiling, not a guaranteed monetary spending cap. There are no hidden request retries.
+The optional challenge checkbox inserts a blocked entrance after initial generation. The runner records three actual rendered views, the Rust core rejects blocked traversal, and the repair receives the observed failure. Click **Activate** only after the candidate passes all six demo gates. Download the approved asset package for game consumption: `GET /api/jobs/{id}/package` returns a versioned recipe, frozen theme, manifest, required checks, content hash, and evidence hashes. Rehearsal packages carry `manifest.rehearsal: true`. Rollback becomes available after two releases. Run limits are three candidates, six live API calls, and twenty minutes per job; this is a call ceiling, not a guaranteed monetary spending cap. There are no hidden request retries.
+
+Keep the Studio open while running: its browser worker can render the exact job/attempt/hash offscreen and return three actual PNG views plus a collision-aware movement trace. The controller validates the token and Rust parity, fingerprints evidence, and rejects stale/cancelled submissions. This fallback avoids blocking on a headless-browser download. Headless capture is used when no Studio worker is connected; `AUDIT_RENDERER=headless` forces it. The visible asset preview stays separate from audit rendering.
 
 ```sh
 npm run test:core
