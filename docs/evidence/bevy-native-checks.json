@@ -1,0 +1,40 @@
+{
+  "scope": "development foundation; not game AC passes",
+  "transport": "Bevy 0.20 / Lightyear 0.31 UDP",
+  "direct_lua_reload_seconds": 0.047,
+  "players": [
+    {
+      "id": "commander-1",
+      "name": "Commander 1",
+      "x": 440.0,
+      "y": 230.0
+    },
+    {
+      "id": "commander-2",
+      "name": "Commander 2",
+      "x": 357.9328200817108,
+      "y": 89.89323079586029
+    },
+    {
+      "id": "commander-3",
+      "name": "Commander 3",
+      "x": 488.0,
+      "y": 250.0
+    }
+  ],
+  "checks": [
+    "two native processes connected to one host",
+    "WASD changed commander2 x464 to536 with 12-unit Lua steps",
+    "live Lua step20 changed commander2 x536 to596 without restarting clients",
+    "right-click moved commander2 through normal authoritative commands",
+    "closing join client left independently owned host healthy",
+    "reopened native client resumed commander2 at saved position",
+    "LAN address 10.1.61.110:4010 accepted Lightyear probe and third identity",
+    "Lua world name and fingerprint updated in native overlay"
+  ],
+  "unverified": [
+    "second physical device",
+    "reference M2/network load",
+    "full-game acceptance criteria"
+  ]
+}

@@ -21,6 +21,13 @@
     "remoteBaseObserved": "ad679969b56b798dfecca838fb57271aebe77d25",
     "syncStatus": "commit manager reconciling divergent committed histories in an isolated worktree; no force push"
   },
+  "gitSync": {
+    "remoteBaseObserved": "0c08d570acfe5ad6f050af83fb57271aebe77d25",
+    "reconciledCommit": "906db00",
+    "reconciledBranchTip": "2357c98",
+    "pushStatus": "blocked",
+    "blocker": "Normal HTTPS push to origin/main could not read a GitHub username; authentication is unavailable in this environment. No force push or second hook configured."
+  },
   "tasks": [
     {
       "owner": "Luna theme builder",
