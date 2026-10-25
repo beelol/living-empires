@@ -50,3 +50,46 @@ test('Rust acceptance gates reject theme drift, floating supports, and short sen
   assert.equal(sensorResult.status,0,sensorResult.stderr);
   assert.equal(JSON.parse(sensorResult.stdout).checks.find(c=>c.id==='GEN-05.sensor').status,'fail');
 });
+
+test('Rust validates full editable theme contracts without restoring preset exclusions',()=>{
+  const theme={
+    id:'rusted-orchard',name:'Rusted Orchard',genre:'Agricultural machine frontier',
+    description:'A custom orchard civilization among rusted irrigation towers.',biome:'Red grassland',
+    shapeLanguage:'Tall arches and broad low platforms',materialFinish:'Oxidized iron and glazed ceramic',
+    weathering:'Wind-scoured surfaces with localized rust',technology:'Solar irrigation and seed vaults',
+    motifs:['Seed capsules','Irrigation rings'],lighting:'Late afternoon amber light',scale:'Human-scale shelters and monumental towers',
+    gameplayRole:'A safe, traversable farming outpost',exclusions:['No military insignia','Avoid dense visual noise'],
+    visualChecks:['Entry remains visible','Materials stay distinct'],assumptions:[],
+    renderingNotes:['Use warm side light'],referencePreset:'argonaut',
+    palette:{shell:'#D9DED0',frame:'#34464A',accent:'#80EDC4',ground:'#53685D',rock:'#81958A'},
+    sky:'#B6D2CF',flora:'crystal',architecture:'fortified'
+  };
+  const recipe=fixtureRecipe();recipe.themeId=theme.id;
+  const run=payload=>spawnSync(process.env.RUST_CORE_BIN||'target/debug/world-check',[],{input:JSON.stringify(payload),encoding:'utf8'});
+  const valid=run({recipe,themeId:theme.id,theme});
+  assert.equal(valid.status,0,valid.stderr);
+  const output=JSON.parse(valid.stdout);
+  assert.deepEqual(output.theme.exclusions,theme.exclusions);
+  assert.equal(output.theme.id,theme.id);
+
+  const noContract=run({recipe,themeId:theme.id});
+  assert.notEqual(noContract.status,0);
+  assert.match(JSON.parse(noContract.stdout).error,/theme/i);
+
+  const {biome,...missingField}=theme;
+  const missing=run({recipe,themeId:theme.id,theme:missingField});
+  assert.notEqual(missing.status,0);
+  assert.match(JSON.parse(missing.stdout).error,/biome/i);
+
+  const invalidPalette={...theme,palette:{...theme.palette,shell:'rgb(217,222,208)'}};
+  const invalid=run({recipe,themeId:theme.id,theme:invalidPalette});
+  assert.notEqual(invalid.status,0);
+  assert.match(JSON.parse(invalid.stdout).error,/RRGGBB/i);
+
+  const mismatch=run({recipe,themeId:'other-world',theme});
+  assert.notEqual(mismatch.status,0);
+  assert.match(JSON.parse(mismatch.stdout).error,/themeId/i);
+  const recipeMismatch=run({recipe:{...recipe,themeId:'other-world'},themeId:theme.id,theme});
+  assert.notEqual(recipeMismatch.status,0);
+  assert.match(JSON.parse(recipeMismatch.stdout).error,/theme id/i);
+});

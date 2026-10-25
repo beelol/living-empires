@@ -22,16 +22,106 @@ pub struct Part {
     pub material: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeContract {
+    pub id: String,
+    pub name: String,
+    pub genre: String,
+    pub description: String,
+    pub biome: String,
+    pub shape_language: String,
+    pub material_finish: String,
+    pub weathering: String,
+    pub technology: String,
+    pub motifs: Vec<String>,
+    pub lighting: String,
+    pub scale: String,
+    pub gameplay_role: String,
+    pub exclusions: Vec<String>,
+    pub visual_checks: Vec<String>,
+    pub assumptions: Vec<String>,
+    pub rendering_notes: Vec<String>,
+    pub reference_preset: ReferencePreset,
+    pub palette: Palette,
+    pub sky: String,
+    pub flora: Flora,
+    pub architecture: Architecture,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReferencePreset { Argonaut, Sylvan, Ember }
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Flora { Crystal, Tree, Basalt }
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Architecture { Industrial, Organic, Fortified }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Palette {
+    pub shell: String,
+    pub frame: String,
+    pub accent: String,
+    pub ground: String,
+    pub rock: String,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct Position { pub x: f64, pub z: f64 }
 
 #[derive(Debug, Serialize)]
 pub struct Check { pub id: String, pub status: String, pub label: String, pub detail: String }
 
+pub fn validate_theme(theme: &ThemeContract) -> Result<(), String> {
+    let slug = theme.id.as_bytes();
+    if slug.is_empty() || slug.len() > 64 || !slug[0].is_ascii_lowercase()
+        || !slug.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+        || theme.id.ends_with('-') || theme.id.contains("--") {
+        return Err("Theme id must be a lowercase hyphenated slug (1–64 characters)".into());
+    }
+    for (value, limit, label) in [
+        (&theme.name, 100, "name"), (&theme.genre, 120, "genre"),
+        (&theme.description, 2000, "description"), (&theme.biome, 200, "biome"),
+        (&theme.shape_language, 500, "shapeLanguage"), (&theme.material_finish, 500, "materialFinish"),
+        (&theme.weathering, 500, "weathering"), (&theme.technology, 500, "technology"),
+        (&theme.lighting, 500, "lighting"), (&theme.scale, 300, "scale"),
+        (&theme.gameplay_role, 500, "gameplayRole"),
+    ] {
+        if value.trim().is_empty() || value.len() > limit {
+            return Err(format!("Theme {label} must be non-empty and at most {limit} characters"));
+        }
+    }
+    for (values, min, label) in [
+        (&theme.motifs, 1, "motifs"), (&theme.exclusions, 1, "exclusions"),
+        (&theme.visual_checks, 1, "visualChecks"), (&theme.rendering_notes, 1, "renderingNotes"),
+        (&theme.assumptions, 0, "assumptions"),
+    ] {
+        if values.len() < min || values.len() > 32 || values.iter().any(|v| v.trim().is_empty() || v.len() > 500) {
+            return Err(format!("Theme {label} must contain {min}–32 non-empty entries of at most 500 characters"));
+        }
+    }
+    for color in [&theme.palette.shell, &theme.palette.frame, &theme.palette.accent,
+        &theme.palette.ground, &theme.palette.rock, &theme.sky] {
+        if color.len() != 7 || !color.starts_with('#') || !color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit) {
+            return Err("Theme palette colors and sky must use #RRGGBB hex".into());
+        }
+    }
+    Ok(())
+}
+
 pub fn validate(recipe: &Recipe, frozen_theme: &str) -> Result<(), String> {
     if recipe.theme_id != frozen_theme || !["argonaut", "sylvan", "ember"].contains(&frozen_theme) {
         return Err("Candidate changed the frozen theme".into());
     }
+    validate_recipe(recipe)
+}
+
+fn validate_recipe(recipe: &Recipe) -> Result<(), String> {
     if recipe.name.trim().is_empty() || recipe.name.len() > 100 || recipe.description.len() > 2000 {
         return Err("Invalid recipe identity".into());
     }
@@ -80,16 +170,29 @@ pub fn access_scenario(recipe: &Recipe) -> (bool, Vec<Position>) {
 
 pub fn evaluate(recipe: &Recipe, theme: &str) -> Result<Vec<Check>, String> {
     validate(recipe,theme)?;
+    Ok(evaluate_validated(recipe))
+}
+
+pub fn evaluate_with_theme(recipe: &Recipe, theme: &ThemeContract) -> Result<Vec<Check>, String> {
+    validate_theme(theme)?;
+    if recipe.theme_id != theme.id {
+        return Err("Recipe theme id does not match its validated theme contract".into());
+    }
+    validate_recipe(recipe)?;
+    Ok(evaluate_validated(recipe))
+}
+
+fn evaluate_validated(recipe: &Recipe) -> Vec<Check> {
     let (access, _)=access_scenario(recipe);
     let supports: Vec<_>=recipe.parts.iter().filter(|p| ["wall","support"].contains(&p.role.as_str())).collect();
     let grounded=!supports.is_empty() && supports.iter().all(|p|(p.position[1]-p.size[1]/2.0).abs()<0.08);
     let check=|id:&str,label:&str,pass:bool,detail:&str|Check{id:id.into(),label:label.into(),status:if pass{"pass".into()}else{"fail".into()},detail:detail.into()};
-    Ok(vec![
+    vec![
         check("THEME-01","Frozen theme & material palette",true,"Theme identifier and palette tokens match the frozen contract."),
         check("GEN-05.access","Commander can enter",access,if access{"Collision-aware movement reaches the interior."}else{"Front-to-centre path is blocked. Clear a corridor for a 0.56m-wide commander."}),
         check("GEN-06.support","Structure meets the ground",grounded,"Wall/support bases must meet ground within 8cm."),
         check("GEN-05.sensor","Sensor detects the test target",recipe.sensor_radius>=8.0,"Test target is 8 metres east of the outpost."),
-    ])
+    ]
 }
 
 #[cfg(test)]
