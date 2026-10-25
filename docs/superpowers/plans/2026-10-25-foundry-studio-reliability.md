@@ -35,4 +35,4 @@ Interface: describeJob(job, now) derives phase, elapsed text and terminal reason
 
 ### Integration
 - [x] Independently review combined owned changes including the native diagnostics worker.
-- [ ] Under the integration lock, fetch exact main, reconcile, check owned diff/tests, commit explicit paths and push fast-forward. Report exact revision and remaining live evidence gap.
+- [x] Under the integration lock, fetch exact main, reconcile, check owned diff/tests, commit explicit paths and push fast-forward. Report exact revision and remaining live evidence gap.
