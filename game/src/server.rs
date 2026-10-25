@@ -261,7 +261,8 @@ fn authoritative_update(
 }
 
 // The existing authority owns fixed construction work and a bounded authored
-// starter plan. This adds no model worker, second world writer or content loop.
+// development growth plan. This adds no model worker or second world writer.
+// This bounded procedural scenario is not a need-driven economy or Foundry approval.
 fn advance_city(mut authority: NonSendMut<Authority>) {
     use argon_dev::settlement::Role;
     if !authority.accepting_commands()
@@ -314,11 +315,21 @@ fn advance_city(mut authority: NonSendMut<Authority>) {
                 continue;
             }
             let next = if !own.iter().any(|b| b.role == Role::Generator) {
-                Some((Role::Generator, "starter-generator"))
+                Some((Role::Generator, "starter-generator".to_owned()))
             } else if own.iter().any(|b| b.role == Role::Generator && b.complete)
                 && !own.iter().any(|b| b.role == Role::Storehouse)
             {
-                Some((Role::Storehouse, "starter-storehouse"))
+                Some((Role::Storehouse, "starter-storehouse".to_owned()))
+            } else if own.len() < 12 && own.iter().all(|b| b.complete) {
+                // Stable ordinal receipts resume the same paid plan after restart.
+                // The layout planner supplies sites; World still validates costs,
+                // rights, terrain and access before committing each building.
+                let role = if own.len() % 2 == 1 {
+                    Role::Generator
+                } else {
+                    Role::Storehouse
+                };
+                Some((role, format!("procedural-growth-{}", own.len())))
             } else {
                 None
             };
@@ -327,7 +338,7 @@ fn advance_city(mut authority: NonSendMut<Authority>) {
                 let planner = authority.city_planners.get_mut(faction).unwrap();
                 let id = authority
                     .world
-                    .plan_settlement_with_planner(faction, request, role, planner)?;
+                    .plan_settlement_with_planner(faction, &request, role, planner)?;
 
                 if id.is_none() {
                     blockers.push(format!(
@@ -482,6 +493,81 @@ pub fn run_with_stop(mut config: HostConfig, stop: Arc<AtomicBool>) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paid_expansion_continues_beyond_starter_and_survives_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("manifest.json"),
+            r#"{"schema_version":1,"entry":"rules.lua","files":["rules.lua"]}"#,
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("rules.lua"),"return {schema_version=1,world_name='Test',step=function(x,y,dx,dy) return x+dx,y+dy end}").unwrap();
+        let path = directory.path().join("world.json");
+        let gate = directory.path().join("active");
+        let authority = Authority {
+            world: World::load_terrain(&path, Some(72913)).unwrap(),
+            content: ContentRuntime::load(directory.path()).unwrap(),
+            release: "test".into(),
+            activation_file: Some(gate.clone()),
+            reload_error: None,
+            last_reload: Instant::now(),
+            last_snapshot: Instant::now(),
+            city_planners: ["helios", "tide", "cinder"]
+                .into_iter()
+                .map(|id| (id.into(), argon_dev::city::CityPlanner::new(id).unwrap()))
+                .collect(),
+            city_policy_file: None,
+            city_policy_error: None,
+            city_policy_observed: None,
+            city_steps: 0,
+
+            city_error: None,
+            city_halted: false,
+            sessions: HashMap::new(),
+            health: Health::new(json!({})),
+        };
+        std::fs::write(&gate, b"active").unwrap();
+        let mut app = App::new();
+        app.insert_non_send(authority)
+            .add_systems(Update, advance_city);
+        for _ in 0..1800 {
+            app.update();
+        }
+        let authority = app.world().non_send::<Authority>();
+        assert!(!authority.city_halted, "{:?}", authority.city_error);
+        let before = authority.world.buildings();
+        for faction in ["helios", "tide", "cinder"] {
+            let own: Vec<_> = before.iter().filter(|b| b.faction_id == faction).collect();
+            assert!(own.len() > 3, "{faction} stalled at {}", own.len());
+            assert!(own.len() <= 12);
+            let spent: u64 = own
+                .iter()
+                .map(|b| match b.role {
+                    argon_dev::settlement::Role::Core => 100,
+                    argon_dev::settlement::Role::Generator => 60,
+                    argon_dev::settlement::Role::Storehouse => 40,
+                })
+                .sum();
+            assert_eq!(authority.world.faction_metal(faction), Some(1000 - spent));
+        }
+        app.world_mut().non_send_mut::<Authority>().world =
+            World::load_terrain(&directory.path().join("released.json"), Some(72913)).unwrap();
+        let restored = World::load_terrain(&path, None).unwrap();
+        assert_eq!(restored.buildings(), before);
+        app.world_mut().non_send_mut::<Authority>().world = restored;
+        for _ in 0..600 {
+            app.update();
+        }
+        let after = app.world().non_send::<Authority>().world.buildings();
+        for prior in before {
+            assert!(
+                after
+                    .iter()
+                    .any(|b| b.id == prior.id && b.center == prior.center)
+            );
+        }
+    }
 
     #[test]
     fn city_activation_gates_fixed_work_and_failed_save_halts_it() {
