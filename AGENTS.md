@@ -7,6 +7,7 @@ Current deliverable: **asset generator**. Living Empires is the downstream produ
 - Sol is the integration manager. Use bounded Luna workers when delegated work helps; preserve existing work and commits.
 - Every worker task declares owned files, the interface it delivers, an acceptance command, and required evidence. Report the result and commit SHA.
 - Work on `main` as explicitly requested. Serialize named-file commits; never stage another worker's unfinished files or switch shared branches.
+- User-authorized milestone commits may push normally to `origin/main` after acceptance checks. Never force-push; record the synced commit only after the push succeeds.
 - Keep scope updates concise: shipped scope, gates passed/failed/blocked/not_run, exact blocker, next outcome.
 
 ## Acceptance and repair
