@@ -23,3 +23,9 @@ work, repairing candidate 2, persistent blocked reason, indeterminate activity,
 and exact faction counts 1/5 → 4/5 → 5/5. New static DOM IDs exist; candidate-preview
 is the existing dynamically created inspector node. Actual viewport verification
 and reconciliation with the upstream economy UI are lead-owned and not_run here.
+
+Maintenance follow-up: public foundry.maintenance explicitly labels queued work
+as paused, removes provider animation from waiting requests, and retains the
+recorded stopped reason. If an already-started request remains active, its actual
+stage is shown with “Scheduling paused”; no claim is made that it was cancelled.
+Focused checks include maintenance with queued and running work.
