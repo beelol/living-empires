@@ -4,7 +4,7 @@
 use crate::terrain::{Terrain, CELL_SIZE, WORLD_SIZE};
 use anyhow::{ensure, Context, Result};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bounds {
     pub min: [f64; 2],
     pub max: [f64; 2],
