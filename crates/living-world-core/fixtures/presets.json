@@ -1,0 +1,618 @@
+{
+  "argonaut": {
+    "themeId": "argonaut",
+    "description": "A traversable sensor outpost in Argonaut frontier.",
+    "sensorRadius": 12,
+    "name": "Aster Relay",
+    "parts": [
+      {
+        "id": "service-wall-rear",
+        "shape": "box",
+        "role": "wall",
+        "position": [
+          0,
+          1.45,
+          -2.8
+        ],
+        "size": [
+          6.2,
+          2.9,
+          0.5
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "service-wall-west",
+        "shape": "box",
+        "role": "wall",
+        "position": [
+          -3.05,
+          1.4,
+          -0.1
+        ],
+        "size": [
+          0.55,
+          2.8,
+          5.4
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "service-wall-east",
+        "shape": "box",
+        "role": "wall",
+        "position": [
+          3.05,
+          1.4,
+          -0.1
+        ],
+        "size": [
+          0.55,
+          2.8,
+          5.4
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "cantilever-support-west",
+        "shape": "box",
+        "role": "support",
+        "position": [
+          -2.45,
+          1.55,
+          2
+        ],
+        "size": [
+          0.32,
+          3.1,
+          0.32
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "cantilever-support-east",
+        "shape": "box",
+        "role": "support",
+        "position": [
+          2.45,
+          1.55,
+          2
+        ],
+        "size": [
+          0.32,
+          3.1,
+          0.32
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "cantilever-canopy",
+        "shape": "box",
+        "role": "roof",
+        "position": [
+          0.25,
+          3.35,
+          -0.05
+        ],
+        "size": [
+          6.8,
+          0.5,
+          5.8
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "relay-fin-west",
+        "shape": "box",
+        "role": "detail",
+        "position": [
+          -1.55,
+          4.45,
+          -2.45
+        ],
+        "size": [
+          0.42,
+          2.1,
+          0.3
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "relay-fin-east",
+        "shape": "box",
+        "role": "detail",
+        "position": [
+          1.55,
+          4.45,
+          -2.45
+        ],
+        "size": [
+          0.42,
+          2.1,
+          0.3
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "sensor-mast",
+        "shape": "cylinder",
+        "role": "detail",
+        "position": [
+          0,
+          4.65,
+          -1
+        ],
+        "size": [
+          0.24,
+          2.1,
+          0.24
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "sensor-head",
+        "shape": "box",
+        "role": "detail",
+        "position": [
+          0,
+          5.8,
+          -1
+        ],
+        "size": [
+          1.05,
+          0.45,
+          0.75
+        ],
+        "material": "accent"
+      },
+      {
+        "id": "signal-strip",
+        "shape": "box",
+        "role": "detail",
+        "position": [
+          0,
+          3.35,
+          2.88
+        ],
+        "size": [
+          4.4,
+          0.12,
+          0.08
+        ],
+        "material": "accent"
+      },
+      {
+        "id": "console",
+        "shape": "box",
+        "role": "detail",
+        "position": [
+          2,
+          0.7,
+          -1.6
+        ],
+        "size": [
+          0.55,
+          1.4,
+          0.55
+        ],
+        "material": "frame"
+      }
+    ]
+  },
+  "sylvan": {
+    "themeId": "sylvan",
+    "description": "A traversable sensor outpost in Verdant sanctuary.",
+    "sensorRadius": 12,
+    "name": "Grove Watch",
+    "parts": [
+      {
+        "id": "grove-post-nw",
+        "shape": "cylinder",
+        "role": "support",
+        "position": [
+          -2.75,
+          1.55,
+          -2.25
+        ],
+        "size": [
+          0.32,
+          3.1,
+          0.32
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "grove-post-ne",
+        "shape": "cylinder",
+        "role": "support",
+        "position": [
+          2.75,
+          1.55,
+          -2.25
+        ],
+        "size": [
+          0.32,
+          3.1,
+          0.32
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "grove-post-sw",
+        "shape": "cylinder",
+        "role": "support",
+        "position": [
+          -2.75,
+          1.55,
+          2.25
+        ],
+        "size": [
+          0.32,
+          3.1,
+          0.32
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "grove-post-se",
+        "shape": "cylinder",
+        "role": "support",
+        "position": [
+          2.75,
+          1.55,
+          2.25
+        ],
+        "size": [
+          0.32,
+          3.1,
+          0.32
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "pavilion-canopy",
+        "shape": "cone",
+        "role": "roof",
+        "position": [
+          0,
+          4.15,
+          0
+        ],
+        "size": [
+          6.4,
+          2.1,
+          5.5
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "ridge-spire",
+        "shape": "cone",
+        "role": "detail",
+        "position": [
+          0,
+          5.35,
+          -0.15
+        ],
+        "size": [
+          1.15,
+          1.2,
+          1.15
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "lantern-west",
+        "shape": "cylinder",
+        "role": "detail",
+        "position": [
+          -1.4,
+          2.85,
+          0.15
+        ],
+        "size": [
+          0.28,
+          0.5,
+          0.28
+        ],
+        "material": "accent"
+      },
+      {
+        "id": "lantern-east",
+        "shape": "cylinder",
+        "role": "detail",
+        "position": [
+          1.4,
+          2.85,
+          0.15
+        ],
+        "size": [
+          0.28,
+          0.5,
+          0.28
+        ],
+        "material": "accent"
+      },
+      {
+        "id": "root-stone-west",
+        "shape": "box",
+        "role": "detail",
+        "position": [
+          -2.2,
+          0.22,
+          1.5
+        ],
+        "size": [
+          1.2,
+          0.44,
+          0.55
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "root-stone-east",
+        "shape": "box",
+        "role": "detail",
+        "position": [
+          2.2,
+          0.22,
+          1.5
+        ],
+        "size": [
+          1.2,
+          0.44,
+          0.55
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "wayfinding-mark",
+        "shape": "box",
+        "role": "detail",
+        "position": [
+          0,
+          1.15,
+          -1.7
+        ],
+        "size": [
+          0.12,
+          0.5,
+          0.12
+        ],
+        "material": "accent"
+      }
+    ]
+  },
+  "ember": {
+    "themeId": "ember",
+    "description": "A traversable sensor outpost in Ember reach.",
+    "sensorRadius": 12,
+    "name": "Cinder Station",
+    "parts": [
+      {
+        "id": "rampart-west",
+        "shape": "box",
+        "role": "wall",
+        "position": [
+          -3.35,
+          1.35,
+          0
+        ],
+        "size": [
+          0.65,
+          2.7,
+          5.5
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "rampart-east",
+        "shape": "box",
+        "role": "wall",
+        "position": [
+          3.35,
+          1.35,
+          0
+        ],
+        "size": [
+          0.65,
+          2.7,
+          5.5
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "rampart-rear",
+        "shape": "box",
+        "role": "wall",
+        "position": [
+          0,
+          1.35,
+          -2.85
+        ],
+        "size": [
+          6.7,
+          2.7,
+          0.5
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "entry-bastion-west",
+        "shape": "box",
+        "role": "wall",
+        "position": [
+          -2.55,
+          1.05,
+          2.7
+        ],
+        "size": [
+          1.6,
+          2.1,
+          0.55
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "entry-bastion-east",
+        "shape": "box",
+        "role": "wall",
+        "position": [
+          2.55,
+          1.05,
+          2.7
+        ],
+        "size": [
+          1.6,
+          2.1,
+          0.55
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "fortified-roof",
+        "shape": "box",
+        "role": "roof",
+        "position": [
+          0,
+          3.05,
+          -0.1
+        ],
+        "size": [
+          6.8,
+          0.5,
+          5.7
+        ],
+        "material": "shell"
+      },
+      {
+        "id": "buttress-west",
+        "shape": "box",
+        "role": "support",
+        "position": [
+          -2.95,
+          1.5,
+          -2.3
+        ],
+        "size": [
+          0.8,
+          3,
+          0.9
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "buttress-east",
+        "shape": "box",
+        "role": "support",
+        "position": [
+          2.95,
+          1.5,
+          -2.3
+        ],
+        "size": [
+          0.8,
+          3,
+          0.9
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "vent-west",
+        "shape": "cylinder",
+        "role": "detail",
+        "position": [
+          -1.55,
+          4,
+          -2.4
+        ],
+        "size": [
+          0.62,
+          1.9,
+          0.62
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "vent-east",
+        "shape": "cylinder",
+        "role": "detail",
+        "position": [
+          1.55,
+          4,
+          -2.4
+        ],
+        "size": [
+          0.62,
+          1.9,
+          0.62
+        ],
+        "material": "frame"
+      },
+      {
+        "id": "vent-cap-west",
+        "shape": "cone",
+        "role": "detail",
+        "position": [
+          -1.55,
+          5.02,
+          -2.4
+        ],
+        "size": [
+          0.86,
+          0.3,
+          0.86
+        ],
+        "material": "accent"
+      },
+      {
+        "id": "vent-cap-east",
+        "shape": "cone",
+        "role": "detail",
+        "position": [
+          1.55,
+          5.02,
+          -2.4
+        ],
+        "size": [
+          0.86,
+          0.3,
+          0.86
+        ],
+        "material": "accent"
+      },
+      {
+        "id": "signal-band-west",
+        "shape": "box",
+        "role": "detail",
+        "position": [
+          -3.35,
+          1.85,
+          0.2
+        ],
+        "size": [
+          0.68,
+          0.18,
+          0.45
+        ],
+        "material": "accent"
+      },
+      {
+        "id": "signal-band-east",
+        "shape": "box",
+        "role": "detail",
+        "position": [
+          3.35,
+          1.85,
+          0.2
+        ],
+        "size": [
+          0.68,
+          0.18,
+          0.45
+        ],
+        "material": "accent"
+      }
+    ]
+  }
+}
