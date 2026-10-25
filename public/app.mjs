@@ -49,9 +49,10 @@ function renderThemeContract(value,{selectPreset=true,preview=true}={}){
   document.querySelectorAll('[data-palette]').forEach(input=>{input.value=themeContract.palette[input.dataset.palette];});
   $('theme-description').textContent=themeContract.description;
   $('theme-contract-name').textContent=(themeContract.name||'Untitled contract').toUpperCase();
+  $('commander-label').textContent=`${(themeContract.referencePreset||'argonaut').toUpperCase()} / SENSOR TEST`;
   $('palette').replaceChildren(...Object.values(themeContract.palette).map(color=>{const swatch=el('span',undefined,'swatch');swatch.style.background=color;return swatch;}));
   document.documentElement.style.setProperty('--green',themeContract.palette.ground);
-  if(preview&&!busy){releasePinned=false;sceneRevision++;const recipe=fixtureRecipe(themeContract.referencePreset||'argonaut');world.load(recipe,themeContract);$('scene-theme').textContent=themeContract.name.toUpperCase();$('scene-name').textContent=recipe.name.toUpperCase();$('version-label').textContent='THEME PREVIEW';$('commander-label').textContent=`${themeContract.gameplayRole||'SENSOR OUTPOST'} TEST`;lastHash='';}
+  if(preview&&!busy){releasePinned=false;sceneRevision++;const recipe=fixtureRecipe(themeContract.referencePreset||'argonaut');world.load(recipe,themeContract);$('scene-theme').textContent=themeContract.name.toUpperCase();$('scene-name').textContent=recipe.name.toUpperCase();$('version-label').textContent='THEME PREVIEW';lastHash='';}
 }
 function themeChanged(){
   const preset=THEMES[$('theme').value];if(!preset)return;
@@ -71,7 +72,9 @@ function renderChecks(checks=[]){
   }));$('pass-count').textContent=`${checks.filter(c=>c.status==='pass').length} / 6 VERIFIED`;
 }
 function renderJob(job){
-  currentJob=job;busy=!terminal.includes(job.status);$('start').disabled=busy;$('cancel').hidden=!busy;setEditorLocked(busy);
+  const newJob=currentJob?.id!==job.id;
+  if(newJob&&typeof job.prompt==='string'){$('prompt').value=job.prompt;displayedBrief=Object.values(briefs).includes(job.prompt)?job.prompt:'';}
+  currentJob=job;busy=!terminal.includes(job.status);$('start').disabled=busy;$('cancel').hidden=!busy;setEditorLocked(busy);$('contract-version').textContent=`CONTRACT v${job.contractVersion||1}`;
   const editorContract=editorTheme(job.theme,job.themeId);
   if(JSON.stringify(themeContract)!==JSON.stringify(editorContract))renderThemeContract(editorContract,{selectPreset:true,preview:false});
   $('run-status').textContent=job.status.toUpperCase();$('run-title').textContent=job.status==='accepted'?'A candidate has earned its place.':job.status==='active'?'The asset is active in the test scene.':job.status==='blocked'?'The loop needs attention.':busy?'The next iteration is taking shape.':'Run complete.';
