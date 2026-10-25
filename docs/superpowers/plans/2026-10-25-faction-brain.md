@@ -45,9 +45,24 @@ GM-v1-shaped report. It never mutates view, calls a model, or commits an action.
 - [x] Run focused tests, then cargo test --workspace -- --test-threads=1;
   run targeted rustfmt, clippy and diff inspection.
 - [x] Review the whole owned change, record actual results and limitations.
-- [ ] Under integration lock, fetch origin/main, reconcile drift, rerun checks needed
+- [x] Under integration lock, fetch origin/main, reconcile drift, rerun checks needed
   by combined changes, stage only owned paths, inspect staged diff, commit with ACs,
   push normally to main and verify the published revision.
 
 Host exports, real observation ingress, model arbitration, GM ingestion and paid
 build execution are a later adapter checkpoint with explicit owner handoffs.
+
+### Task 2: Cities-first proposal boundary
+
+Same owned files. GM agreed building_need/blocked_building_need in v1 envelope.
+Terrain/G retain legal placement/site/nav/rights; real city placement stays blocked.
+
+- [x] Add failing tests for building report/ACL/revision/site retention, affordability,
+  route blocks, unknown-design requests, wrong category/missing site, and legacy JSON.
+- [x] Add optional Need.category defaulting legacy JSON to unit, and additive
+  BuildStructure {design_id,approval_sha256,metal_cost,site_id}; reuse paid validation.
+- [x] Add a failing default-policy test where a feasible city need precedes a
+  higher-scoring unit need; implement the preference in policy.lua.
+- [x] Verify focused tests, clippy, formatting and a frozen combined workspace;
+  review the delta, preserving preexisting timing failures and actual blockers.
+- [ ] Serialize fetch/drift/check/explicit commit/normal main push under lock.

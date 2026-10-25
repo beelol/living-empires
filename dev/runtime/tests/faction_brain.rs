@@ -1,7 +1,9 @@
 #[path = "../src/faction_brain/mod.rs"]
 mod faction_brain;
 
-use faction_brain::{plan, Action, Candidate, FactionView, Need, Observation, Planner};
+use faction_brain::{
+    plan, Action, Candidate, FactionView, Need, NeedCategory, Observation, Planner,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -21,12 +23,14 @@ fn view() -> FactionView {
             Need {
                 id: "defense".into(),
                 role: "defender".into(),
+                category: NeedCategory::Unit,
                 urgency: 5,
                 evidence_ids: vec!["own-shortage-7".into()],
             },
             Need {
                 id: "transport".into(),
                 role: "hauler".into(),
+                category: NeedCategory::Unit,
                 urgency: 5,
                 evidence_ids: vec!["own-shortage-7".into()],
             },
@@ -334,4 +338,183 @@ fn policy_promotion_state_cannot_cross_faction_boundaries() {
         .plan("helios", &input, "helios-report-2", 102)
         .unwrap();
     assert_eq!(own.action.unwrap().candidate_id, "request-hauler");
+}
+
+fn city_view() -> FactionView {
+    let mut input = view();
+    input.priorities.insert("generator".into(), 3);
+    input.needs.truncate(1);
+    input.needs[0].category = NeedCategory::Building;
+    input.needs[0].role = "generator".into();
+    input.candidates.truncate(1);
+    input.candidates[0].action = Action::BuildStructure {
+        design_id: "generator-v1".into(),
+        approval_sha256: "b".repeat(64),
+        metal_cost: 40,
+        site_id: "authority-city-slot-4".into(),
+    };
+    input
+}
+
+#[test]
+fn building_choice_preserves_authority_site_and_private_building_report() {
+    let input = city_view();
+    let decision = plan("helios", &input, "city-need-1", 100).unwrap();
+    let event = decision.report.unwrap();
+    assert_eq!(event.kind, "building_need");
+    assert_eq!(event.allowed_recipients, vec!["helios"]);
+    assert_eq!(event.payload["category"], "building");
+    assert_eq!(event.payload["observed_revision"], 7);
+    assert_eq!(
+        event.payload["proposal"]["action"]["site_id"],
+        "authority-city-slot-4"
+    );
+    assert_eq!(
+        event.payload["proposal"]["action"]["approval_sha256"],
+        "b".repeat(64)
+    );
+    assert_eq!(
+        input.available_metal, 100,
+        "a city proposal is not a paid build"
+    );
+}
+
+#[test]
+fn city_proposals_respect_both_budget_and_authoritative_route_blocks() {
+    for (metal, ceiling, reason) in [(39, 60, "insufficient_metal"), (100, 39, "spending_limit")] {
+        let mut input = city_view();
+        input.available_metal = metal;
+        input.spending_limit = ceiling;
+        let result = plan("helios", &input, "city-need-1", 100).unwrap();
+        assert!(result.action.is_none());
+        let event = result.report.unwrap();
+        assert_eq!(event.kind, "blocked_building_need");
+        assert_eq!(event.payload["blockers"], json!([reason]));
+    }
+    let mut input = city_view();
+    input.candidates[0].blockers = vec!["no_connected_route".into()];
+    let result = plan("helios", &input, "city-need-1", 100).unwrap();
+    assert!(result.action.is_none());
+    assert_eq!(
+        result.report.unwrap().payload["blockers"],
+        json!(["no_connected_route"])
+    );
+}
+
+#[test]
+fn unknown_building_design_reports_need_without_creating_a_free_structure() {
+    let mut input = city_view();
+    input.candidates[0].action = Action::RequestDesign;
+    let requested = plan("helios", &input, "city-need-1", 100).unwrap();
+    assert_eq!(requested.report.unwrap().kind, "building_need");
+    assert_eq!(requested.action.unwrap().action, Action::RequestDesign);
+    input.candidates.clear();
+    let blocked = plan("helios", &input, "city-need-2", 101).unwrap();
+    assert!(blocked.action.is_none());
+    assert_eq!(blocked.report.unwrap().kind, "blocked_building_need");
+}
+
+#[test]
+fn rejects_structure_without_site_or_wrong_need_category() {
+    let mut input = city_view();
+    input.needs[0].category = NeedCategory::Unit;
+    assert!(plan("helios", &input, "city-need-1", 100).is_err());
+    input = city_view();
+    input.candidates[0].action = Action::BuildUnit {
+        design_id: "guard-v1".into(),
+        approval_sha256: "a".repeat(64),
+        metal_cost: 40,
+    };
+    assert!(plan("helios", &input, "city-need-1", 100).is_err());
+    input = city_view();
+    if let Action::BuildStructure { site_id, .. } = &mut input.candidates[0].action {
+        site_id.clear();
+    }
+    assert!(plan("helios", &input, "city-need-1", 100).is_err());
+    for (hash, cost) in [("unreviewed".into(), 40), ("b".repeat(64), 0)] {
+        input = city_view();
+        input.candidates[0].action = Action::BuildStructure {
+            design_id: "generator-v1".into(),
+            approval_sha256: hash,
+            metal_cost: cost,
+            site_id: "authority-city-slot-4".into(),
+        };
+        assert!(plan("helios", &input, "city-need-1", 100).is_err());
+    }
+}
+
+#[test]
+fn legacy_unit_view_without_category_keeps_v1_behavior() {
+    let mut encoded = serde_json::to_value(view()).unwrap();
+    for need in encoded["needs"].as_array_mut().unwrap() {
+        need.as_object_mut().unwrap().remove("category");
+    }
+    let old: FactionView = serde_json::from_value(encoded).unwrap();
+    let decision = plan("helios", &old, "report-1", 100).unwrap();
+    assert_eq!(decision.action.unwrap().candidate_id, "build-defense");
+    assert_eq!(decision.report.unwrap().kind, "unit_need");
+}
+
+#[test]
+fn default_lua_policy_prioritizes_feasible_city_need_before_other_empire_work() {
+    let mut input = view();
+    input.priorities.insert("generator".into(), 1);
+    input.needs.push(Need {
+        id: "city-power".into(),
+        role: "generator".into(),
+        category: NeedCategory::Building,
+        urgency: 1,
+        evidence_ids: vec!["own-shortage-7".into()],
+    });
+    input.candidates.push(Candidate {
+        id: "request-city-generator".into(),
+        need_id: "city-power".into(),
+        action: Action::RequestDesign,
+        blockers: vec![],
+    });
+    let result = plan("helios", &input, "city-need-1", 100).unwrap();
+    assert_eq!(
+        result.action.unwrap().candidate_id,
+        "request-city-generator"
+    );
+    assert_eq!(result.report.unwrap().kind, "building_need");
+}
+
+#[test]
+fn building_report_enters_real_gm_once_and_cannot_route_to_another_faction() {
+    use argon_dev::game_master::{Event, GameMaster, Proposal};
+    let report = plan("helios", &city_view(), "city-need-1", 100)
+        .unwrap()
+        .report
+        .unwrap();
+    let event: Event = serde_json::from_value(serde_json::to_value(report).unwrap()).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("gm.json");
+    let mut gm = GameMaster::load(&path).unwrap();
+    gm.ingest(event.clone()).unwrap();
+    gm.ingest(event.clone()).unwrap();
+    assert_eq!(
+        gm.revision(),
+        1,
+        "repeated planner delivery must not add facts twice"
+    );
+    let route = |target: &str| Proposal {
+        action: "route".into(),
+        event_ids: vec!["city-need-1".into()],
+        target: target.into(),
+        summary: "Forward the recorded building need".into(),
+    };
+    let denied = gm
+        .decide("wrong-recipient", gm.revision(), route("tide"))
+        .unwrap();
+    assert!(!denied.accepted);
+    assert!(gm.deliveries("tide").is_empty());
+    let accepted = gm
+        .decide("own-recipient", gm.revision(), route("helios"))
+        .unwrap();
+    assert!(accepted.accepted);
+    drop(gm);
+    let restored = GameMaster::load(&path).unwrap();
+    assert_eq!(restored.deliveries("helios"), vec![event]);
+    assert!(restored.deliveries("tide").is_empty());
 }

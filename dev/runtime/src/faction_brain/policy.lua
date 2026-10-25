@@ -6,8 +6,11 @@ return {
         local best = nil
         for _, option in ipairs(options) do
             if best == nil
-                or option.score_key > best.score_key
-                or (option.score_key == best.score_key and option.id < best.id) then
+                or (option.category == 'building' and best.category ~= 'building')
+                or (option.category == best.category and (
+                    option.score_key > best.score_key
+                    or (option.score_key == best.score_key and option.id < best.id)
+                )) then
                 best = option
             end
         end

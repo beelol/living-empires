@@ -2,7 +2,8 @@
 
 Owner: empire-brain chat 01a17437-6306-7ac2-a731-8b43d2e66ec7.
 Baseline: 347c8608d13a730d37fab3d7b82d07dfd513ae16.
-Primary ACs: FAC-03, FAC-12, GEN-07 (supporting behavior, not full passes).
+Primary ACs: FAC-03, FAC-12, GEN-07; city increment supports SET-01/02
+(supporting behavior, not full passes).
 Affected ACs: FAC-02, FAC-05, FAC-06, FAC-09, LIVE-01, UX-04, AUD-04,
 SET-04, WORLD-02, WORLD-05.
 
@@ -18,7 +19,8 @@ User requests continued work and working checkpoint pushes to main.
 
 GM owner: Connect agentic layer to Argon GM / bilal-argon-gm. Agreed v1 report:
 {id, source, at, kind, payload, allowed_recipients}. source=faction-brain,
-kind=unit_need or blocked_need, ACL=[own faction]. at is UNIX UTC seconds.
+kind=unit_need or blocked_need, plus agreed building_need/blocked_building_need
+for the cities-first increment. ACL=[own faction]. at is UNIX UTC seconds.
 An ID identifies immutable facts, source, time and ACL; the GM rejects conflicting
 reuse. GM owns durable intake/deduplication, private memory, prioritization and
 pending request_content routing to Studio. This module owns no history writer.
@@ -37,14 +39,15 @@ exports it. No authoritative gameplay schema is changed.
 ## Small design
 
 Use a faction-bound planner from an authoritative faction view: explicit allowed
-observations, unmet unit-role needs, saved role priorities, actual available metal,
+observations, unmet unit/building-role needs, saved role priorities, actual available metal,
 spending ceiling and candidate actions supplied by authority. Reject a mismatched
 actor, invalid evidence or malformed view before producing any report. A candidate
 is a request for a design or a proposed paid build naming an approval fingerprint;
 it never grants inventory, approval, roster access or a unit.
 
-The default Lua policy ranks feasible candidates by need urgency times saved role
-weight, then stable candidate IDs. A replacement Lua policy may select any feasible
+The default Lua policy prefers feasible building needs, then ranks within each
+category by need urgency times saved role weight and stable candidate IDs.
+A replacement Lua policy may select any feasible
 candidate; it cannot widen feasibility. Rust computes the exact integer score and
 passes a sortable string to avoid Lua overflow/rounding. No world state enters Lua.
 An explicit blocker or unaffordable build cannot be selected. If an unmet enabled
@@ -111,3 +114,72 @@ Ruling: user said continue after the recommended approach; proceed with the smal
 game-managed policy, without another platform-choice approval loop.
 Ruling: changeable selection lives in Lua; Rust keeps scoped validation and exact
 integer score encoding. This follows the coordinator's updated live/Lua direction.
+
+## Cities-first follow-up
+
+User's latest priority is three starter civilizations (organic aliens, cyborg
+aliens and robots) in the same live world, with coherent cities grounded on terrain
+and connected usable navigable space. The planner's next supporting change adds NeedCategory
+(unit/building), defaulting missing v1 JSON categories to unit, and a BuildStructure
+proposal carrying design_id, exact approval reference, paid cost and an opaque
+site_id supplied by authority. Existing Rust callers constructing Need literals
+must supply category; repository search found no consumers outside this module's
+tests. No diplomacy schema, saved world or GM envelope changes.
+
+GM explicitly agreed building_need/blocked_building_need and will request content
+only for actual unmet building needs. Terrain explicitly states that
+Terrain::sample and can_traverse([f64;2],[f64;2]) do not establish building rights,
+footprint/entrance clearance, site approval, ownership or mining rights. G/terrain
+must supply those contracts and real legal candidates. Actual city placement,
+coherent layout and navigation proof remain BLOCKED. Site IDs in tests are
+fixtures, never fabricated live approval tokens. No site IDs are generated here.
+
+The same Rust validation enforces positive paid costs, exact hash syntax, budget
+and authoritative blocker codes for both unit and building proposals. A unit
+recipe cannot fulfill a building need or vice versa. Lua now gets the explicit
+category and prefers feasible building work before other empire work; weights
+still select among needs in that category. An unknown building may produce only
+a design request; missing legal actions remain blocked. No build completes here.
+
+City TDD: after type scaffolding, four new behavior tests failed (report kind,
+affordability, category/site validation and design-request kind); the implementation
+made them pass. A separate city-first Lua test then failed against the old weighted
+default before the policy change. Legacy category-free unit JSON remains covered.
+
+City verification: frozen committed-main cebe62f05b9fcef0e253b33d8d43f25bb6f7c45e
+plus this stream's five files passed all 116 Rust workspace tests serially in the
+separate cache, including the three content startup guards that failed in earlier
+attempts. Those earlier failures remain recorded above. All 22 focused tests,
+targeted clippy, rustfmt and diff checks pass. Independent city-delta review found
+no actionable issues. Actual live city placement/connected navigation is still
+blocked; none of these fixture tests establishes that proof.
+
+After the public GM/planner exports landed, a real file-backed interoperability
+check was added: deserialize the building report as GM Event, ingest twice once,
+reject routing to Tide, route to Helios, restart and recover that exact report.
+The focused suite is now 23/23 and targeted clippy passes. Production source is
+unchanged from the 116-test frozen run; the added consumer check uses the committed
+GM public interface. No live model or World placement is exercised by it.
+
+G/build-authority confirmed Construction::start consumes a trusted server-frozen
+Recipe but does not approve roster, cost, site or actor identity by itself. There
+is still no live World adapter or agreed faction-local inventory/site identity.
+BuildStructure execution stays blocked until the actual World owner supplies it.
+
+Proposed minimal LegalSite v1 split sent to G/terrain/GM: G owns a faction,
+world/terrain revision and exact recipe-bound site lookup; terrain supplies actual
+ground pose, footprint/entrance validation and a concrete connected route from an
+owned anchor; G validates rights, overlap and payment in the single World
+transaction. This is not a settled implemented interface yet. No more standalone
+planner expansion is planned before one real grounded paid building and route
+proof. Active-path Lua watcher -> validation -> decision/tick activation -> client
+visibility is also not wired by this module; source staging API tests do not
+establish that live path.
+
+City integration base: c1f5161b119553e582f3b619a0bed45c9c8e579b, matching fetched
+origin/main. Inspected intervening event modules, public core exports, Studio
+receiver, native launcher and runner recovery; no conflicting planner contract.
+Final verification caught a shared-cache run executing only the old 16-test
+binary despite 23 tests in source; that run was discarded as candidate evidence.
+Rebuilding in this stream's private cache compiled the actual current source and
+passed all 23 tests, including the real GM consumer check, plus targeted clippy.

@@ -40,8 +40,18 @@ pub struct Observation {
 pub struct Need {
     pub id: String,
     pub role: String,
+    #[serde(default)]
+    pub category: NeedCategory,
     pub urgency: u32,
     pub evidence_ids: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NeedCategory {
+    #[default]
+    Unit,
+    Building,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +74,13 @@ pub enum Action {
         approval_sha256: String,
         metal_cost: u64,
     },
+    BuildStructure {
+        design_id: String,
+        approval_sha256: String,
+        metal_cost: u64,
+        /// Opaque authority-issued site reference; the planner cannot approve placement.
+        site_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -73,6 +90,7 @@ pub struct SelectedAction {
     pub candidate_id: String,
     pub need_id: String,
     pub role: String,
+    pub category: NeedCategory,
     pub score: u64,
     pub action: Action,
 }
@@ -197,8 +215,7 @@ impl Planner {
             Some(feasible[index])
         };
         let policy_version = self.active.version.clone();
-        let (need, action, kind, status, reasons) = if let Some((need, candidate, score)) = selected
-        {
+        let (need, action, status, reasons) = if let Some((need, candidate, score)) = selected {
             (
                 Some(need),
                 Some(SelectedAction {
@@ -207,10 +224,10 @@ impl Planner {
                     candidate_id: candidate.id.clone(),
                     need_id: need.id.clone(),
                     role: need.role.clone(),
+                    category: need.category,
                     score,
                     action: candidate.action.clone(),
                 }),
-                "unit_need",
                 "proposed",
                 BTreeSet::new(),
             )
@@ -227,19 +244,24 @@ impl Planner {
             if reasons.is_empty() {
                 reasons.insert("no_supported_action".into());
             }
-            (Some(*need), None, "blocked_need", "blocked", reasons)
+            (Some(*need), None, "blocked", reasons)
         } else {
-            (None, None, "", "", BTreeSet::new())
+            (None, None, "", BTreeSet::new())
         };
         let report = need.map(|need| NeedReport {
             id: report_id.into(),
             source: "faction-brain".into(),
             at,
-            kind: kind.into(),
+            kind: match (need.category, action.is_some()) {
+                (NeedCategory::Unit, true) => "unit_need",
+                (NeedCategory::Unit, false) => "blocked_need",
+                (NeedCategory::Building, true) => "building_need",
+                (NeedCategory::Building, false) => "blocked_building_need",
+            }.into(),
             allowed_recipients: vec![actor.into()],
             payload: json!({
                 "schema_version":1, "faction_id":actor, "observed_revision":view.revision,
-                "need_id":need.id, "role":need.role, "urgency":need.urgency,
+                "need_id":need.id, "role":need.role, "category":need.category, "urgency":need.urgency,
                 "evidence_ids":need.evidence_ids, "status":status, "proposal":action,
                 "blockers":reasons, "available_metal":view.available_metal,
                 "spending_limit":view.spending_limit, "policy_version":policy_version,
@@ -338,10 +360,32 @@ fn validate(actor: &str, view: &FactionView, report_id: &str) -> Result<()> {
                 && candidate.blockers.iter().all(|reason| identifier(reason)),
             "invalid candidate blockers"
         );
+        let need = view
+            .needs
+            .iter()
+            .find(|need| need.id == candidate.need_id)
+            .context("candidate has no need")?;
+        match &candidate.action {
+            Action::BuildUnit { .. } => ensure!(
+                need.category == NeedCategory::Unit,
+                "unit recipe cannot fulfill a building need"
+            ),
+            Action::BuildStructure { site_id, .. } => ensure!(
+                need.category == NeedCategory::Building && identifier(site_id),
+                "building requires a building need and authority site reference"
+            ),
+            Action::RequestDesign => {}
+        }
         if let Action::BuildUnit {
             design_id,
             approval_sha256,
             metal_cost,
+        }
+        | Action::BuildStructure {
+            design_id,
+            approval_sha256,
+            metal_cost,
+            ..
         } = &candidate.action
         {
             ensure!(
@@ -360,7 +404,9 @@ fn validate(actor: &str, view: &FactionView, report_id: &str) -> Result<()> {
 
 fn blockers(candidate: &Candidate, view: &FactionView) -> BTreeSet<String> {
     let mut reasons: BTreeSet<_> = candidate.blockers.iter().cloned().collect();
-    if let Action::BuildUnit { metal_cost, .. } = candidate.action {
+    if let Action::BuildUnit { metal_cost, .. } | Action::BuildStructure { metal_cost, .. } =
+        candidate.action
+    {
         if metal_cost > view.available_metal {
             reasons.insert("insufficient_metal".into());
         }
@@ -389,6 +435,13 @@ impl Policy {
             let row = lua.create_table()?;
             row.set("id", candidate.id.as_str())?;
             row.set("role", need.role.as_str())?;
+            row.set(
+                "category",
+                match need.category {
+                    NeedCategory::Unit => "unit",
+                    NeedCategory::Building => "building",
+                },
+            )?;
             // Exact lexical order avoids Lua signed overflow and f64 rounding.
             row.set("score_key", format!("{score:020}"))?;
             rows.set(index + 1, row)?;
