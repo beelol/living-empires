@@ -81,6 +81,18 @@ struct Attempt {
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct ReportDelivery {
+    actor: String,
+    received_at: u64,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReceivedReport {
+    event: crate::game_master::Event,
+    deliveries: Vec<ReportDelivery>,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Saved {
     schema_version: u32,
     revision: u64,
@@ -90,6 +102,8 @@ struct Saved {
     history: Vec<Event>,
     decisions: Vec<Receipt>,
     attempts: Vec<Attempt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reports: Vec<ReceivedReport>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -158,6 +172,65 @@ impl Diplomacy {
     pub fn attempts(&self) -> u64 {
         self.saved.attempts.len() as u64
     }
+    /// Trusted authority only. Eligibility is not delivery; this records one actor
+    /// learning exact source facts. Replays keep the original receipt time.
+    pub fn ingest_report(
+        &mut self,
+        actor: &str,
+        event: &crate::game_master::Event,
+        received_at: u64,
+    ) -> Result<()> {
+        validate_report(event)?;
+        ensure!(
+            FACTION_IDS.contains(&actor) && event.allowed_recipients.iter().any(|id| id == actor),
+            "report is not permitted for this faction"
+        );
+        if let Some(old) = self.saved.reports.iter().find(|r| r.event.id == event.id) {
+            ensure!(
+                old.event == *event,
+                "report ID reused with different facts or permissions"
+            );
+            if old.deliveries.iter().any(|d| d.actor == actor) {
+                return Ok(());
+            }
+        }
+        ensure!(
+            received_at >= event.at,
+            "report cannot be delivered before its source time"
+        );
+        ensure!(
+            self.saved.decisions.iter().all(|r| received_at >= r.at)
+                && self
+                    .saved
+                    .reports
+                    .iter()
+                    .flat_map(|r| &r.deliveries)
+                    .all(|d| received_at >= d.received_at),
+            "clock moved backwards; retry with current time"
+        );
+        ensure!(
+            delivery_count(&self.saved) < LIMIT,
+            "report delivery limit reached"
+        );
+        let mut next = self.saved.clone();
+        let delivery = ReportDelivery {
+            actor: actor.into(),
+            received_at,
+        };
+        if let Some(old) = next.reports.iter_mut().find(|r| r.event.id == event.id) {
+            old.deliveries.push(delivery);
+        } else {
+            next.reports.push(ReceivedReport {
+                event: event.clone(),
+                deliveries: vec![delivery],
+            });
+        }
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .context("revision limit reached")?;
+        self.commit(next)
+    }
     pub fn context(&self, actor: &str, now: u64) -> Result<Value> {
         let own = self
             .saved
@@ -193,14 +266,38 @@ impl Diplomacy {
             .iter()
             .filter(|p| active(p, now) && p.parties.iter().any(|party| party == actor))
             .collect();
+        let mut delivered: Vec<_> = self
+            .saved
+            .reports
+            .iter()
+            .filter_map(|r| {
+                r.deliveries
+                    .iter()
+                    .find(|d| d.actor == actor)
+                    .map(|d| (&r.event, d.received_at))
+            })
+            .collect();
+        delivered.sort_by_key(|(_, at)| *at);
+        let reports: Vec<_> = delivered
+            .into_iter()
+            .rev()
+            .take(16)
+            .map(|(event, received_at)| {
+                json!({"id":event.id,"source":event.source,"at":event.at,"kind":event.kind,
+                "payload":event.payload,"received_at":received_at})
+            })
+            .collect();
         let mut context = json!({"revision":self.revision(),"now":now,"self":own,"known_contacts":contacts,
-            "history":history,"pending_offers":offers,"active_pacts":pacts,
+            "history":history,"reports":reports,"pending_offers":offers,"active_pacts":pacts,
             "scope":"Development diplomacy ledger only; no resources, land, armies or combat effects."});
         // History is newest-first. Keep whole messages and all current terms;
         // only the prompt is shortened, never the authoritative saved history.
         while serde_json::to_vec(&context)?.len() > MAX_CONTEXT {
+            if context["history"].as_array_mut().unwrap().pop().is_some() {
+                continue;
+            }
             ensure!(
-                context["history"].as_array_mut().unwrap().pop().is_some(),
+                context["reports"].as_array_mut().unwrap().pop().is_some(),
                 "current faction facts exceed context size limit"
             );
         }
@@ -218,7 +315,9 @@ impl Diplomacy {
         json!({"schema_version":1,"revision":self.revision(),"now":now,"attempt_count":self.attempts(),
             "factions":self.saved.factions,"pending_offers":offers,"active_pacts":pacts,
             "offer_history":self.saved.offers,"pact_history":self.saved.pacts,
-            "history":self.saved.history,"decisions":self.saved.decisions,"attempts":self.saved.attempts})
+            "history":self.saved.history,"decisions":self.saved.decisions,"attempts":self.saved.attempts,
+            "report_count":self.saved.reports.len(),"delivery_count":delivery_count(&self.saved),
+            "reports":self.saved.reports.iter().rev().take(24).collect::<Vec<_>>()})
     }
     pub fn apply(
         &mut self,
@@ -253,7 +352,13 @@ impl Diplomacy {
         let mut next = self.saved.clone();
         let outcome = (|| -> Result<Value> {
             ensure!(
-                self.saved.decisions.iter().all(|r| now >= r.at),
+                self.saved.decisions.iter().all(|r| now >= r.at)
+                    && self
+                        .saved
+                        .reports
+                        .iter()
+                        .flat_map(|r| &r.deliveries)
+                        .all(|d| now >= d.received_at),
                 "clock moved backwards; retry with current time"
             );
             ensure!(
@@ -402,6 +507,8 @@ impl Diplomacy {
     }
     fn commit(&mut self, next: Saved) -> Result<()> {
         let bytes = serde_json::to_vec(&next)?;
+        let _: Saved = serde_json::from_slice(&bytes)
+            .context("diplomacy candidate cannot be safely reloaded")?;
         ensure!(
             bytes.len() as u64 <= MAX_SAVE,
             "diplomacy save exceeds size limit"
@@ -648,7 +755,49 @@ fn fixtures() -> Saved {
         history: vec![],
         decisions: vec![],
         attempts: vec![],
+        reports: vec![],
     }
+}
+fn delivery_count(s: &Saved) -> usize {
+    s.reports.iter().map(|r| r.deliveries.len()).sum()
+}
+fn validate_report(event: &crate::game_master::Event) -> Result<()> {
+    let identifier = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 160
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.:/".contains(&b))
+    };
+    ensure!(
+        identifier(&event.id) && identifier(&event.source) && identifier(&event.kind),
+        "invalid report identity"
+    );
+    ensure!(
+        serde_json::to_vec(&event.payload)?.len() <= 16384,
+        "report payload exceeds size limit"
+    );
+    // Reports are nested again inside persisted model contexts. Leave enough
+    // depth for those wrappers, not only for the report's own saved envelope.
+    let mut pending = vec![(&event.payload, 0)];
+    while let Some((value, depth)) = pending.pop() {
+        ensure!(depth <= 64, "report payload nesting exceeds limit");
+        match value {
+            Value::Array(values) => pending.extend(values.iter().map(|v| (v, depth + 1))),
+            Value::Object(values) => pending.extend(values.values().map(|v| (v, depth + 1))),
+            _ => {}
+        }
+    }
+    let mut recipients = HashSet::new();
+    ensure!(
+        event.allowed_recipients.len() <= FACTION_IDS.len()
+            && event
+                .allowed_recipients
+                .iter()
+                .all(|id| FACTION_IDS.contains(&id.as_str()) && recipients.insert(id)),
+        "invalid report recipients"
+    );
+    Ok(())
 }
 fn validate_saved(s: &Saved) -> Result<()> {
     ensure!(
@@ -660,13 +809,34 @@ fn validate_saved(s: &Saved) -> Result<()> {
             && s.attempts.len() <= LIMIT
             && s.offers.len() <= LIMIT
             && s.pacts.len() <= LIMIT
-            && s.history.len() <= LIMIT,
+            && s.history.len() <= LIMIT
+            && s.reports.len() <= LIMIT
+            && delivery_count(s) <= LIMIT,
         "saved ledger exceeds limits"
     );
     ensure!(
-        s.revision == s.decisions.iter().filter(|r| r.accepted).count() as u64,
+        s.revision
+            == (s.decisions.iter().filter(|r| r.accepted).count() + delivery_count(s)) as u64,
         "saved revision does not match receipts"
     );
+    let mut report_ids = HashSet::new();
+    for report in &s.reports {
+        validate_report(&report.event)?;
+        ensure!(
+            report_ids.insert(&report.event.id),
+            "duplicate saved report"
+        );
+        ensure!(!report.deliveries.is_empty(), "report has no delivery");
+        let mut recipients = HashSet::new();
+        for delivery in &report.deliveries {
+            ensure!(
+                report.event.allowed_recipients.contains(&delivery.actor)
+                    && recipients.insert(&delivery.actor)
+                    && delivery.received_at >= report.event.at,
+                "invalid saved report delivery"
+            );
+        }
+    }
     let mut ids = HashSet::new();
     for f in &s.factions {
         ensure!(
