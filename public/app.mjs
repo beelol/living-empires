@@ -23,6 +23,16 @@ function validateContract(value){
   if(Array.isArray(result)&&result.length)throw new Error(result.join(' '));
   return result&&typeof result==='object'&&!Array.isArray(result)?result:value;
 }
+function editorTheme(theme,themeId){
+  const source=structuredClone(theme||THEMES[themeId]||THEMES.argonaut);
+  try{return validateContract(source);}catch{
+    // Enrich a copy for this editor and preview; persisted legacy job/release history stays untouched.
+    const base=structuredClone(THEMES[source.referencePreset]||THEMES[themeId]||THEMES[source.id]||THEMES.argonaut),hydrated={...base};
+    for(const key of Object.keys(base))if(key!=='palette'&&source[key]!==undefined)hydrated[key]=source[key];
+    hydrated.id=themeId||source.id||base.id;hydrated.referencePreset=base.referencePreset;hydrated.palette={...base.palette,...source.palette};
+    return validateContract(hydrated);
+  }
+}
 const lines=value=>Array.isArray(value)?value.join('\n'):String(value||'');
 function themeFromForm(){
   const value=structuredClone(themeContract);
@@ -62,7 +72,8 @@ function renderChecks(checks=[]){
 }
 function renderJob(job){
   currentJob=job;busy=!terminal.includes(job.status);$('start').disabled=busy;$('cancel').hidden=!busy;setEditorLocked(busy);
-  if(job.theme&&JSON.stringify(themeContract)!==JSON.stringify(job.theme))renderThemeContract(job.theme,{selectPreset:true,preview:false});
+  const editorContract=editorTheme(job.theme,job.themeId);
+  if(JSON.stringify(themeContract)!==JSON.stringify(editorContract))renderThemeContract(editorContract,{selectPreset:true,preview:false});
   $('run-status').textContent=job.status.toUpperCase();$('run-title').textContent=job.status==='accepted'?'A candidate has earned its place.':job.status==='active'?'The asset is active in the test scene.':job.status==='blocked'?'The loop needs attention.':busy?'The next iteration is taking shape.':'Run complete.';
   $('run-budget').textContent=`${job.attempts.length}/3 CANDIDATES · ${job.calls}/6 CALLS`;
   $('events').replaceChildren(...job.events.slice().reverse().map(event=>{const row=el('div',undefined,'event');row.append(el('time',new Date(event.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})),el('span',event.message));return row;}));
@@ -124,11 +135,11 @@ $('start').onclick=async()=>{
 };
 $('cancel').onclick=async()=>{try{renderJob(await api(`/api/jobs/${currentJob.id}/cancel`,{}));}catch(e){error(e);}};
 $('activate').onclick=async()=>{try{const r=await api(`/api/jobs/${currentJob.id}/activate`,{});$('release-label').textContent=(r.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+r.hash.slice(0,10);renderJob(await api('/api/jobs/'+currentJob.id));}catch(e){error(e);}};
-$('rollback').onclick=async()=>{releasePinned=true;sceneRevision++;try{const r=await api('/api/rollback',{});renderThemeContract(r.theme,{selectPreset:true,preview:false});releasePinned=true;world.load(r.recipe,r.theme);lastHash='';$('scene-name').textContent=r.recipe.name.toUpperCase();$('scene-theme').textContent=r.theme.name.toUpperCase();$('version-label').textContent='RESTORED RELEASE';$('release-label').textContent='RESTORED · '+r.hash.slice(0,10);$('error').textContent='';}catch(e){releasePinned=false;error(e);}};
+$('rollback').onclick=async()=>{releasePinned=true;sceneRevision++;try{const r=await api('/api/rollback',{});renderThemeContract(editorTheme(r.theme,r.theme?.id),{selectPreset:true,preview:false});releasePinned=true;world.load(r.recipe,r.theme);lastHash='';$('scene-name').textContent=r.recipe.name.toUpperCase();$('scene-theme').textContent=r.theme.name.toUpperCase();$('version-label').textContent='RESTORED RELEASE';$('release-label').textContent='RESTORED · '+r.hash.slice(0,10);$('error').textContent='';}catch(e){releasePinned=false;error(e);}};
 try{
   config=await api('/api/config');$('connection').textContent=config.keyConfigured?'GEMINI · CONFIGURED':'OFFLINE REHEARSAL';if(!config.keyConfigured)$('provider').value='fixture';
   $('resolve-theme').disabled=config.themeInferenceEnabled!==true;$('theme-draft-note').textContent=config.themeInferenceEnabled?'GEMINI RESOLUTION AVAILABLE · Costs one request. Review recorded assumptions before use.':'Gemini theme resolution is disabled until an explicit spending cap is enabled. Local keyword drafts use the selected preset fallback.';modeNote();
   const jobs=await api('/api/jobs');if(jobs.length){if(jobs[0].theme)renderThemeContract(jobs[0].theme,{selectPreset:true,preview:false});$('provider').value=jobs[0].provider;modeNote();renderJob(jobs[0]);}
-  const release=await api('/api/release');if(release){$('release-label').textContent=(release.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+release.hash.slice(0,10);if(!currentJob){renderThemeContract(release.theme,{selectPreset:true,preview:false});world.load(release.recipe,release.theme);$('scene-name').textContent=release.recipe.name.toUpperCase();$('scene-theme').textContent=release.theme.name.toUpperCase();$('version-label').textContent='ACTIVE RELEASE';}}
+  const release=await api('/api/release');if(release){$('release-label').textContent=(release.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+release.hash.slice(0,10);if(!currentJob){renderThemeContract(editorTheme(release.theme,release.theme?.id),{selectPreset:true,preview:false});world.load(release.recipe,release.theme);$('scene-name').textContent=release.recipe.name.toUpperCase();$('scene-theme').textContent=release.theme.name.toUpperCase();$('version-label').textContent='ACTIVE RELEASE';}}
 }catch(e){error(e);}
 setInterval(async()=>{if(currentJob&&busy&&!releasePinned&&!pollInFlight){pollInFlight=true;const revision=sceneRevision,jobId=currentJob.id;try{const job=await api('/api/jobs/'+jobId);if(revision===sceneRevision&&!releasePinned)renderJob(job);}catch(e){if(revision===sceneRevision)error(e);}finally{pollInFlight=false;}}},900);
