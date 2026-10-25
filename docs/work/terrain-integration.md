@@ -37,3 +37,15 @@ placement, building collision and fog remain separate owner dependencies. After
 this checkpoint G receives World/lib ownership for durable settlement authority.
 
 Final current-main run: native lib20/20, network2/2 plus terrainnetwork1/1, World4/4 passed. Clippy rejected three decorative angle approximations6.28; replaced with exact TAU constant, no authority change. Original lint failure retained in /private/tmp/argon-terrain-publication-check-before-tau.log.
+
+
+Observer input follow-up (user world-first document): terrain owner retains
+visual.rs input/camera; visual owner owns subsequent HUD/shader changes. Native
+terrain WASD pans camera without queuing world moves; native right-click/stale
+local targets cannot issue orders. Legacy arena controls and any already-pending
+network action remain unchanged. Primary PLY-01/04 (demo camera adaptation),
+affected WORLD-01/03 and UX-02. Tests execute actual Bevy input systems: two
+native regressions failed before the fix, legacy control regression passed.
+No persistence/protocol change; G remains owner of shared authority.
+
+Observer follow-up final checks:28/28 native library tests and strict library/binary clippy pass; independent code review found no actionable important issue. See docs/evidence/terrain/2026-10-25-native-checkpoint.md for captured evidence and explicit gaps.

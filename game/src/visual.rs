@@ -252,16 +252,16 @@ fn camera_control(
         view.centered = true;
     }
     let mut pan = Vec3::ZERO;
-    if keys.pressed(KeyCode::ArrowLeft) {
+    if keys.pressed(KeyCode::ArrowLeft) || (native && keys.pressed(KeyCode::KeyA)) {
         pan.x -= 1.0;
     }
-    if keys.pressed(KeyCode::ArrowRight) {
+    if keys.pressed(KeyCode::ArrowRight) || (native && keys.pressed(KeyCode::KeyD)) {
         pan.x += 1.0;
     }
-    if keys.pressed(KeyCode::ArrowUp) {
+    if keys.pressed(KeyCode::ArrowUp) || (native && keys.pressed(KeyCode::KeyW)) {
         pan.z -= 1.0;
     }
-    if keys.pressed(KeyCode::ArrowDown) {
+    if keys.pressed(KeyCode::ArrowDown) || (native && keys.pressed(KeyCode::KeyS)) {
         pan.z += 1.0;
     }
     let yaw = view.yaw;
@@ -333,7 +333,10 @@ fn player_input(
     camera: Query<(&Camera, &GlobalTransform), With<ArenaCamera>>,
     mut marker: Query<(&mut Transform, &mut Visibility), With<TargetMarker>>,
 ) {
-    if active_scene(&state).is_none() {
+    // Native terrain sessions are observers. Never turn camera input or an old
+    // local destination into an authoritative movement command. A pending
+    // acknowledged/retried network action remains owned by ClientState.
+    if state.terrain_info.is_some() || active_scene(&state).is_none() {
         view.target = None;
         for (_, mut visibility) in &mut marker {
             *visibility = Visibility::Hidden;
@@ -534,5 +537,109 @@ fn capture_frame(mut commands: Commands, keys: Res<ButtonInput<KeyCode>>, mut co
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(path));
+    }
+}
+
+#[cfg(test)]
+mod observer_tests {
+    use super::*;
+    use crate::client::ClientConfig;
+
+    fn fixture(native: bool) -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = ClientState::new(ClientConfig {
+            server: "127.0.0.1:4000".parse().unwrap(),
+            session: dir.path().join("observer.json"),
+        })
+        .unwrap();
+        state.ready = true;
+        state.welcomed = true;
+        state.terrain_manifest_received = true;
+        if native {
+            let terrain = argon_dev::terrain::Terrain::generate(72913);
+            state.terrain_info = Some(terrain.info());
+            state.terrain = Some(terrain);
+        }
+        state.player = Some(argon_dev::world::Player {
+            id: "observer".into(),
+            name: "Observer".into(),
+            x: if native { 1536. } else { 440. },
+            y: if native { 1536. } else { 230. },
+        });
+        let mut app = App::new();
+        app.insert_resource(state)
+            .init_resource::<ViewState>()
+            .init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_message::<MouseWheel>()
+            .add_systems(Update, (camera_control, player_input).chain());
+        app.world_mut()
+            .spawn((ArenaCamera, Transform::default(), DistanceFog::default()));
+        app.world_mut()
+            .spawn((TargetMarker, Transform::default(), Visibility::Visible));
+        app.update();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(100));
+        app.world_mut().resource_mut::<ViewState>().last_input =
+            Instant::now() - Duration::from_secs(1);
+        (app, dir)
+    }
+
+    #[test]
+    fn native_wasd_pans_camera_without_moving_saved_player() {
+        let (mut app, _dir) = fixture(true);
+        let initial = app.world().resource::<ViewState>().focus;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.update();
+        assert!(
+            app.world().resource::<ViewState>().focus.z < initial.z,
+            "W must pan the observer camera"
+        );
+        let state = app.world().resource::<ClientState>();
+        assert!(
+            state.pending.is_none(),
+            "observer input must not send a world movement command"
+        );
+        assert_eq!(
+            (
+                state.player.as_ref().unwrap().x,
+                state.player.as_ref().unwrap().y
+            ),
+            (1536., 1536.)
+        );
+    }
+
+    #[test]
+    fn native_input_discards_stale_destination_and_hides_order_marker() {
+        let (mut app, _dir) = fixture(true);
+        app.world_mut().resource_mut::<ViewState>().target = Some(Vec2::new(1540., 1536.));
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.update();
+        assert!(
+            app.world().resource::<ClientState>().pending.is_none(),
+            "observer must not continue a stale movement destination"
+        );
+        assert!(app.world().resource::<ViewState>().target.is_none());
+        let world = app.world_mut();
+        let mut markers = world.query_filtered::<&Visibility, With<TargetMarker>>();
+        assert!(markers.iter(world).all(|v| *v == Visibility::Hidden));
+    }
+
+    #[test]
+    fn legacy_wasd_still_queues_commander_movement_without_camera_pan() {
+        let (mut app, _dir) = fixture(false);
+        let initial = app.world().resource::<ViewState>().focus;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.update();
+        assert_eq!(app.world().resource::<ViewState>().focus, initial);
+        assert!(app.world().resource::<ClientState>().pending.is_some());
     }
 }
