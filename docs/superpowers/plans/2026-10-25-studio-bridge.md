@@ -52,3 +52,17 @@ Ruling: user explicitly chose continued autonomous implementation (â€œup to youâ
 - [x] Verify 23 tests including CLI producer; GM owns host importer/live wiring.
 - [x] Enforce GM owner's exact batch/payload/identity caps and receipt-driven
   paging; 25 tests pass, including 1024-event resume and 1MiB delivery boundary.
+
+## Landed Foundry automatic integration
+
+- [x] Test and implement dev/studio/foundry.py actualHTTP controller: permitted
+  request_design facts, semantic need dedup, persisted-before-RPC, uncertain
+  outcome reconciliation, immutable typed-Rust-verified package/image spool.
+- [x] Keep creator input to role/category/visual theme; full private facts local.
+  Revised live launch approved after original privacy rejection; actualGM attached.
+- [x] Native audit example captures exact recipe geometry in3Bevy viewpoints;
+  actualGPU v3 run succeeded, failed earlier runs retained.
+- [x] Checks: Python36, Node23, coreRust21, native geometry1 passed.
+- [ ] Commit/push this bounded real connection checkpoint under integration lock.
+- [ ] Automatic native independent review + authority release/paid use.
+- [ ] ActualWorldneeds, automatic unit producer/actors and expansion end-to-end.
