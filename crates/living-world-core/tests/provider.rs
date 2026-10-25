@@ -249,3 +249,12 @@ fn repair_fixture_removes_only_audit_obstruction_and_preserves_identity() {
     mismatch.id = "other-theme".into();
     assert!(repair_fixture(&previous, &mismatch).unwrap_err().to_string().contains("frozen theme"));
 }
+
+#[test]
+fn managed_prompt_has_an_exact_valid_component_example() {
+ let (_,body)=build_generation_request(&request(true)).unwrap();
+ let text=body["input"][0]["text"].as_str().unwrap();
+ assert!(text.contains("\"partIds\":[\"part-one\"]"));
+ assert!(text.contains("lowercase hyphenated"));
+ assert!(text.contains("Elevated fins"));
+}

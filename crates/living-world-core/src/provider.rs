@@ -126,14 +126,14 @@ fn prompt_text(request: &GenerationRequest) -> Result<String, ProviderError> {
       "description": "string, at most 2000 characters",
       "sensorRadius": "number from 1 to 20",
       "parts": {"minItems":4,"maxItems":128,"part":{"id":"unique string","shape":["box","cylinder","cone"],"role":["wall","support","roof","detail"],"position":"[x,y,z] metres; y up","size":"[width,height,depth] full extents in metres","material":["shell","frame","accent"]}},
-      "scene":{"halfExtent":half_extent,"components":"prompt-chosen named visual groups with unique ids, descriptive roles, and exact partIds coverage; at most 32 groups"}
+      "scene":{"halfExtent":half_extent,"components":[{"id":"main-body","name":"Main body","role":"structure","partIds":["part-one"]}]}
     });
     let mut text = format!(
         "Create one complete, cohesive 3D sensor-outpost scene selected by the artistic brief. Compose distinct connected component groups that together form one legible whole outpost, rather than repeating an isolated prefab. Return ONLY JSON matching this contract: {recipe}\n\
          Frozen full theme contract (follow every field, exclusions, and visual check): {}\n\
          User brief: {}\n\
          Frozen user refinement feedback, when supplied: {}\n\
-         Compose each named group from its partIds and design the entire outpost as a consistent whole. Component roles are descriptive visual metadata only, not claims of unimplemented game functions. Geometry: ground y=0. Use the frozen scene halfExtent of {half_extent} metres on each x/z side; the complete composition fits inside it. Preserve the unobstructed central access route and grounded supports. Sensor radius 8..20m. Use palette material tokens only; no code. Preserve the theme, identity, and gameplay role when repairing. Micro weathering/moss/texture in the contract is metadata, not separately rendered detail.",
+         Use scene.components as an array of objects with all four fields id, name, role, partIds. Each component id must be a unique lowercase hyphenated slug, at most 64 ASCII characters, without underscores, leading/trailing hyphens or repeated hyphens. Component name and role are non-empty strings. Every part ID must appear exactly once in a component partIds array. The example part-one is a placeholder: replace it with your actual part IDs. Compose each named group from its partIds and design the entire outpost as a consistent whole. Elevated fins and ornaments use part role detail; only walls and supports whose bases touch ground use wall or support. Component roles are descriptive visual metadata only, not claims of unimplemented game functions. Geometry: ground y=0. Use the frozen scene halfExtent of {half_extent} metres on each x/z side; the complete composition fits inside it. Preserve the unobstructed central access route and grounded supports. Sensor radius 8..20m. Use palette material tokens only; no code. Preserve the theme, identity, and gameplay role when repairing. Micro weathering/moss/texture in the contract is metadata, not separately rendered detail.",
         serde_json::to_string(&request.theme).map_err(|_| ProviderError::new("Could not encode frozen theme contract"))?,
         request.prompt,
         request.user_feedback.as_deref().unwrap_or("none"),
