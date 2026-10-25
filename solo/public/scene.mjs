@@ -1,4 +1,6 @@
 import * as THREE from '/vendor/three.js';
+import {groundHeight} from './chunks.mjs';
+import {createTerrain} from './terrain.mjs';
 import {coast,snap,canBuild,DEFINITIONS,HALF} from '/model.mjs';
 const P={sand:0xc3bc9e,rock:0x949c8e,shell:0xe3e5d8,frame:0x374e50,accent:0xcf6d3e,light:0x86d7ce};
 export function createColonyView(container,{onGround,onSelect,onHover,onError}){
@@ -11,15 +13,8 @@ export function createColonyView(container,{onGround,onSelect,onHover,onError}){
  function box(parent,size,position,color=P.shell,extra={}){return mesh(parent,new THREE.BoxGeometry(...size),position,mat(color,extra));}
  function mesh(parent,geometry,position,material){const m=new THREE.Mesh(geometry,material);m.position.set(...position);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;}
  function cyl(parent,rTop,rBottom,height,position,color=P.frame,n=16){return mesh(parent,new THREE.CylinderGeometry(rTop,rBottom,height,n),position,mat(color));}
- const groundY=(x,z)=>{const d=z-coast(x);return d>2?.2+Math.sin(x*.18)*Math.sin(z*.17)*.035:Math.max(-2,d*.42-.65);};
- const groundGeometry=new THREE.PlaneGeometry(420,420,210,210);groundGeometry.rotateX(-Math.PI/2);const pos=groundGeometry.attributes.position,colors=[];for(let i=0;i<pos.count;i++){const x=pos.getX(i),z=pos.getZ(i);pos.setY(i,groundY(x,z));const inland=THREE.MathUtils.smoothstep(z-coast(x),6,60),noise=(Math.sin(x*.4)*Math.cos(z*.5)+1)*.025;const c=new THREE.Color(P.sand).lerp(new THREE.Color(0x8eaa8c),inland*.48+noise);colors.push(c.r,c.g,c.b);}groundGeometry.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));groundGeometry.computeVertexNormals();const ground=new THREE.Mesh(groundGeometry,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1}));ground.receiveShadow=true;scene.add(ground);
- const waterGeometry=new THREE.PlaneGeometry(500,500,72,72);waterGeometry.rotateX(-Math.PI/2);const water=new THREE.Mesh(waterGeometry,new THREE.MeshStandardMaterial({color:0x548e8d,roughness:.27,metalness:.24,transparent:true,opacity:.92}));water.position.y=-.42;water.receiveShadow=true;scene.add(water);
- // A thin continuous surf line follows the coastline, rather than a tiled terrain edge.
- const surfPoints=[];for(let x=-90;x<=90;x+=1)surfPoints.push(new THREE.Vector3(x,-.2,coast(x)+.7));const surf=new THREE.Line(new THREE.BufferGeometry().setFromPoints(surfPoints),new THREE.LineBasicMaterial({color:0xc3d8c6,transparent:true,opacity:.8}));scene.add(surf);
- let seed=1337;const rand=()=>{seed=(seed*16807)%2147483647;return(seed-1)/2147483646;};
- const rockGeometry=new THREE.DodecahedronGeometry(1,0),rockMaterial=mat(P.rock),rocks=new THREE.InstancedMesh(rockGeometry,rockMaterial,180),dummy=new THREE.Object3D();let count=0;
- for(let i=0;i<180;i++){let x=(rand()-.5)*150,z=(rand()-.5)*150;const d=z-coast(x);if(d<2||Math.abs(x)<42&&z>-18&&z<44)continue;const size=.4+rand()*1.7;dummy.position.set(x,groundY(x,z)+size*.15,z);dummy.scale.set(size,size*.55,size*.85);dummy.rotation.set(rand(),rand()*6,rand());dummy.updateMatrix();rocks.setMatrixAt(count++,dummy.matrix);}rocks.count=count;rocks.castShadow=true;rocks.receiveShadow=true;scene.add(rocks);
- const grass=new THREE.InstancedMesh(new THREE.ConeGeometry(.22,1.1,4),mat(0x6a8f72),600);count=0;for(let i=0;i<700;i++){const x=(rand()-.5)*140,z=rand()*75-8;if(z<coast(x)+9||Math.abs(x)<40&&z<42)continue;const s=.45+rand()*.9;dummy.position.set(x,groundY(x,z)+s*.4,z);dummy.scale.set(s,s,s);dummy.rotation.set(0,rand()*6,.1);dummy.updateMatrix();grass.setMatrixAt(count++,dummy.matrix);if(count===600)break;}grass.count=count;scene.add(grass);
+ const groundY=(x,z)=>groundHeight(x,z,coast);
+ const terrain=createTerrain(scene,coast);
  const buildings=new Map(),depositGroups=new Map();
  function foundation(group){box(group,[8.6,.3,8.6],[0,.15,0],0x6c7a70);box(group,[8.25,.08,8.25],[0,.34,0],0xc9c9b5);for(const x of [-3.8,3.8])for(const z of [-3.8,3.8])box(group,[.45,.05,.45],[x,.4,z],P.accent);for(let z=4.5;z<7;z+=.6)box(group,[1.8,.045,.35],[0,.04,z],0xb1b8a7);}
  function starter(kind){const group=new THREE.Group();
@@ -62,7 +57,10 @@ export function createColonyView(container,{onGround,onSelect,onHover,onError}){
  function frame(now){const dt=Math.min((now-last)/1000,.1);last=now;const dx=(keys.has('d')||keys.has('ArrowRight')?1:0)-(keys.has('a')||keys.has('ArrowLeft')?1:0),dz=(keys.has('s')||keys.has('ArrowDown')?1:0)-(keys.has('w')||keys.has('ArrowUp')?1:0);if(dx||dz){focus.x+=(dx*Math.cos(yaw)+dz*Math.sin(yaw))*dt*22/distance;focus.z+=(-dx*Math.sin(yaw)+dz*Math.cos(yaw))*dt*22/distance;cameraPosition();}if(keys.has('q')||keys.has('e')){yaw+=(keys.has('q')?1:-1)*dt*.8;cameraPosition();}
  for(const entry of buildings.values())if(entry.frame.visible){entry.frame.children.forEach((beam,i)=>{if(i>=4)beam.position.y=.6+((now*.001+i*.2)%4)/4*4;});}
  if(state){const goal=new THREE.Vector3(state.robot.x,groundY(state.robot.x,state.robot.z),state.robot.z),moving=state.robot.path.length>0;robot.position.lerp(goal,Math.min(1,dt*13));if(moving){const p=state.robot.path[0];robot.rotation.y=Math.atan2(p.x-robot.position.x,p.z-robot.position.z);robot.position.y+=Math.sin(now*.018)*.05;}const nextKey=JSON.stringify(state.robot.path);if(routeKey!==nextKey){routeKey=nextKey;route.geometry.dispose();route.geometry=new THREE.BufferGeometry().setFromPoints([goal,...state.robot.path.map(p=>new THREE.Vector3(p.x,groundY(p.x,p.z)+.08,p.z))]);route.computeLineDistances();}route.visible=moving;if(!moving)targetMarker.visible=false;}
- const waterPos=waterGeometry.attributes.position;for(let i=0;i<waterPos.count;i++)waterPos.setY(i,Math.sin(waterPos.getX(i)*.14+now*.0004)*Math.cos(waterPos.getZ(i)*.12+now*.0003)*.08);waterPos.needsUpdate=true;renderer.render(scene,camera);requestAnimationFrame(frame);
+ // Lighting and terrain follow this camera only; streaming has no simulation effects.
+ sun.position.set(focus.x-40,65,focus.z+30);sun.target.position.copy(focus);sun.target.updateMatrixWorld();
+ terrain.update(camera,state?.buildings||[]);
+ renderer.render(scene,camera);requestAnimationFrame(frame);
  }requestAnimationFrame(frame);
- return {setState(next){state=next;reconcile();if(tool&&lastPoint)updateGhost(lastPoint);},setTool,select(id){selection=id;reconcile();},zoom,recenter,focusAt(x,z){focus.set(x,0,z);cameraPosition();},project(x,z,y=.3){const vector=new THREE.Vector3(x,y,z).project(camera);const r=canvas.getBoundingClientRect();return {x:r.left+(vector.x+1)*r.width/2,y:r.top+(1-vector.y)*r.height/2};}};
+ return {terrainStats:()=>terrain.stats(),setState(next){state=next;reconcile();if(tool&&lastPoint)updateGhost(lastPoint);},setTool,select(id){selection=id;reconcile();},zoom,recenter,focusAt(x,z){focus.set(x,0,z);cameraPosition();},project(x,z,y=.3){const vector=new THREE.Vector3(x,y,z).project(camera);const r=canvas.getBoundingClientRect();return {x:r.left+(vector.x+1)*r.width/2,y:r.top+(1-vector.y)*r.height/2};}};
 }
