@@ -307,6 +307,27 @@ fn reviewer_request_uses_three_actual_inline_pngs_and_checks_verdicts() {
 }
 
 #[test]
+fn reviewer_material_guidance_preserves_an_impossible_frozen_criterion_as_a_blocker() {
+    let views: Vec<_> = [b"a".as_slice(),b"b".as_slice(),b"c".as_slice()].iter().map(|label| png_view(label)).collect();
+    let mut frozen = theme();
+    frozen.visual_checks = vec![format!("The stone chimney must use {}.", frozen.palette.rock)];
+    let exact_theme = serde_json::to_string(&frozen).unwrap();
+    let exact_checks = serde_json::to_string(&frozen.visual_checks).unwrap();
+    let request = ReviewRequest { theme:frozen,prompt:"A solar array with a stepped roof and chimney".into(),user_feedback:None,scene_half_extent:Some(4.0),images:views.iter().map(|v|v.0.clone()).collect(),candidate_hash:"d".repeat(64),image_hashes:views.iter().map(|v|v.1.clone()).collect(),previous:None,baseline:None,retained_baseline:None,component_edit:None,model:"gemini-review".into() };
+    let (_,body) = build_review_request(&request).unwrap();
+    let text = body["contents"][0]["parts"][0]["text"].as_str().unwrap();
+    assert!(text.contains(&format!("Frozen theme: {exact_theme}")));
+    assert!(text.contains(&format!("Frozen visual checks: {exact_checks}")));
+    assert!(text.contains("Building parts can use only the frozen palette.shell, palette.frame, or palette.accent slots"));
+    assert!(text.contains("palette.ground and palette.rock color the environment only and cannot be assigned to building parts"));
+    assert!(text.contains("Do not invent a building-color requirement"));
+    assert!(text.contains("Recommend targeted geometry or supported material-slot repairs"));
+    assert!(text.contains("if a frozen criterion explicitly requires an unavailable color or representation, report blocked"));
+    assert!(text.contains("Every defect criterion must be an exact frozen visualChecks entry or a deterministic check id"));
+    assert_eq!(body["contents"][0]["parts"].as_array().unwrap().iter().filter(|part|part["inlineData"].is_object()).count(),3);
+}
+
+#[test]
 fn reviewer_hashes_decoded_png_bytes_and_binds_matched_previous_views() {
     let current: Vec<_> = [b"new-a".as_slice(),b"new-b".as_slice(),b"new-c".as_slice()].iter().map(|label| png_view(label)).collect();
     let previous: Vec<_> = [b"old-a".as_slice(),b"old-b".as_slice(),b"old-c".as_slice()].iter().map(|label| png_view(label)).collect();
