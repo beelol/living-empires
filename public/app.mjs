@@ -509,7 +509,7 @@ function refinementRequest(){
   const selected=selectableSceneAttempts(currentJob).find(attempt=>attempt.hash===$('base-version').value&&attempt.recipe),userFeedback=$('user-feedback').value.trim();
   if(!currentJob||!selected)return null;
   const sourceJob=jobsCache.get(selected.sourceJobId)||currentJob;
-  const request={baseJobId:sourceJob.id,baseAttemptNumber:selected.number,baseCandidateHash:selected.hash,userFeedback,prompt:sourceJob.prompt,theme:structuredClone(sourceJob.theme),provider:$('provider').value,injectDefect:false,...referenceRequestFields()};
+  const request={baseJobId:selected.sourceJobId||currentJob.id,baseAttemptNumber:selected.number,baseCandidateHash:selected.hash,userFeedback,prompt:sourceJob.prompt,theme:structuredClone(sourceJob.theme),provider:$('provider').value,injectDefect:false,...referenceRequestFields()};
   const scope=$('component-scope').value;
   if(scope==='modify'){
     const component=selected.recipe.scene?.components?.find(item=>item.id===$('component-target').value);
