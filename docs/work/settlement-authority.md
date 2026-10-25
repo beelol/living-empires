@@ -26,3 +26,21 @@ World's disk commit. Saved validation checks identities, recipe terms, balances,
 geometry bounds and ledger/progress consistency. Five tests (including two shared
 placement kernel tests) and clippy with warnings denied passed. World persistence,
 authoritative work availability, renderer and network integration still pending.
+
+World integration evidence: schema 3 adds settlements and explicit starter builder
+anchors in the existing atomic save, preserving schema 1 arenas and schema 2
+terrain worlds. Explicit initialization searches valid terrain; three paid cores,
+generators and stores on seed72913 leave 800 metal per faction. World replay returns
+the saved request receipt before replanning. Fixed simulation work saves progress;
+a failed disk replacement leaves the live state unchanged. Exact nine-building
+restart comparison exposed one-bit f64 parsing drift; enabling serde_json's
+float_roundtrip restores exact saved geometry. No dependency version changed.
+Movement rejects segments crossing reserved footprints; authored interiors remain
+unavailable, so this is not a full entrance/traversal AC pass.
+
+On immutable757ee07+city318e73e+authority source: city10 passed (isolated finalizer
+probe runs as child), settlement5 passed, World3 passed, clippy library passed.
+Host16 initially hit seven 2-second startup timeouts during parallel machine load;
+unchanged serial rerun passed all16 including actual socket/restart/retry cases.
+Earlier permission-restricted host failures were rerun with loopback permission.
+Native city renderer/server hooks remain a separate immediate integration slice.
