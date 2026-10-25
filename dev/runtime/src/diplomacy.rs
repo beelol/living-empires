@@ -13,6 +13,7 @@ use std::{
 pub const FACTION_IDS: [&str; 3] = ["helios", "tide", "cinder"];
 pub(crate) const LIMIT: usize = 1024;
 const MAX_SAVE: u64 = 64 * 1024 * 1024;
+const MAX_CONTEXT: usize = 32768;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -192,11 +193,18 @@ impl Diplomacy {
             .iter()
             .filter(|p| active(p, now) && p.parties.iter().any(|party| party == actor))
             .collect();
-        Ok(
-            json!({"revision":self.revision(),"now":now,"self":own,"known_contacts":contacts,
+        let mut context = json!({"revision":self.revision(),"now":now,"self":own,"known_contacts":contacts,
             "history":history,"pending_offers":offers,"active_pacts":pacts,
-            "scope":"Development diplomacy ledger only; no resources, land, armies or combat effects."}),
-        )
+            "scope":"Development diplomacy ledger only; no resources, land, armies or combat effects."});
+        // History is newest-first. Keep whole messages and all current terms;
+        // only the prompt is shortened, never the authoritative saved history.
+        while serde_json::to_vec(&context)?.len() > MAX_CONTEXT {
+            ensure!(
+                context["history"].as_array_mut().unwrap().pop().is_some(),
+                "current faction facts exceed context size limit"
+            );
+        }
+        Ok(context)
     }
     /// Operator-only: contains private model contexts and internal summaries.
     pub fn snapshot(&self, now: u64) -> Value {
@@ -325,7 +333,7 @@ impl Diplomacy {
             "attempt must use the current faction context"
         );
         ensure!(
-            serde_json::to_vec(&context)?.len() <= 32768,
+            serde_json::to_vec(&context)?.len() <= MAX_CONTEXT,
             "context exceeds size limit"
         );
         ensure!(
@@ -802,6 +810,61 @@ mod tests {
             .to_string()
             .contains("Secret internal goal."));
         assert!(core.context("invented", 100).is_err());
+    }
+
+    #[test]
+    fn long_private_history_keeps_next_request_usable_after_restart() {
+        for text in ["🌍".repeat(500), "\0".repeat(500)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("world.json");
+            let mut core = Diplomacy::load(&path).unwrap();
+            apply(
+                &mut core,
+                "helios",
+                "offer",
+                proposal("propose_pact", "tide"),
+                100,
+            )
+            .unwrap();
+            for at in 101..117 {
+                let mut message = proposal("message", "tide");
+                message["message"] = json!(text);
+                apply(&mut core, "helios", &format!("message-{at}"), message, at).unwrap();
+            }
+            for restart in 0..2 {
+                let at = 117 + restart;
+                let context = core.context("tide", at).unwrap();
+                assert!(serde_json::to_vec(&context).unwrap().len() <= 32768);
+                let history = context["history"].as_array().unwrap();
+                assert!(!history.is_empty() && history.len() < 16);
+                assert_eq!(history[0]["at"], 116);
+                assert!(history.iter().all(|event| event["message"] == text));
+                assert_eq!(context["pending_offers"][0]["id"], "offer-1");
+                assert!(core.context("cinder", at).unwrap()["history"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty());
+                assert_eq!(core.snapshot(at)["history"].as_array().unwrap().len(), 17);
+                core.record_attempt(
+                    "tide",
+                    &format!("next-{restart}"),
+                    context.clone(),
+                    "test-model",
+                    at,
+                )
+                .unwrap();
+                core.record_failure(
+                    "tide",
+                    &format!("next-{restart}"),
+                    context,
+                    "provider offline",
+                    at,
+                )
+                .unwrap();
+                drop(core);
+                core = Diplomacy::load(&path).unwrap();
+            }
+        }
     }
 
     #[test]
