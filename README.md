@@ -1,3 +1,148 @@
+# Living Empires
+
+A game that agents build, inspect, play, and improve against explicit acceptance criteria. A user describes what they want; Gemini produces a candidate; independent reviewers examine the running game; failures become bounded repair jobs; only verified versions reach players.
+
+**Current status:** specification only. This repository does not yet implement the runtime, agents, test harness, or Studio described below. The architecture and hackathon milestones in this section are proposed implementation decisions. The full game checklist remains the completion contract.
+
+[Original concept document](https://docs.google.com/document/d/1mqgO7fSls-Rl7Pj60cTtoMFihdOzq9y89seT2yHz0bA/edit?tab=t.0) · [Full game acceptance criteria](#living-empires-game-acceptance-criteria)
+
+## Recommended architecture
+
+Use **Gemini managed agents for generation and repair, plus a small application-owned controller for acceptance, budgets, and release**. AI Studio is useful for developing agent instructions; the backend invokes agents through the API so each job can be resumed, measured, and audited.
+
+Google documents `antigravity-preview-09-2026` as the managed agent identifier. It is invoked through the Interactions API, which supplies a remote Linux environment. Keep both the interaction ID and environment ID when continuing a repair session: conversation context and workspace state are separate. Download produced files into our own versioned artifact store before testing them. Verify project access and the chosen SDK version with a small live smoke test before building around this preview. [Managed agents quickstart](https://ai.google.dev/gemini-api/docs/managed-agents-quickstart.md)
+
+The managed agent supports custom instructions, mounted skill files, custom functions, and remote MCP tools. Define separate creator and reviewer configurations with different tool access. The agent identifier and underlying Gemini model are separate configuration choices; record both per run. [Building managed agents](https://ai.google.dev/gemini-api/docs/custom-agents)
+
+Start with a TypeScript backend, the Google GenAI SDK, SQLite for durable jobs/results, a filesystem artifact store, and Playwright to exercise a browser game. Use Three.js for the proposed 3D client and a deterministic authoritative simulation. Introduce a hosted database, object storage, and a distributed queue when more than one worker needs them. These are project recommendations, not existing dependencies.
+
+The first integration spike must prove that a managed agent can return a package, our worker can load it into the renderer, and a separate Gemini reviewer can inspect the actual captured images. Do not assume the remote agent can reach localhost or that its environment includes our browser/GPU setup. The application worker owns rendering and supplies image inputs through a verified supported API path; a direct Gemini multimodal call is a suitable reviewer adapter if needed.
+
+```mermaid
+flowchart TD
+    A[User prompt] --> B[Versioned brief and acceptance contract]
+    B --> C[Controller selects ready work]
+    C --> D[Gemini generates candidate]
+    D --> E[Build and validate immutable package]
+    E --> F[Run scenario and capture game views]
+    F --> G[Independent functional and visual review]
+    G --> H{Controller checks required results}
+    H -->|All pass| I[Activate verified version]
+    H -->|Repairable failure within limits| J[Specific defect and reproduction]
+    J --> D
+    H -->|Blocked or limits reached| K[Stop with evidence; retain active version]
+    I --> L[Runtime observations and new needs]
+    L --> C
+```
+
+The controller follows a deterministic state machine. Models propose content, actions, and judgments; application code controls transitions and verifies the required evidence. Google ADK also provides workflow orchestration, but adding a second orchestration layer is unnecessary for the first demo. Its loop workflows still need explicit termination conditions. [ADK loop workflows](https://github.com/google/adk-docs/blob/main/docs/agents/workflow-agents/loop-agents.md)
+
+## Three distinct agent loops
+
+| Loop | Input and output | Authority and cadence |
+| --- | --- | --- |
+| Game development | A prompt and selected criteria produce code changes, a playable build, and test evidence. | Work in an isolated candidate checkout. Run build and regression gates before an operator activates a code release. Never patch the production server during play. |
+| Content improvement | A player request or world need produces an asset recipe, rendered candidate, critique, repair, and compatible asset release. | Run asynchronously beside the game. Only the controller can activate reviewed packages. This is the first hackathon loop. |
+| Faction decisions | A faction's permitted observations and goals produce ordinary game commands. | The authoritative simulation validates ownership, resources, visibility, and treaties. Movement and economy keep running while a model is slow or unavailable. |
+
+Start the development loop with one playable scene and one complete player action. Once the harness exists, the same evaluate-and-repair protocol can improve game code or content through separate adapters. Whole-game regeneration on every defect would discard working behavior and make regression tracking difficult.
+
+For content, begin with constrained JSON recipes composed from supported meshes, materials, footprints, entrances, collisions, and animation presets. Gemini generates those recipes; deterministic code constructs the actual 3D asset. This makes the generation/render/repair loop feasible before adding arbitrary model or rig generation. Original silhouettes and functional variety remain requirements for the full game.
+
+## Roles and tools
+
+These are logical roles, not a requirement to run five models on every attempt. Start with a planner call, a creator session, one independent reviewer session, and deterministic checks.
+
+| Role | Responsibility | Allowed writes |
+| --- | --- | --- |
+| Planner | Convert the prompt into a brief, select criterion IDs, identify dependencies, and propose a bounded task. | Draft plans; no acceptance changes after a run starts. |
+| Creator / repairer | Generate the candidate or patch the evidenced defect while preserving identity and function. | Candidate files only. |
+| Test runner | Restore a fixture, run normal game actions, inspect authoritative effects, and capture renders. | Test-world state and evidence only. Prefer executable checks to model judgments for factual rules. |
+| Visual / play reviewer | Inspect the actual views and action trace against observable checks; cite defects and uncertainty. | Structured findings only; no candidate or test edits. |
+| Controller / release service | Schedule jobs, enforce budgets, aggregate results, activate exact packages, and roll back. | Durable job state and release manifests through validated application code. |
+
+Proposed tool boundary: `get_brief`, `get_allowed_world_observation`, `write_candidate`, `build_candidate`, `run_scenario`, `capture_view`, and `submit_findings`. The reviewer reads an immutable package and its evidence in a fresh context without the creator's self-assessment. `activate_release` is private to the controller; it is not a creator tool. Separate sessions reduce correlated mistakes but do not replace objective checks or human assessment of enjoyment.
+
+## Acceptance criteria as executable contracts
+
+Keep every existing criterion ID stable. Compile selected prose criteria into a validated machine-readable registry, then freeze the registry version, fixtures, and thresholds for each run. A planner can propose criteria from a new user prompt; the operator can edit them before starting. Any later change creates a new contract version and reruns affected checks. The creator cannot weaken the target, edit the judge, or turn a failed result into a pass.
+
+Each criterion needs: its source ID, contract version, scope, setup fixture, actions through normal interfaces, expected effects, evaluator, evidence requirements, and repetition policy. Record unsupported checks as blocked. Subjective qualities such as fun remain explicit human judgments; automated playability and readability checks are useful proxies, not proof of fun.
+
+Example of a proposed check record for one part of `GEN-05`:
+
+```json
+{
+  "id": "GEN-05.access",
+  "sourceCriterion": "GEN-05",
+  "contractVersion": 1,
+  "scope": "content-demo",
+  "required": true,
+  "fixture": "owned-outpost-flat-site",
+  "action": "commander navigates from outside to the declared access point",
+  "expected": "commander arrives within 1 metre without intersecting collision",
+  "evaluator": "simulation-scenario",
+  "evidence": ["starting-snapshot", "action-trace", "final-state", "actual-game-views"]
+}
+```
+
+That subcheck cannot pass all of `GEN-05`: ownership, construction cost, selection, and sensor function need their own checks. The example tolerance is a proposed harness default, not an amendment to the existing checklist. Preserve the existing multi-seed and repeated live-agent audit rules when evaluating the full release.
+
+Use `pass`, `fail`, `blocked`, and `not_run` as result states. A missing image or unavailable fixture is blocked. A schema-valid review is still only a proposed judgment: the controller checks criterion coverage, candidate hashes, evidence references, and mandatory results. Gemini supports JSON Schema structured output for model responses; validate outputs at the application boundary and verify support for the specific managed-agent invocation rather than assuming every model setting transfers. [Structured outputs](https://ai.google.dev/gemini-api/docs/structured-output)
+
+For each evaluation, store the job and attempt IDs, criterion and contract version, source revision, candidate and dependency hashes, model/agent configuration, fixture and seed, starting snapshot, actions, expected and actual effects, evidence paths, evaluator version, timestamps, and measured usage. Track the reviewed package hash through activation so a later file edit invalidates approval.
+
+## Operating the loop
+
+1. **Brief:** persist the user's prompt, intended gameplay function, faction/style constraints, selected criteria, base release, and job limits. Distinguish code changes from compatible content changes.
+2. **Schedule:** select one ready job whose prerequisites exist. Prioritize crashes and invalid rules, then missing required behavior, then visual defects, then optional polish. Deduplicate by need, faction, target, and contract version; allow one creator to write a candidate at a time.
+3. **Generate:** give Gemini the brief, relevant interfaces, current candidate, and latest actionable findings. Export a complete versioned package plus a manifest of changes.
+4. **Check:** validate package/schema/dependencies, build, restore the fixture, run functional scenarios, and render the exact candidate in the real client. A failed build goes straight to repair; it cannot receive a visual pass.
+5. **Review:** supply the independent reviewer at least three actual views, the rubric, and observed action outcomes. A finding identifies a criterion, severity, image/view or trace location, expected behavior, observed defect, and reproduction. Match viewpoints before and after a repair.
+6. **Decide:** accept only when every required check passes and previously passing mandatory checks still pass. Optional scores rank eligible candidates; a high visual score cannot compensate for broken collision or function.
+7. **Repair or stop:** patch the highest-priority evidenced failure. Rerun the failed check and relevant regression suite. Stop on acceptance, cancellation, blocked dependency, deadline, spending exhaustion, or the attempt limit. If two successive repair evaluations leave the same required failures without measurable improvement, stop as stalled. Retain every rejected attempt.
+8. **Activate and observe:** publish the exact approved compatible asset package, track runtime failures, and restore the last accepted package if necessary. A new observed need creates a new job under the global spending ceiling; it cannot silently restart an exhausted one.
+
+Proposed persisted job states: `queued → generating → validating → reviewing → accepted → activating → active`. Validation/review failures return to `generating` only while eligible for repair. Terminal work outcomes are `failed`, `blocked`, `cancelled`, and `exhausted`; release outcomes also include `rolled_back`. Store the stop reason separately.
+
+Enforce the existing `LIVE-03` cap of **20 minutes and three candidate attempts total per ordinary content job**, including the first generation. Record an explicit monetary or token ceiling before dispatch, reserve a bounded allowance for each call, and count reviewer calls, retries, and failed calls against the same job allowance. If usage is unknown after a timeout, reconcile or conservatively retain its reservation. Retrying or resuming cannot reset any ceiling. Apply a separate operator-set global cap to the continuous queue.
+
+Persist before dispatch: job ID, attempt number, operation key, worker lease, interaction/environment IDs when available, cancellation generation, and deadline. If a request times out with an unknown outcome, reconcile it before dispatching another paid attempt; if reconciliation is unavailable, stop as blocked. Accept late results only if the job is still eligible and its attempt token is current. Use atomic compare-and-set transitions to prevent duplicate releases after worker restarts.
+
+The Studio should show the prompt and brief, active/best/candidate versions, criterion matrix, current role, elapsed time and budget, before/after views, actionable findings, attempt history, and stop reason. Expose start, pause-after-current-step, cancel, inspect evidence, and rollback. Report passed/required counts alongside failed, blocked, and unrun counts; never label an unfinished run complete.
+
+For compatible content, activate a versioned manifest at a simulation boundary only after client readiness checks. Preserve entity identities and world state. For game code, use a separately verified release process and explicit migrations. All faction decisions continue to pass through the simulation's ordinary command validation.
+
+## Hackathon implementation order
+
+The full game checklist below remains required for game completion. These smaller milestones demonstrate the improvement loop; passing them does not complete the multiplayer game or long autonomous-run criteria.
+
+| Milestone | Complete, demonstrable outcome | Related full-game criteria |
+| --- | --- | --- |
+| 1. Prove the integration | One prompt invokes Gemini, downloads a candidate recipe, renders it in a playable scene, and saves actual images. Verify a separate review call can consume those images. | AUD-02, LIVE-03, LIVE-04 (partial coverage) |
+| 2. Make judgments enforceable | A fixture supplies one builder and an outpost need. The runner constructs and selects the outpost, checks access and sensor behavior, and produces a criterion/evidence matrix. | AUD-01–03, GEN-05 (narrow fixture) |
+| 3. Close the repair loop | After candidate creation, the runner inserts an undisclosed blocked entrance or floating support. The reviewer locates it, Gemini repairs it, and matching views plus the failed functional check demonstrate the fix within the original limits. | LIVE-05, LIVE-06 |
+| 4. Make release visible | The Studio compares attempts, activates only the exact passing asset package, and demonstrates cancellation and rollback while preserving the entity's identity and state. | GEN-08, LIVE-07, LIVE-10, LIVE-11 (single-client demo) |
+| 5. Extend the loop | Process a second need without another prompt, then add a second client and readiness coordination. Separately introduce criterion-driven game-code changes through the build/regression adapter. | LIVE-01, LIVE-02, LIVE-08, LIVE-09 (full audits still required) |
+
+The first demo should visibly answer: **what the user requested, what Gemini generated, what the agents observed, which criterion failed, what changed, and what evidence allowed release**. Keep one working scene playable throughout the demonstration. Expand to the complete Living Empires feature set through small, independently verifiable slices.
+
+## Matt Pocock skills worth adapting
+
+Reviewed the upstream [mattpocock/skills repository](https://github.com/mattpocock/skills) on 2026-10-25. These are instruction modules to inform our agent roles; they do not supply job persistence, game controls, evaluation evidence, or a release controller. No upstream skills have been installed by this documentation change.
+
+| Skill | Useful adaptation here |
+| --- | --- |
+| [grill-with-docs](https://github.com/mattpocock/skills/blob/main/skills/engineering/grill-with-docs/SKILL.md) | Clarify an ambiguous game prompt before running; record agreed vocabulary and design decisions. |
+| [to-spec](https://github.com/mattpocock/skills/blob/main/skills/engineering/to-spec/SKILL.md) | Convert agreed intent into a stable spec with observable outcomes and test boundaries. |
+| [to-tickets](https://github.com/mattpocock/skills/blob/main/skills/engineering/to-tickets/SKILL.md) | Break the large game contract into demonstrable vertical slices with explicit blocking dependencies. |
+| [tdd](https://github.com/mattpocock/skills/blob/main/skills/engineering/tdd/SKILL.md) | For game-code repairs, reproduce one behavior failure through a public interface, implement the fix, and retain the regression check. |
+| [diagnosing-bugs](https://github.com/mattpocock/skills/blob/main/skills/engineering/diagnosing-bugs/SKILL.md) | Require a reproducible failing signal before requesting another repair; use traces and browser evidence to test the diagnosis. |
+
+Keep the brief and rubric separate from creator instructions. Pin the upstream commit and review the selected skill contents before mounting them into managed-agent environments. Adapt their local-tracker and interactive steps to our persisted brief/job protocol rather than invoking an interview or publishing issues during every autonomous iteration.
+
+---
+
 # **Living Empires Game Acceptance Criteria**
 
 Living Empires is complete when every acceptance criterion below passes in the same release. The game is a persistent multiplayer strategy adventure on one alien planet: explore as a robot commander, build a machine civilization, negotiate with thinking factions, and live with the consequences while agents keep creating useful game content.
