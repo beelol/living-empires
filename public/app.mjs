@@ -1,6 +1,8 @@
 import {THEMES,fixtureRecipe} from './core.mjs';
 import {createWorld} from './scene.mjs';
+import {startRenderWorker} from './render-worker.mjs';
 const $=id=>document.getElementById(id),world=createWorld($('world'));
+startRenderWorker();
 let currentJob=null,lastHash='',busy=false,config,releasePinned=false,pollInFlight=false,sceneRevision=0;
 const briefs={
   argonaut:'Build a sensor outpost for our machine civilization. Give it a broad ceramic canopy, a glowing cyan relay, and an entrance our commander can walk through.',
