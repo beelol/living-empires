@@ -132,3 +132,83 @@ Runner owner informed; this stream does not change its deadlines/implementation.
 User clarified Pulkit Studio is not pushed yet and asks readiness for when it
 lands. Keep existing hourly heartbeat and live dependencies; do not invent the
 missing provider or claim end-to-end integration before that push.
+
+## Landed Foundry integration (resumed)
+
+Foundry landed at b47a215. User now explicitly requests immediate automatic
+per-empire unit/building jobs and expansion using new content. Existing owned
+dev/studio/ lane covers the new HTTP adapter/controller and tests; no shared
+game/server/pipeline files will be changed without handoff. Primary LIVE-01,
+LIVE-03, LIVE-07, GEN-07, FAC-05; affected privacy/durability ACs above.
+
+Actual API: POST /api/jobs {themeId/theme,provider,prompt,injectDefect}; GET
+/api/jobs/{id}, /api/jobs/{id}/package and exact /evidence/{job}/{attempt}-{view}.png.
+There is no server idempotency key. Persist dispatch first, embed immutable need
+marker, reconcile unknown outcomes through exact GET /api/jobs matches; never
+blindly retry a possibly paid creation. Studio preview activation is not game
+activation. Rust world-check op=package revalidates frozen pipeline and package.
+
+GM owner settles source decisions[] accepted request_content target=studio,
+cited events[] with recipient ACLs and matching attempts[].at. Build prompts only
+from cited permitted facts, not the operator/model summary. Faction-brain need
+payload includes faction_id, category(unit/building), role, need_id and revision.
+G/build owner owns roster, costs, paid build/recruit, persistence and live effects;
+brain owner owns need production/replanning; GM owns sole decision scheduler.
+
+Implement durable single-worker transport with per-request mapping, reservation,
+unknown-outcome blocking, bounded polling, package/image verification and immutable
+authority delivery files. Automatic fixture rehearsal uses zero paid calls.
+Live dispatch needs explicit configured global/job allowance, never an unbounded
+implicit default. Current Foundry supports only sensor buildings; genuine unit
+generation/function needs an explicitly compatible producer+runtime extension.
+Do not relabel an outpost as a working unit or count Three.js images as Bevy proof.
+
+Terrain owner 01a17427 explicitly grants this stream new
+game/examples/foundry_audit.rs native audit lane, no existing engine/protocol or
+Cargo files. Bounded Luna worker native_foundry_audit implements it; parent owns
+integration. Mapping: world x/y horizontal -> Bevy x/z; elevation -> +Y;
+Foundry +Y up/+Z front compatible, any placement rotation recorded explicitly.
+G owns actual paid placement/activation; captured native frames alone grant none.
+User explicitly authorizes sponsored-credit spending and overrides further
+spending-ceiling questions. Preserve existing per-job 3attempt/6call/20min bounds.
+
+Actual integration evidence: installed exact locked Node dependencies, built
+living-world-core with live-provider (--locked after generated lock handoff),
+and started real Foundry on127.0.0.1:4317. Rehearsal job
+job-argonaut-1792957123251 used realHTTP/Rust/browser, injected blocked entrance,
+repaired on attempt2 and exported three actual PNG hashes. Typed Rust revalidation
+caught Node's harmless12.0->12 JSON formatting; now HTTP object is reparsed by
+the same Rust pipeline hash validator, with booleans kept distinct.
+Immutable delivery /tmp/argon-foundry-real-api-test/ready/need-479899c7513c1f27c802fdb1d7b230a68ab289249e0315e32fb44d693091c60a
+contains7files and explicit rehearsal=true/pending_authority_checks.
+
+Native actualGPU v3 capture exited0 and produced3PNGs+completionmanifest:
+/tmp/argon-foundry-native-views-v3/verified-capture-manifest.json, exact content
+63052bb7371a17a236f4d4cbe7c1eab7612b7960342bc6395b3d377b4133e409,
+package bbbe7c6eedca9067148899494f4c2f2db1d181bc25edf07a32b5e7260ed3b6cd.
+v1/v2 failed runs retained: runner World cleared after AppExit, then unordered
+capture observers saw third file before save completed. Fixed with retained
+outcome and one synchronous save+completion observer; no failure was called pass.
+Native cylinder is exact top/bottom-radius12segment frustum, cone6segments,
+matching scene.mjs, not a max-radius substitution. Focused geometry test passes.
+
+36 Python bridge/controller tests pass, Node23 and coreRust21 tests pass.
+Independent code review provider-restart mismatch fixed RED/GREEN; durable cache
+recovers post-publication crashes with stable notice bytes and directory syncs.
+Initial liveworker launch was rejected by automatic review for potentially
+exporting private facts. A materially safer allowlist now exports ONLYfictional
+role/category/theme and opaque marker; canary tests prove no inventories, orders,
+diplomacy, faction/need/source IDs or model summaries leave. Revised launch was
+approved; actual continuous managed worker toolsession91515 reads real production
+.local-deploy/world.json.game-master.json every5seconds. At check127GM events,
+1decision,0faction-brain needs =>correctly0jobs; no production fixture injection.
+G and brain owners must supply realWorldneed reports/paid expansion. Unit producer
+stillunsupported, retained blocked. Full live loop remains incomplete.
+
+Independent native-image reviewer inspectedall3 actual v3 views: silhouette,
+materialcontrast, groundcontact, visibleentrance, noerror-textures/no-detachedparts
+pass; detailedmaterialfinish fails (uniform surfaces, no promised abrasion/chips),
+rearcanopyseam blocked. Functionaltraversal/sensors/multiplayer blocked, notpassed.
+Structuredrecord /tmp/argon-foundry-native-views-v3/independent-review.json binds
+exactpackage/content/3imageSHA and release_approved=false. This is useful retained
+failure feedback, never silently promoted to goodquality/live activation.

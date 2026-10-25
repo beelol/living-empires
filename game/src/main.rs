@@ -30,6 +30,7 @@ struct Options {
     advertise: Vec<SocketAddr>,
     content: PathBuf,
     state: PathBuf,
+    seed: Option<u64>,
     session: Option<PathBuf>,
     activation_file: Option<PathBuf>,
     moves: Vec<(f64, f64)>,
@@ -42,6 +43,7 @@ fn options(command: &str, args: impl Iterator<Item = String>) -> Result<Options>
         advertise: Vec::new(),
         content: "dev/content".into(),
         state: ".local/world.json".into(),
+        seed: None,
         session: None,
         activation_file: None,
         moves: Vec::new(),
@@ -66,6 +68,9 @@ fn options(command: &str, args: impl Iterator<Item = String>) -> Result<Options>
             }
             ("host" | "play", "--advertise") => value.advertise.push(resolve(&text)?),
             ("host" | "play", "--state") => value.state = text.into(),
+            ("host" | "play", "--seed") => {
+                value.seed = Some(text.parse().context("--seed must be an unsigned integer")?);
+            }
             ("host", "--activate-file") => value.activation_file = Some(text.into()),
             ("play" | "join" | "probe-client", "--session") => value.session = Some(text.into()),
             ("probe-client", "--move") => {
@@ -140,6 +145,7 @@ fn host_config(mut options: Options) -> HostConfig {
         advertise: options.advertise,
         content: options.content,
         state: options.state,
+        seed: options.seed,
         release: std::env::var("ARGON_RELEASE").unwrap_or_else(|_| "local-dev".into()),
         activation_file: options.activation_file,
     }
@@ -205,6 +211,9 @@ fn play(options: Options) -> Result<()> {
                 .arg("--state")
                 .arg(&options.state)
                 .stdin(Stdio::null());
+            if let Some(seed) = options.seed {
+                command.arg("--seed").arg(seed.to_string());
+            }
             for advertised in &options.advertise {
                 command.arg("--advertise").arg(advertised.to_string());
             }
@@ -236,7 +245,7 @@ fn execute() -> Result<()> {
     let command = args.next().unwrap_or_else(|| "help".into());
     if matches!(command.as_str(), "help" | "--help" | "-h") {
         println!(
-            "Living Empires — Bevy + Lightyear development foundation\n\n  empires play [--bind 0.0.0.0:4000] [--content dev/content] [--state .local/world.json]\n  empires host [same options] [--advertise LAN_OR_VPN_IP:4000]\n  empires join HOST:4000 [--session .local/player.json]\n  empires check-content [--content dev/content]\n  empires probe-client HOST:4000 [--session PATH] [--move 1,0] [--timeout 15]\n\nplay opens a native window and starts a host if none is running.\njoin uses Lightyear UDP; allow port 4000 through the host firewall.\nLua updates reload live. Native changes reconnect clients to the durable world.\nDefault builds support all commands. --no-default-features builds the headless host/probe.\nDevelopment authentication is for trusted LANs only. This is not the full game."
+            "Living Empires — Bevy + Lightyear development foundation\n\n  empires play [--bind 0.0.0.0:4000] [--content dev/content] [--state .local/world.json] [--seed INTEGER]\n  empires host [same options] [--advertise LAN_OR_VPN_IP:4000]\n  empires join HOST:4000 [--session .local/player.json]\n  empires check-content [--content dev/content]\n  empires probe-client HOST:4000 [--session PATH] [--move 1,0] [--timeout 15]\n\nplay opens a native window and starts a host if none is running.\njoin uses Lightyear UDP; allow port 4000 through the host firewall.\nLua updates reload live. Native changes reconnect clients to the durable world.\nDefault builds support all commands. --no-default-features builds the headless host/probe.\nDevelopment authentication is for trusted LANs only. This is not the full game."
         );
         return Ok(());
     }
@@ -284,6 +293,30 @@ fn execute() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn terrain_seed_is_explicit_and_only_available_when_creating_a_host() {
+        for command in ["host", "play"] {
+            assert_eq!(
+                options(command, ["--seed", "314159"].into_iter().map(str::to_owned))
+                    .unwrap()
+                    .seed,
+                Some(314159)
+            );
+            assert!(options(command, ["--seed", "-1"].into_iter().map(str::to_owned)).is_err());
+            assert!(options(command, ["--seed", "NaN"].into_iter().map(str::to_owned)).is_err());
+            assert!(
+                options(
+                    command,
+                    ["--seed", "1", "--seed", "2"]
+                        .into_iter()
+                        .map(str::to_owned)
+                )
+                .is_err()
+            );
+        }
+        assert!(options("join", ["--seed", "1"].into_iter().map(str::to_owned)).is_err());
+    }
+
     #[test]
     fn reject_ambiguous_or_unreachable_cli_inputs() {
         assert!(resolve("0.0.0.0:4000").is_err());

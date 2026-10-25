@@ -8,9 +8,12 @@ import {chromium} from 'playwright';
 import {inferTheme} from './lib/theme-inference.mjs';
 import {validateTheme} from './public/themes.mjs';
 import {THEMES,injectDefect,canAccept} from './public/core.mjs';
+import {SpendLedger} from './lib/spend-ledger.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
-const data=path.join(root,'.data'); fs.mkdirSync(data,{recursive:true});
+const publicRoot=process.env.ASSET_PUBLIC_DIR||path.join(root,'public');
+const data=process.env.ASSET_DATA_DIR||path.join(root,'.data'); fs.mkdirSync(data,{recursive:true});
+const spending=new SpendLedger(data,process.env.GOOGLE_SESSION_BUDGET_USD);
 const port=Number(process.env.PORT||4317), base=`http://127.0.0.1:${port}`;
 const apiKey=process.env.GEMINI_API_KEY||process.env.GOOGLE_API_KEY;
 const model=process.env.GEMINI_MODEL||'gemini-3.8-flash';
@@ -22,9 +25,10 @@ let lastRendererSeen=0;
 let lastPipelineTime=0;
 let browser;
 const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
-const sourceRevision=spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).stdout?.trim()||'unknown';
-const sourceFingerprint=digest(['server.mjs','public/themes.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/theme-inference.mjs','crates/living-world-core/src/lib.rs','crates/living-world-core/src/main.rs','crates/living-world-core/src/pipeline.rs','crates/living-world-core/src/provider.rs','crates/living-world-core/fixtures/presets.json','Cargo.lock','package-lock.json'].map(file=>[file,fs.existsSync(path.join(root,file))?fs.readFileSync(path.join(root,file),'utf8'):null]));
 const rustBinary=process.env.RUST_CORE_BIN||path.join(root,'target/debug/world-check');
+const rustBinarySha256=fs.existsSync(rustBinary)?createHash('sha256').update(fs.readFileSync(rustBinary)).digest('hex'):null;
+const sourceRevision=spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).stdout?.trim()||'unknown';
+const sourceFingerprint=digest(['server.mjs','public/app.mjs','public/style.css','public/index.html','public/themes.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/spend-ledger.mjs','lib/theme-inference.mjs','crates/living-world-core/src/lib.rs','crates/living-world-core/src/main.rs','crates/living-world-core/src/pipeline.rs','crates/living-world-core/src/provider.rs','crates/living-world-core/fixtures/presets.json','Cargo.lock','package-lock.json'].map(file=>{const source=file.startsWith('public/')?path.join(publicRoot,file.slice(7)):path.join(root,file);return [file,fs.existsSync(source)?fs.readFileSync(source,'utf8'):null];}).concat([['world-check-binary-sha256',rustBinarySha256]]));
 function rustSync(input){
   if(!fs.existsSync(rustBinary))throw new Error('Rust core is not built. Run cargo build -p living-world-core before starting a run.');
   const result=spawnSync(rustBinary,[],{cwd:root,input:JSON.stringify(input),encoding:'utf8',timeout:15000,maxBuffer:16*1024*1024});
@@ -115,12 +119,22 @@ function syncPipeline(job,op,extra={}){
   job.pipeline=result.pipeline;job.calls=job.pipeline.providerCalls;save(job);return result.value;
 }
 async function providerCall(job,label,input){
+  const spendId=spending.reserve({jobId:job.id,label,model:input.request.model,managed:input.op==='generate'&&input.request.managed});
   syncPipeline(job,'charge');
-  const entry={number:job.pipeline.providerCalls,label,status:'dispatched',at:new Date().toISOString()};job.callLog.push(entry);job.calls=job.pipeline.providerCalls;save(job);
+  const entry={number:job.pipeline.providerCalls,label,spendId,status:'dispatched',at:new Date().toISOString()};job.callLog.push(entry);job.calls=job.pipeline.providerCalls;job.spending=spending.summary();save(job);
   try{
-    const result=await rustAsync(input,controllers.get(job.id)?.signal);
+    const result=await rustAsync(input,controllers.get(job.id)?.signal,input.op==='generate'&&input.request.managed?330000:120000);
+    if(result.providerError){
+      const received=JSON.parse(JSON.stringify(result.providerError.response).replaceAll(apiKey||'__no_key__','[redacted]'));
+      const usage=received?.usageMetadata||received?.usage||received?.usage_metadata||null;
+      job.providerResponses.push({kind:'provider-error',response:received,usage});
+      job.interactionId=received?.id||job.interactionId;job.environmentId=received?.environment_id||job.environmentId;
+      spending.settle(spendId,usage);entry.status='returned_error';entry.responseStatus=received?.status||null;entry.usage=usage;job.spending=spending.summary();save(job);
+      throw new Error(result.providerError.message||'Provider response could not be used.');
+    }
+    spending.settle(spendId,result.usage);job.spending=spending.summary();
     ensureCurrent(job);entry.status='returned';entry.usage=result.usage||null;save(job);return result;
-  }catch(error){entry.status='failed_or_unknown';save(job);throw error;}
+  }catch(error){if(entry.status!=='returned_error'){spending.unknown(spendId);entry.status='failed_or_unknown';}job.spending=spending.summary();save(job);throw error;}
 }
 function reviewFindings(value){return typeof value==='string'?value.trim():String(value||'').trim();}
 async function generate(job,previous,findings){
@@ -171,9 +185,21 @@ async function capture(job,attempt){
   });
 }
 async function review(job,attempt){
-  if(job.provider==='fixture')return {themeStatus:'pass',renderStatus:'pass',findings:'Offline rehearsal visual verdict; no live AI review.',usage:null};
-  const images=attempt.images.map(url=>fs.readFileSync(imagePath(job,url)).toString('base64'));
-  const result=await providerCall(job,'independent visual reviewer',{op:'review',request:{theme:job.theme,prompt:job.prompt,images,model}});
+  if(job.provider==='fixture'){
+    const previous=job.attempts.at(-2),restored=previous?.movement?.pass===false&&attempt.movement?.pass===true;
+    const comparison={candidateHash:attempt.hash,imageHashes:attempt.imageHashes,previousCandidateHash:previous?.hash||null,previousImageHashes:previous?.imageHashes||[],status:previous?(restored?'improved':'unchanged'):'initial',summary:previous?(restored?'Deterministic rehearsal: the previously blocked traversal now passes. Creative quality was not judged.':'Deterministic rehearsal: no new traversal improvement is evidenced. Creative quality was not judged.'):'Initial rehearsal capture. Visual judgment is simulated; functional checks are real.',strengths:['Frozen fixture identity and material palette retained.'],defects:[],improvements:restored?['Collision-aware traversal changed from fail to pass; no creative improvement is claimed.']:[],regressions:[],simulated:true};
+    return {themeStatus:'pass',renderStatus:'pass',findings:'Offline rehearsal visual verdict; no live AI review.',comparison,usage:null};
+  }
+  const imageInputs=record=>record.images.map((url,i)=>{
+    const file=imagePath(job,url);if(!file||!fs.existsSync(file))throw new Error('Comparison image is missing.');
+    const bytes=fs.readFileSync(file),hash=createHash('sha256').update(bytes).digest('hex');
+    if(hash!==record.imageHashes[i])throw new Error('Comparison evidence changed after capture.');
+    return bytes.toString('base64');
+  });
+  const prior=job.attempts.at(-2);
+  const previous=prior?{candidateHash:prior.hash,imageHashes:prior.imageHashes,images:imageInputs(prior),strengths:prior.review?.comparison?.strengths||[]}:null;
+  const request={theme:job.theme,prompt:job.prompt,candidateHash:attempt.hash,imageHashes:attempt.imageHashes,images:imageInputs(attempt),previous,model};
+  const result=await providerCall(job,'independent comparative visual reviewer',{op:'review',request});
   job.providerResponses.push({kind:'reviewer',response:result.response,usage:result.usage||null});save(job);return result;
 }
 async function run(job){
@@ -186,7 +212,7 @@ async function run(job){
         job.stopReason=state==='exhausted'?'Rust pipeline attempt, provider-call, or time budget exhausted.':'No more candidates can be evaluated.';
         event(job,state==='blocked'?'blocked':state==='cancelled'?'cancelled':'exhausted',job.stopReason);return;
       }
-      const attempt={number:job.pipeline.attemptCount+1,checks:[],images:[],imageHashes:[],createdAt:new Date().toISOString()};
+      const attempt={number:job.pipeline.attemptCount+1,checks:[],images:[],imageHashes:[],repairRequested:[...findings],previousHash:job.attempts.at(-1)?.hash||null,createdAt:new Date().toISOString()};
       event(job,'generating',`${attempt.number===1?'Generating':'Repairing'} candidate ${attempt.number}/3 in the frozen ${job.theme.name} theme.`);
       let candidate=await generate(job,previous,findings);ensureCurrent(job);
       if(job.injectDefect&&attempt.number===1)candidate=injectDefect(candidate);
@@ -212,23 +238,31 @@ async function run(job){
       if(!record.validationError&&attempt.rustMovement.pass!==evidence.movement.pass)throw new Error('Browser/Rust movement parity failed. Candidate cannot be accepted.');
       event(job,'reviewing',job.provider==='fixture'?'Applying explicitly simulated visual verdict; functional checks and captures are real.':'Independent Gemini reviewer is inspecting the actual rendered world against the theme contract.');
       const visual=record.validationError?{themeStatus:'fail',renderStatus:'fail',findings:record.validationError,usage:null}:await review(job,attempt);
+      attempt.review={themeStatus:visual.themeStatus,renderStatus:visual.renderStatus,findings:visual.findings,comparison:visual.comparison||null,simulated:job.provider==='fixture'};
       ensureCurrent(job);
       const visualFindings=reviewFindings(visual.findings),allPass=visual.themeStatus==='pass'&&visual.renderStatus==='pass';
-      const defects=allPass?[]:[visualFindings||'Visual review did not pass.'];
+      const comparison=visual.comparison;
+      const comparisonDefects=(comparison?.defects||[]).map(d=>`View ${d.view}, ${d.location} (${d.criterion}): ${d.issue} Repair: ${d.repair}`);
+      const regressions=(comparison?.regressions||[]).map(d=>`Regression: ${d}`);
+      const comparisonFailures=comparison&&['unchanged','regressed','blocked'].includes(comparison.status)?[`Comparative verdict ${comparison.status}: ${comparison.summary}`]:[];
+      const defects=[...(allPass?[]:[visualFindings||'Visual review did not pass.']),...comparisonDefects,...regressions,...comparisonFailures];
       const summary=allPass?(visualFindings||'Visual theme and render review passed.'):null;
       attempt.checks.push(
         {id:'THEME-02',status:visual.themeStatus,label:'Visual theme consistency',detail:visualFindings||summary||'Theme visual check completed.'},
         {id:'LIVE-04',status:visual.renderStatus,label:'Three actual rendered views',detail:visualFindings||summary||'Three rendered views reviewed.'}
       );
       save(job);
-      const verdict=syncPipeline(job,'decide',{review:{themeStatus:visual.themeStatus,renderStatus:visual.renderStatus,findings:defects,summary},evidence:{candidateHash:attempt.hash,imageHashes:attempt.imageHashes,imageUrls:attempt.images}});
+      const verdict=syncPipeline(job,'decide',{review:{themeStatus:visual.themeStatus,renderStatus:visual.renderStatus,findings:defects,summary,...(comparison?{comparison}:{})},evidence:{candidateHash:attempt.hash,imageHashes:attempt.imageHashes,imageUrls:attempt.images}});
+      attempt.decision=verdict;
+      attempt.decisionReason=verdict==='accept'?(summary||'Required checks passed with a justified review.'):[...attempt.checks.filter(c=>c.status!=='pass').map(c=>`${c.id}: ${c.detail}`),...defects,comparison?.summary].filter(Boolean).join(' ')||`Rust decision: ${verdict}`;
+      save(job);
       if(verdict==='accept'){
         job.acceptedHash=attempt.hash;job.stopReason=summary||'All required checks passed.';event(job,'accepted',job.provider==='fixture'?'Rehearsal candidate accepted. Visual review was simulated.':'All required checks passed. Candidate is ready to activate.');return;
       }
       if(verdict==='blocked'||verdict==='exhausted'){
         job.stopReason=verdict==='blocked'?'Review is inconclusive; evidence or operator input required.':'Rust pipeline attempt, provider-call, or time budget exhausted.';event(job,verdict,job.stopReason);return;
       }
-      findings=[...attempt.checks.filter(check=>check.status!=='pass').map(check=>`${check.id}: ${check.detail}`),...defects];
+      findings=[...attempt.checks.filter(check=>check.status!=='pass').map(check=>`${check.id}: ${check.detail}`),...defects,...(comparison?.strengths||[]).map(s=>`Preserve this strength: ${s}`)];
       event(job,'repairing',findings.join(' '));
     }
   }catch(e){
@@ -250,7 +284,8 @@ const server=http.createServer(async(req,res)=>{
       if(pathname==='/api/themes/resolve'){
         if(!themeInferenceEnabled)return json(res,403,{error:'Live theme inference is prepared but disabled pending an operator-approved spending ceiling. Use the editable contract or labeled local draft.'});
         if(!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY to resolve a theme with Gemini.'});
-        const draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});
+        const spendId=spending.reserve({jobId:'theme-draft',label:'theme inference',model,managed:false});
+        let draft;try{draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});spending.settle(spendId,draft.usage);}catch(error){spending.unknown(spendId);throw error;}
         const id=randomUUID();atomic(path.join(data,`theme-draft-${id}.json`),{id,sourceRevision,model,prompt:input.prompt,theme:draft.theme,usage:draft.usage,response:draft.response});
         return json(res,200,{theme:draft.theme,usage:draft.usage,draftId:id,requiresReview:true});
       }
@@ -276,7 +311,7 @@ const server=http.createServer(async(req,res)=>{
         if(input.provider!=='fixture'&&!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY in .env and restart the server. Offline rehearsal is available now.'});
         const now=Math.max(Date.now(),lastPipelineTime+1);lastPipelineTime=now;
         const pipeline=rustSync({op:'create',theme,prompt:input.prompt,now,provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}}).pipeline;
-        const job={id:pipeline.contract.jobId,pipeline,sourceRevision,sourceFingerprint,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
+        const job={id:pipeline.contract.jobId,pipeline,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':model,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
         jobs.set(job.id,job);controllers.set(job.id,new AbortController());event(job,'queued','Brief and theme contract frozen. Job limit: three candidates, six paid calls, twenty minutes.');
         json(res,201,job);void run(job);return;
       }
@@ -303,7 +338,7 @@ const server=http.createServer(async(req,res)=>{
       return json(res,404,{error:'Unknown action'});
     }
     if(req.method!=='GET')return json(res,405,{error:'Method not allowed'});
-    if(pathname==='/api/config')return json(res,200,{keyConfigured:!!apiKey,model,agent,themes:THEMES,themeInferenceEnabled});
+    if(pathname==='/api/config')return json(res,200,{keyConfigured:!!apiKey,model,agent,themes:THEMES,themeInferenceEnabled,spending:spending.summary()});
     if(pathname==='/api/render-task'){
       lastRendererSeen=Date.now();const task=renderTasks.values().next().value;
       return json(res,200,task?{token:task.token,jobId:task.jobId,attemptNumber:task.attemptNumber,candidateHash:task.candidateHash,recipe:task.recipe,theme:task.theme}:null);
@@ -324,7 +359,7 @@ const server=http.createServer(async(req,res)=>{
     if(pathname==='/vendor/three.js')file=path.join(root,'node_modules/three/build/three.module.js');
     else if(pathname==='/vendor/three.core.js')file=path.join(root,'node_modules/three/build/three.core.js');
     else if(/^\/evidence\/[\da-z-]{1,128}\/\d+-[0-2]\.png$/.test(pathname))file=path.join(data,...pathname.split('/').slice(2));
-    else {file=path.resolve(root,'public',pathname==='/'?'index.html':'.'+pathname);if(!file.startsWith(path.join(root,'public')+path.sep))return json(res,403,{error:'Forbidden'});}
+    else {file=path.resolve(publicRoot,pathname==='/'?'index.html':'.'+pathname);if(!file.startsWith(publicRoot+path.sep))return json(res,403,{error:'Forbidden'});}
     if(!fs.existsSync(file)||!fs.statSync(file).isFile())return json(res,404,{error:'Not found'});
     res.writeHead(200,{'Content-Type':mime[path.extname(file)]||'application/octet-stream','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});fs.createReadStream(file).pipe(res);
   }catch(e){json(res,400,{error:e.message});}

@@ -65,6 +65,39 @@ pub enum ReviewVerdict { Repair, Accept, Blocked, Exhausted }
 #[serde(rename_all = "lowercase")]
 pub enum EvidenceStatus { Pass, Fail, Blocked }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ComparisonStatus { Initial, Improved, Unchanged, Regressed, Blocked }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VisualDefect {
+    pub view: u8,
+    pub location: String,
+    /// Exact frozen visualChecks entry, or a deterministic check id present on the candidate.
+    pub criterion: String,
+    pub issue: String,
+    pub repair: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewComparison {
+    pub candidate_hash: String,
+    pub image_hashes: Vec<String>,
+    pub previous_candidate_hash: Option<String>,
+    #[serde(default)]
+    pub previous_image_hashes: Vec<String>,
+    pub status: ComparisonStatus,
+    pub summary: String,
+    pub strengths: Vec<String>,
+    pub defects: Vec<VisualDefect>,
+    pub improvements: Vec<String>,
+    pub regressions: Vec<String>,
+    #[serde(default)]
+    pub simulated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReviewDecision {
@@ -73,6 +106,8 @@ pub struct ReviewDecision {
     pub findings: Vec<String>,
     #[serde(default)]
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ReviewComparison>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +129,10 @@ pub struct CandidateRecord {
     pub candidate_sha256: String,
     pub checks: Vec<Check>,
     pub validation_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_evidence: Option<Evidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ReviewComparison>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +181,8 @@ pub struct PackageManifest {
     pub source_revision: Option<String>,
     pub source_fingerprint: Option<String>,
     pub review_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ReviewComparison>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,7 +288,7 @@ impl AssetPipeline {
             Ok(checks) => (checks, None),
             Err(error) => (Vec::new(), Some(error)),
         };
-        let record = CandidateRecord { recipe, candidate_sha256, checks, validation_error };
+        let record = CandidateRecord { recipe, candidate_sha256, checks, validation_error, reviewed_evidence: None, comparison: None };
         self.candidates.push(record.clone());
         self.last_verdict = None;
         self.refresh_state_hash()?;
@@ -260,7 +301,7 @@ impl AssetPipeline {
         if self.last_verdict == Some(ReviewVerdict::Repair) {
             return Err("A repair verdict requires a new candidate before review".into());
         }
-        let Some(candidate) = self.candidates.last() else { return Err("No candidate is available for review".into()); };
+        let Some(candidate) = self.candidates.last().cloned() else { return Err("No candidate is available for review".into()); };
         if evidence.candidate_sha256 != candidate.candidate_sha256 {
             return Err("Evidence candidateSha256 does not match the current candidate".into());
         }
@@ -282,11 +323,33 @@ impl AssetPipeline {
             || review.summary.as_ref().is_some_and(|summary| summary.trim().is_empty() || summary.len() > 2_000) {
             return Err("Review findings must be non-empty, bounded entries".into());
         }
+        let prior_evidence = self.candidates.iter().rev().nth(1).and_then(|candidate| candidate.reviewed_evidence.clone());
+        let deterministic_failure = candidate.validation_error.is_some()
+            && (review.theme_status == EvidenceStatus::Fail || review.render_status == EvidenceStatus::Fail);
+        if !self.contract.provenance.rehearsal && review.comparison.is_none() && !deterministic_failure {
+            return Err("Live reviews require a hash-bound visual comparison".into());
+        }
+        if let Some(comparison) = &review.comparison {
+            validate_comparison(comparison, &evidence, prior_evidence.as_ref(), &candidate.checks, &self.contract.theme)?;
+            if comparison.simulated != self.contract.provenance.rehearsal {
+                return Err("Review comparison rehearsal flag does not match the frozen job".into());
+            }
+        }
+        if let Some(candidate) = self.candidates.last_mut() {
+            candidate.reviewed_evidence = Some(evidence.clone());
+            candidate.comparison = review.comparison.clone();
+        }
         let blocked = review.theme_status == EvidenceStatus::Blocked || review.render_status == EvidenceStatus::Blocked;
+        let comparison = review.comparison.as_ref();
+        let comparison_blocked = comparison.is_some_and(|value| value.status == ComparisonStatus::Blocked);
+        let comparison_failed = comparison.is_some_and(|value| {
+            !value.defects.is_empty() || if prior_evidence.is_none() { value.status != ComparisonStatus::Initial }
+            else { value.status != ComparisonStatus::Improved || value.improvements.is_empty() || !value.regressions.is_empty() }
+        });
         let failed = review.theme_status == EvidenceStatus::Fail || review.render_status == EvidenceStatus::Fail
             || !review.findings.is_empty() || candidate.validation_error.is_some()
-            || candidate.checks.iter().any(|check| check.status != "pass");
-        let verdict = if blocked {
+            || candidate.checks.iter().any(|check| check.status != "pass") || comparison_failed;
+        let verdict = if blocked || comparison_blocked {
             self.status = PipelineStatus::Blocked;
             ReviewVerdict::Blocked
         } else if failed {
@@ -297,7 +360,7 @@ impl AssetPipeline {
                 ReviewVerdict::Repair
             }
         } else {
-            let package = self.build_package(candidate, &review, &evidence, now_ms)?;
+            let package = self.build_package(&candidate, &review, &evidence, now_ms)?;
             self.approved_package_sha256 = Some(sha256_json(&package)?);
             self.approved = Some(package);
             self.status = PipelineStatus::Approved;
@@ -350,6 +413,7 @@ impl AssetPipeline {
                 source_revision: self.contract.provenance.source_revision.clone(),
                 source_fingerprint: self.contract.provenance.source_fingerprint.clone(),
                 review_summary: review.summary.clone(),
+                comparison: review.comparison.clone(),
             },
         })
     }
@@ -379,12 +443,27 @@ impl AssetPipeline {
             || self.provider_calls > self.contract.limits.max_provider_calls {
             return Err("Frozen job contract or pipeline counters were tampered with".into());
         }
-        for candidate in &self.candidates {
+        for (index, candidate) in self.candidates.iter().enumerate() {
             if sha256_json(&candidate.recipe)? != candidate.candidate_sha256 { return Err("Candidate hash integrity check failed".into()); }
             match evaluate_with_theme(&candidate.recipe, &self.contract.theme) {
                 Ok(checks) if candidate.validation_error.is_none() && checks == candidate.checks => {}
                 Err(error) if candidate.validation_error.as_deref() == Some(error.as_str()) && candidate.checks.is_empty() => {}
                 _ => return Err("Candidate evaluation record was tampered with".into()),
+            }
+            if let Some(evidence) = &candidate.reviewed_evidence {
+                if evidence.candidate_sha256 != candidate.candidate_sha256 || !valid_sha256(&evidence.candidate_sha256)
+                    || evidence.image_sha256.len() != 3 || evidence.image_sha256.iter().any(|hash| !valid_sha256(hash)) {
+                    return Err("Reviewed candidate evidence was tampered with".into());
+                }
+                if let Some(comparison) = &candidate.comparison {
+                    let previous = index.checked_sub(1).and_then(|prior_index| self.candidates.get(prior_index)).and_then(|prior| prior.reviewed_evidence.as_ref());
+                    validate_comparison(comparison, evidence, previous, &candidate.checks, &self.contract.theme)?;
+                    if comparison.simulated != self.contract.provenance.rehearsal {
+                        return Err("Stored comparison rehearsal flag does not match the frozen job".into());
+                    }
+                }
+            } else if candidate.comparison.is_some() {
+                return Err("Candidate comparison exists without reviewed evidence".into());
             }
         }
         if let Some(package) = &self.approved {
@@ -411,6 +490,32 @@ impl AssetPipeline {
         self.state_sha256 = pipeline_hash(self)?;
         Ok(())
     }
+}
+
+fn validate_comparison(comparison: &ReviewComparison, evidence: &Evidence, previous: Option<&Evidence>, checks: &[Check], theme: &ThemeContract) -> Result<(), String> {
+    if comparison.candidate_hash != evidence.candidate_sha256 || comparison.image_hashes != evidence.image_sha256 {
+        return Err("Review comparison does not bind the current candidate and ordered image hashes".into());
+    }
+    let expected_previous = previous.map(|item| item.candidate_sha256.as_str());
+    if comparison.previous_candidate_hash.as_deref() != expected_previous
+        || comparison.previous_image_hashes != previous.map(|item| item.image_sha256.clone()).unwrap_or_default() {
+        return Err("Review comparison does not bind the previously reviewed candidate and evidence".into());
+    }
+    if comparison.summary.trim().is_empty() || comparison.summary.len() > 2_000
+        || comparison.strengths.len() > 16 || comparison.defects.len() > 32
+        || comparison.improvements.len() > 16 || comparison.regressions.len() > 16
+        || [&comparison.strengths, &comparison.improvements, &comparison.regressions].iter().flat_map(|xs| xs.iter()).any(|s| s.trim().is_empty() || s.len() > 1_000) {
+        return Err("Comparison summary and lists must be bounded and non-empty".into());
+    }
+    for defect in &comparison.defects {
+        if !(1..=3).contains(&defect.view) || defect.location.trim().is_empty() || defect.location.len() > 500
+            || defect.issue.trim().is_empty() || defect.issue.len() > 1_000 || defect.repair.trim().is_empty() || defect.repair.len() > 1_000
+            || defect.criterion.trim().is_empty() || defect.criterion.len() > 500
+            || (!theme.visual_checks.iter().any(|criterion| criterion == &defect.criterion) && !checks.iter().any(|check| check.id == defect.criterion)) {
+            return Err("Comparison defect must cite a frozen visual check or candidate functional check".into());
+        }
+    }
+    Ok(())
 }
 
 fn status_text(status: EvidenceStatus) -> &'static str {
