@@ -250,6 +250,9 @@ impl AssetPipeline {
     pub fn decide(&mut self, review: ReviewDecision, evidence: Evidence, now_ms: u64) -> Result<ReviewVerdict, String> {
         self.check_integrity()?;
         self.ensure_active(now_ms)?;
+        if self.last_verdict == Some(ReviewVerdict::Repair) {
+            return Err("A repair verdict requires a new candidate before review".into());
+        }
         let Some(candidate) = self.candidates.last() else { return Err("No candidate is available for review".into()); };
         if evidence.candidate_sha256 != candidate.candidate_sha256 {
             return Err("Evidence candidateSha256 does not match the current candidate".into());

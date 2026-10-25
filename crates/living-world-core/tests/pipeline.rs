@@ -76,7 +76,8 @@ fn deterministic_obstruction_requires_repair_before_acceptance() {
     });
     let first = pipeline.submit_candidate(obstructed, 101).unwrap();
     assert_eq!(first.checks.iter().find(|c| c.id == "GEN-05.access").unwrap().status, "fail");
-    assert_eq!(pipeline.decide(review(), evidence(first.candidate_sha256), 102).unwrap(), ReviewVerdict::Repair);
+    assert_eq!(pipeline.decide(review(), evidence(first.candidate_sha256.clone()), 102).unwrap(), ReviewVerdict::Repair);
+    assert!(pipeline.decide(review(), evidence(first.candidate_sha256.clone()), 102).unwrap_err().contains("new candidate"));
 
     let repaired = pipeline.submit_candidate(recipe(&theme.id), 103).unwrap();
     assert_eq!(repaired.checks.iter().all(|check| check.status == "pass"), true);
