@@ -55,7 +55,7 @@ export function rollback(w,kind,factionId='landing'){
 const capabilityContract='Write concise ASCII text: name <=100 characters, genre <=120, biome <=200, scale <=300, description <=1500. Keep each other descriptive field (including shapeLanguage) and each list entry <=400 characters. Use short phrases instead of long prose; check every field length before returning JSON. This family must fit individual 8m x 8m building plots, including supports and clear access; use compact human-scale dimensions, not monumental piers or multi-building complexes. Engine capability contract: meshes are axis-aligned boxes, vertical cylinders and vertical cones only, with three flat palette materials. There is NO per-part rotation, tilt, texture mapping, sphere primitive or real foliage simulation. Do not invent tilted/angled panel requirements, realistic textures, or other unsupported visual checks. Represent organic detail using explicit primitive clusters. Visual checks must remain faithful to the requested common art direction and these capabilities; do not require a particular building role or object in every member of the family.';
 class SupersededRequest extends Error{}
 export class FoundryController{
- constructor({world,save,api,verifyTyped,dataDir,mode='fixture'}){Object.assign(this,{world,save,api,verifyTyped,dataDir,mode});this.busy=false;if(world.foundry.error==='Twelve jobs retained. Automatic improvements paused at the session ceiling.'){world.foundry.error=null;world.foundry.enabled=true;save();}}
+ constructor({world,save,api,verifyTyped,dataDir,mode='fixture'}){Object.assign(this,{world,api,verifyTyped,dataDir,mode});this.save=()=>{for(const building of world.buildings.filter(b=>b.kind==='creation')){const request=world.foundry.requests.findLast(r=>r.targetId===building.id);if(request)building.creationStatus=request.status;}save();};this.busy=false;if(world.foundry.error==='Twelve jobs retained. Automatic improvements paused at the session ceiling.'){world.foundry.error=null;world.foundry.enabled=true;this.save();}}
  scope(request){
   // Pin legacy work once. Never allow an old worldwide family request into a new faction.
   if(!request.factionId)request.factionId='landing';
@@ -108,6 +108,7 @@ export class FoundryController{
  }
  if(request.status==='queued'&&request.preferExistingDesign&&request.kind!=='creation'&&!this.prepareReuse(request))return;
  if(request.status==='queued'){
+ request.startedAtMs??=Date.now();this.save();
  if(!request.theme){
  const faction=factionOf(this.world,request.factionId);
  if(faction.theme&&!(request.targetId&&!this.world.factions)){request.theme=structuredClone(faction.theme);request.themeDraftId=faction.themeDraftId;}
@@ -117,20 +118,21 @@ export class FoundryController{
  catch(e){if(e instanceof SupersededRequest)throw e;request.status='blocked';request.reason='Live artistic contract could not be resolved: '+e.message;f.error=request.reason;this.save();return;}
  }
  }
+ const timeBudgetMs=0; // The frozen attempt and call ceilings bound work; latency remains visible per phase.
  this.guard(request);request.status='dispatching';this.save();let job;
- try{job=await this.api('/api/jobs',{provider:request.provider,theme:request.theme,themeId:request.theme.id,sceneHalfExtent:4,prompt:request.prompt,injectDefect:false});}
+ try{job=await this.api('/api/jobs',{timeBudgetMs,provider:request.provider,theme:request.theme,themeId:request.theme.id,sceneHalfExtent:4,prompt:request.prompt,injectDefect:false});}
  catch(e){if(!this.current(request)){request.dispatchOutcome='unknown';request.reconciliationRequired=true;this.save();return;}if(e.cause?.code==='ECONNREFUSED'||e.cause?.errors?.every(error=>error.code==='ECONNREFUSED')){request.status='queued';request.transportError='ECONNREFUSED';f.error='Foundry is offline. Waiting for the local service; no generation was dispatched.';}else if(e.status===409){request.status='queued';f.error='Foundry is busy. Colony play continues; waiting for its current job.';}else if(e.status&&e.status<500){request.status='blocked';request.reason=e.message;f.error=e.message;}else{request.status='unknown';f.error=e.message;}this.save();return;}
  requireThat(typeof job.id==='string'&&/^[a-z0-9-]{1,128}$/.test(job.id),'Invalid Foundry job identity.');request.jobId=job.id;
  if(!this.current(request)){this.save();await this.cancelRemote(request);return;}
  request.status='running';f.error=null;this.save();
  }
  if(request.status==='running'){
- const job=await this.read(request,()=>this.api(`/api/jobs/${request.jobId}`));const source=request.reuseFromRequestId?this.reuseSource(request):request;requireThat(job.id===request.jobId&&job.prompt===source.prompt&&job.provider===source.provider,'Foundry job contract changed.');if(request.reuseFromRequestId)requireThat(job.acceptedHash===request.sourceHash,'Existing approved design hash changed.');request.stage=job.status;
+ const job=await this.read(request,()=>this.api(`/api/jobs/${request.jobId}`));const source=request.reuseFromRequestId?this.reuseSource(request):request;requireThat(job.id===request.jobId&&job.prompt===source.prompt&&job.provider===source.provider,'Foundry job contract changed.');if(request.reuseFromRequestId)requireThat(job.acceptedHash===request.sourceHash,'Existing approved design hash changed.');request.stage=job.status;request.timings={...request.timings,...job.timings};const candidate=job.attempts?.at(-1);if(candidate?.images?.length===3&&candidate.hash)request.preview={candidateNumber:candidate.number,candidateHash:candidate.hash,images:candidate.images,approved:false};
  if(['accepted','active'].includes(job.status)){
- const checked=await verifyPackage({job,api:this.api,verifyTyped:this.verifyTyped,guard:()=>this.guard(request)});
+ const installingAt=Date.now();const checked=await verifyPackage({job,api:this.api,verifyTyped:this.verifyTyped,guard:()=>this.guard(request)});
  this.guard(request);
  if(this.dataDir){const folder=path.join(this.dataDir,'assets',checked.package.manifest.contentSha256);fs.mkdirSync(folder,{recursive:true,mode:0o700});for(const image of checked.images)fs.writeFileSync(path.join(folder,image.sha256+'.png'),image.bytes,{mode:0o600});fs.writeFileSync(path.join(folder,'package.json'),JSON.stringify(checked.package),{mode:0o600});fs.writeFileSync(path.join(folder,'job.json'),JSON.stringify(job),{mode:0o600});}
- if(this.scope(request).some(b=>b.asset?.hash!==checked.package.manifest.contentSha256))activatePackage(this.world,request.kind,checked.package,request);request.status='installed';request.hash=checked.package.manifest.contentSha256;request.rehearsal=checked.package.manifest.rehearsal;request.installedTargets=this.scope(request).map(b=>b.id);if(request.reuseFromRequestId)request.reason='Approved existing faction design reused after exact package and image verification; no new generation call.';f.error=null;
+ if(this.scope(request).some(b=>b.asset?.hash!==checked.package.manifest.contentSha256))activatePackage(this.world,request.kind,checked.package,request);request.status='installed';request.timings={...request.timings,installationMs:Date.now()-installingAt,totalMs:Date.now()-request.startedAtMs};request.hash=checked.package.manifest.contentSha256;request.rehearsal=checked.package.manifest.rehearsal;request.installedTargets=this.scope(request).map(b=>b.id);if(request.reuseFromRequestId)request.reason='Approved existing faction design reused after exact package and image verification; no new generation call.';f.error=null;
  }else if(['failed','blocked','cancelled','exhausted'].includes(job.status)){request.status=job.status;request.reason=job.stopReason;f.error=job.stopReason||`Foundry job ${job.status}.`;}
  for(const target of this.scope(request))if(target.kind==='creation')target.creationStatus=request.status;this.save();
  }

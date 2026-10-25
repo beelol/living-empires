@@ -34,15 +34,15 @@ test('faction commands persist scoped assignments and supersede in-flight refere
  assert.equal((await post({id:'style-east',type:'faction-style',factionId:'east',artDirection:'Black basalt stepped architecture with carved copper ribs and deep roof eaves.'})).status,200);
  assert.equal(app.world.foundry,f);assert.equal(prior.status,'cancelled');assert.equal(f.requests.find(r=>r.id===prior.id),prior);assert.equal(f.enabled,false);
  let state=await(await fetch(app.url+'/api/v1/world')).json();assert.equal(state.buildings.find(b=>b.id==='a').factionId,'east');assert.equal(state.buildings.find(b=>b.id==='b').factionId,'landing');assert.equal(state.factions.find(f=>f.id==='east').revision,2);assert.ok(state.foundry.requests.filter(r=>r.status==='queued').every(r=>r.targets.every(t=>t.id==='a')));assert.ok(state.foundryURL);
- const health=await(await fetch(app.url+'/api/v1/health')).json();assert.equal(health.apiVersion,1);assert.equal(health.saveVersion,2);assert.equal((await fetch(app.url+'/public/themes.mjs')).status,200);
+ const health=await(await fetch(app.url+'/api/v1/health')).json();assert.equal(health.apiVersion,1);assert.equal(health.saveVersion,2);assert.equal(typeof health.sourceRoot,'string');assert.match(health.sourceSha256,/^[a-f0-9]{64}$/);assert.equal(typeof health.sourceRevision,'string');assert.equal((await fetch(app.url+'/public/themes.mjs')).status,200);
  await app.close();app=await createApp({port:0,dataDir:dir,foundryEnabled:false});state=await(await fetch(app.url+'/api/v1/world')).json();assert.equal(state.buildings.find(b=>b.id==='a').factionId,'east');assert.equal(state.foundry.requests.find(r=>r.id===prior.id).status,'cancelled');assert.equal(state.factions.find(f=>f.id==='east').revision,2);
  }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
-test('restart retains uncertain theme work as blocked instead of silently retrying or hanging',async()=>{
+test('restart retains uncertain theme work and its creation target as blocked without retrying',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colony-theme-'));let app;try{
- app=await createApp({port:0,dataDir:dir,foundryEnabled:false});app.world.foundry.requests.push({id:'theme-unknown',kind:'core',status:'preparing-theme',factionId:'landing',factionRevision:1,targets:[{id:'landing-core',assignment:1}]});await app.close();app=await createApp({port:0,dataDir:dir,foundryEnabled:false});
- const request=app.world.foundry.requests[0];assert.equal(request.status,'blocked');assert.equal(request.reconciliationRequired,true);assert.match(request.reason,/no automatic retry/);
+ app=await createApp({port:0,dataDir:dir,foundryEnabled:false});app.world.foundry.requests.push({id:'theme-unknown',kind:'creation',targetId:'landing-core',status:'preparing-theme',factionId:'landing',factionRevision:1,targets:[{id:'landing-core',assignment:1}]});await app.close();app=await createApp({port:0,dataDir:dir,foundryEnabled:false});
+ const request=app.world.foundry.requests[0];assert.equal(request.status,'blocked');assert.equal(request.reconciliationRequired,true);assert.match(request.reason,/no automatic retry/);assert.equal(app.world.buildings.find(b=>b.id==='landing-core').creationStatus,'blocked');
  }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
@@ -63,4 +63,12 @@ test('cancelling an inherited installation never cancels its shared source job',
  app=await createApp({port:0,dataDir:dir,foundryEnabled:false});const source={id:'source',kind:'core',status:'installed',jobId:'approved-source'};app.world.foundry.requests.push(source,{id:'inheritor',kind:'core',status:'running',jobId:'approved-source',reuseFromRequestId:'source'});
  const r=await fetch(app.url+'/api/v1/foundry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'cancel',requestId:'inheritor'})});assert.equal(r.status,200);assert.equal(source.status,'installed');assert.equal(app.world.foundry.error,null);assert.equal(app.world.foundry.requests[1].status,'cancelled');
  }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('terminal job recheck is rejected; a new target generation preserves history and charges once',async()=>{
+ const http=await import('node:http'),mock=http.createServer((req,res)=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({id:'job-terminal',status:'blocked'}));});await new Promise(r=>mock.listen(0,'127.0.0.1',r));const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colony-recovery-'));let app;try{
+ app=await createApp({port:0,dataDir:dir,foundryEnabled:false,foundryURL:`http://127.0.0.1:${mock.address().port}`});const post=(body,route='foundry')=>fetch(app.url+'/api/v1/'+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});await post({id:'recover-object',type:'build',kind:'creation',x:12,z:8,prompt:'A copper observatory',provider:'gemini'},'command');const old=app.world.foundry.requests[0];old.status='blocked';old.jobId='job-terminal';old.reason='Retained original failure';const alloy=app.world.alloy;const recheck=await post({action:'retry',requestId:old.id});assert.equal(recheck.status,400);assert.match((await recheck.json()).error,/terminal/);assert.equal(old.status,'blocked');assert.equal((await post({action:'regenerate',targetId:'recover-object'})).status,200);assert.equal(app.world.alloy,alloy);assert.equal(app.world.foundry.requests.length,2);assert.equal(app.world.foundry.requests[1].replacesRequestId,old.id);assert.equal(old.reason,'Retained original failure');
+ }finally{await app?.close();await new Promise(r=>mock.close(r));fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('queued creation cancellation is accepted before a remote job receipt',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colony-cancel-'));let app;try{app=await createApp({port:0,dataDir:dir,foundryEnabled:false});const post=(route,body)=>fetch(app.url+'/api/v1/'+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});await post('command',{id:'early-cancel',type:'build',kind:'creation',x:12,z:8,prompt:'A copper observatory',provider:'gemini'});const request=app.world.foundry.requests[0];assert.equal((await post('foundry',{action:'cancel',requestId:request.id})).status,200);assert.equal(request.status,'cancelled');assert.equal(app.world.buildings.find(b=>b.id==='early-cancel').creationStatus,'cancelled');}finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
