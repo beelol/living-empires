@@ -42,3 +42,12 @@ No API status enum or accepted package content is changed.
 Additional focused checks passed: effective installed versus active revision,
 superseded-intent label, adopted source with child independent review, and blocked
 child retaining last good appearances. Live adoption evidence remains lead-owned.
+
+Live correction: activity target counts now use the current request's valid
+id/assignment targets, excluding the already approved source from child work.
+Cancelled propagation shows stopped/last-good preservation like failed work.
+When a corrected request supersedes a cancelled child for the same targets, the
+adoption chain shows that current request's actual stage. Coordinated with state
+owner: adopted + styleChanged:false means an existing direction is confirmed and
+stale members are aligning; unchanged + no child IDs means no convergence work.
+Focused checks cover all three cases and the exact one-child/two-members count.
