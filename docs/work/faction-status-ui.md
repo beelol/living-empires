@@ -28,3 +28,17 @@ verification label, terminal-status precedence, actual timestamp duration,
 unchanged-active duplicate suppression, changed-prompt allowance, persistent 503
 failure and Updated 1/1 completion. Checks used pure data only and made no paid
 calls. Browser sizing and live request/adoption evidence remain lead's work.
+
+Accepted-design propagation follow-up uses the agreed optional
+request.directionPropagation, request.adoptedFactionRevision and
+faction.designOrigin metadata. It displays the approved source → adopted faction
+direction → other-member update chain, source prompt/hash/job link, actual child
+job stage, and stopped-child preservation of last-good designs. Installed source
+freshness uses its adopted revision; active requests retain their frozen original
+revision. Unchanged and superseded proposals have explicit history labels.
+Creation copy now explicitly permits freedom from the existing faction style.
+No API status enum or accepted package content is changed.
+
+Additional focused checks passed: effective installed versus active revision,
+superseded-intent label, adopted source with child independent review, and blocked
+child retaining last good appearances. Live adoption evidence remains lead-owned.
