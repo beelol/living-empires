@@ -443,9 +443,10 @@ $('resolve-theme').onclick=async()=>{
 $('start').onclick=async()=>{
   $('error').textContent='';$('theme-error').textContent='';const consentError=referenceConsentError();if(consentError){$('reference-error').textContent=consentError;return;}$('reference-error').textContent='';$('start').disabled=true;releasePinned=false;sceneRevision++;
   try{
-    const frozenTheme=validateContract(themeFromForm()),inferTheme=!$('use-manual-theme').checked;renderThemeContract(frozenTheme,{selectPreset:false,preview:false});
+    const inferTheme=!$('use-manual-theme').checked,request={prompt:$('prompt').value,inferTheme,provider:$('provider').value,...referenceRequestFields()};
+    if(!inferTheme){const frozenTheme=validateContract(themeFromForm());renderThemeContract(frozenTheme,{selectPreset:false,preview:false});Object.assign(request,{themeId:frozenTheme.id,theme:frozenTheme,injectDefect:$('inject').checked});}
     $('theme-draft-note').textContent=inferTheme?'Prompt-based art direction requested; waiting for the job record to confirm its inferred theme.':'Manual theme contract submitted for this job.';setEditorLocked(true);
-    const job=await api('/api/jobs',{themeId:frozenTheme.id,theme:frozenTheme,prompt:$('prompt').value,inferTheme,provider:$('provider').value,injectDefect:$('inject').checked,...referenceRequestFields()});lastHash='';renderJob(job);
+    const job=await api('/api/jobs',request);lastHash='';renderJob(job);
   }catch(e){error(e);$('theme-error').textContent=e.message;$('start').disabled=false;setEditorLocked(false);}
 };
 $('cancel').onclick=async()=>{try{renderJob(await api(`/api/jobs/${currentJob.id}/cancel`,{}));}catch(e){error(e);}};
