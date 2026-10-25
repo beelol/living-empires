@@ -1,6 +1,6 @@
 //! Native Gemini provider boundary. The default build is offline; only the
 //! optional `live-provider` feature enables the ureq HTTP transport.
-use crate::{evaluate_with_theme, pipeline::{sha256, ReviewComparison}, Recipe, ThemeContract};
+use crate::{evaluate_with_theme, pipeline::{sha256, ComponentEdit, ComponentEditMode, ReviewComparison}, Recipe, ThemeContract};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -16,15 +16,15 @@ const GENERATION_SCHEMA: &str = r##"{
   "required":["themeId","name","description","sensorRadius","parts","scene"],
   "properties":{
     "themeId":{"type":"string"},
-    "name":{"type":"string"},
-    "description":{"type":"string"},
+    "name":{"type":"string","maxLength":100},
+    "description":{"type":"string","maxLength":2000},
     "sensorRadius":{"type":"number","minimum":1,"maximum":20},
     "parts":{
       "type":"array","minItems":4,"maxItems":128,
       "items":{
         "type":"object","required":["id","shape","role","position","size","material"],
         "properties":{
-          "id":{"type":"string"},
+          "id":{"type":"string","maxLength":80},
           "shape":{"type":"string","enum":["box","cylinder","cone"]},
           "role":{"type":"string","enum":["wall","support","roof","detail"]},
           "position":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},
@@ -42,7 +42,7 @@ const GENERATION_SCHEMA: &str = r##"{
           "items":{
             "type":"object","required":["id","name","role","partIds"],
             "properties":{
-              "id":{"type":"string"},"name":{"type":"string"},"role":{"type":"string"},
+              "id":{"type":"string","maxLength":64},"name":{"type":"string","maxLength":100},"role":{"type":"string","maxLength":80},
               "partIds":{"type":"array","minItems":1,"items":{"type":"string"}}
             }
           }
@@ -64,6 +64,8 @@ pub struct GenerationRequest {
     pub scene_half_extent: Option<f64>,
     #[serde(default)]
     pub previous: Option<Recipe>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_edit: Option<ComponentEdit>,
     #[serde(default)]
     pub findings: Option<Vec<String>>,
     pub model: String,
@@ -173,6 +175,9 @@ fn prompt_text(request: &GenerationRequest) -> Result<String, ProviderError> {
     if request.user_feedback.as_ref().is_some_and(|feedback| feedback.trim().is_empty() || feedback.len() > 3_000) {
         return Err(ProviderError::new("User feedback must be non-empty and at most 3,000 characters when supplied"));
     }
+    if request.component_edit.is_some() && request.previous.is_none() {
+        return Err(ProviderError::new("A frozen component edit requires its baseline recipe"));
+    }
     let half_extent = request.scene_half_extent.unwrap_or(12.0);
     if !half_extent.is_finite() || !(4.0..=16.0).contains(&half_extent) {
         return Err(ProviderError::new("Scene halfExtent must be between 4 and 16 metres"));
@@ -195,7 +200,7 @@ fn prompt_text(request: &GenerationRequest) -> Result<String, ProviderError> {
          Frozen full theme contract (follow every field, exclusions, and visual check): {}\n\
          User brief: {}\n\
          Frozen user refinement feedback, when supplied: {}\n\
-         Use 4..128 parts with unique ids; each part uses one supported shape, role, material token, metre position [x,y,z] and full-size extents [width,height,depth]. Use 1..32 named scene components with unique ids, descriptive roles and exact partIds coverage. Components are a JSON array of objects, not a string. Geometry uses y up with ground y=0. Use the frozen scene halfExtent of {half_extent} metres on each x/z side; all requested geometry fits inside it. Preserve an unobstructed access route where the asset needs an entrance and keep supports grounded. Sensor radius is 1..20m. Use palette material tokens only; no code. Preserve the theme, identity, and gameplay role when repairing. Micro weathering/moss/texture in the contract is metadata, not separately rendered detail.",
+         Use 4..128 parts with unique IDs of at most 80 characters. Shapes are exactly box, cylinder, or cone; roles are exactly wall, support, roof, or detail; part material tokens are exactly shell, frame, or accent (never ground or rock). Positions are metre [x,y,z] arrays and sizes are full [width,height,depth] extents. Use 1..32 named scene component objects with unique lowercase hyphenated IDs up to 64 characters, names up to 100 characters, roles up to 80 characters, and exact partIds coverage. Components are a JSON array of objects, not a string. Geometry uses y up with ground y=0. Use the frozen scene halfExtent of {half_extent} metres on each x/z side; all requested geometry fits inside it. Preserve an unobstructed access route where the asset needs an entrance and keep supports grounded. Sensor radius is 1..20m. Preserve the theme, identity, and gameplay role when repairing. Do not use search, filesystem access, or code tools; use only the supplied frozen contract and images and return the final recipe JSON directly. Micro weathering/moss/texture in the contract is metadata, not separately rendered detail.",
         serde_json::to_string(&request.theme).map_err(|_| ProviderError::new("Could not encode frozen theme contract"))?,
         request.prompt,
         request.user_feedback.as_deref().unwrap_or("none"),
@@ -204,10 +209,23 @@ fn prompt_text(request: &GenerationRequest) -> Result<String, ProviderError> {
         text.push_str("\nPrevious approved baseline or immediately prior candidate to refine while preserving its identity: ");
         text.push_str(&serde_json::to_string(previous).map_err(|_| ProviderError::new("Could not encode previous candidate"))?);
     }
+    if let Some(edit) = &request.component_edit {
+        let baseline = request.previous.as_ref().expect("component edit baseline checked above");
+        let mode = match edit.mode { ComponentEditMode::Add => "add one new component", ComponentEditMode::Modify => "modify one existing component" };
+        let scene = baseline.scene.as_ref().ok_or_else(|| ProviderError::new("Component edit baseline has no scene"))?;
+        let target_exists = scene.components.iter().any(|component| component.id == edit.component_id);
+        if (edit.mode == ComponentEditMode::Add && target_exists) || (edit.mode == ComponentEditMode::Modify && !target_exists) {
+            return Err(ProviderError::new("Component edit selection does not match its baseline"));
+        }
+        text.push_str(&format!("\nFROZEN COMPONENT EDIT: {mode} with exact componentId '{}'. Preserve baseline themeId, name, description, sensorRadius, scene halfExtent, every existing component ID, all non-target component names/roles/partIds, and all parts outside the target. For add, keep every baseline part unchanged and create only new unique part IDs owned by the new target component. For modify, keep every non-target component and its owned parts unchanged; change only the selected component and its owned geometry. Do not rename the asset or redesign the other components. Baseline identity/parts/components are: {}", edit.component_id, serde_json::to_string(baseline).map_err(|_| ProviderError::new("Could not encode component edit baseline"))?));
+    }
     if let Some(findings) = &request.findings {
         text.push_str("\nIndependent failures to address: ");
         text.push_str(&serde_json::to_string(findings).map_err(|_| ProviderError::new("Could not encode review findings"))?);
     }
+    let schema: Value = serde_json::from_str(GENERATION_SCHEMA).map_err(|_| ProviderError::new("Could not encode recipe output schema"))?;
+    text.push_str("\nJSON Schema for recipe output (follow exactly):\n");
+    text.push_str(&serde_json::to_string(&schema).map_err(|_| ProviderError::new("Could not encode recipe output schema"))?);
     Ok(text)
 }
 

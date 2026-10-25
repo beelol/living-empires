@@ -1,4 +1,5 @@
 //! Deterministic game-world contracts. Models propose recipes; this crate evaluates them.
+pub mod component_edit_guard;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 

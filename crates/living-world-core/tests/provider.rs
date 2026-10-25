@@ -2,8 +2,9 @@ use living_world_core::{
     access_scenario,
     evaluate_with_theme,
     provider::{build_generation_request, build_review_request, fixture_recipe, generate_with_transport, repair_fixture, review_with_transport, GenerationRequest, PreviousReviewEvidence, ProviderError, ProviderTransport, ReferenceImage, ReviewRequest},
-    Part,
+    Part, RecipeScene, SceneComponent,
     Architecture, Flora, Palette, ReferencePreset, ThemeContract,
+    pipeline::{ComponentEdit, ComponentEditMode},
 };
 use serde_json::{json, Value};
 use std::sync::Mutex;
@@ -25,7 +26,7 @@ fn theme() -> ThemeContract {
 
 fn request(managed: bool) -> GenerationRequest {
     GenerationRequest {
-        theme: theme(), prompt: "Build a forest relay".into(), user_feedback: None, scene_half_extent: Some(12.0), previous: None,
+        theme: theme(), prompt: "Build a forest relay".into(), user_feedback: None, scene_half_extent: Some(12.0), previous: None, component_edit: None,
         findings: Some(vec!["clear front path".into()]), model: "gemini-test".into(),
         agent: "antigravity-preview-09-2026".into(), managed,
         interaction_id: None, environment_id: None, reference_images: vec![], reference_consent:false,
@@ -229,6 +230,36 @@ fn generation_payload_has_concrete_array_shapes_and_top_level_scene_schema() {
     assert!(prompt.contains("\"parts\":[{"));
     assert!(prompt.contains("Components are a JSON array of objects, not a string"));
     assert!(!prompt.contains("\"components\":\"prompt-chosen"));
+    assert!(prompt.contains("never ground or rock"));
+    assert!(prompt.contains("Do not use search, filesystem access, or code tools"));
+    let schema_text = prompt.split("JSON Schema for recipe output (follow exactly):\n").nth(1).unwrap();
+    let embedded_schema: Value = serde_json::from_str(schema_text).unwrap();
+    assert_eq!(embedded_schema["properties"]["scene"]["type"], "object");
+    assert_eq!(embedded_schema["properties"]["parts"]["items"]["properties"]["shape"]["enum"], json!(["box","cylinder","cone"]));
+    assert_eq!(embedded_schema["properties"]["parts"]["items"]["properties"]["role"]["enum"], json!(["wall","support","roof","detail"]));
+    assert_eq!(embedded_schema["properties"]["parts"]["items"]["properties"]["material"]["enum"], json!(["shell","frame","accent"]));
+    assert_eq!(embedded_schema["properties"]["scene"]["properties"]["components"]["items"]["properties"]["role"]["maxLength"], 80);
+}
+
+#[test]
+fn component_edit_prompt_freezes_asset_identity_and_non_target_parts() {
+    let mut req = request(true);
+    let mut baseline = fixture_recipe(&req.theme).unwrap();
+    baseline.scene = Some(RecipeScene { half_extent: 12.0, components: vec![SceneComponent {
+        id: "main-outpost".into(), name: "Main outpost".into(), role: "sensor structure".into(),
+        part_ids: baseline.parts.iter().map(|part| part.id.clone()).collect(),
+    }] });
+    let target = baseline.scene.as_ref().unwrap().components[0].id.clone();
+    req.previous = Some(baseline);
+    req.component_edit = Some(ComponentEdit { mode: ComponentEditMode::Modify, component_id: target.clone() });
+    let (_, body) = build_generation_request(&req).unwrap();
+    let prompt = body["input"][0]["text"].as_str().unwrap();
+    assert!(prompt.contains("FROZEN COMPONENT EDIT: modify one existing component"));
+    assert!(prompt.contains(&format!("exact componentId '{target}'")));
+    assert!(prompt.contains("Preserve baseline themeId, name, description, sensorRadius"));
+    assert!(prompt.contains("all non-target component names/roles/partIds"));
+    assert!(prompt.contains("all parts outside the target"));
+    assert!(prompt.contains("JSON Schema for recipe output (follow exactly)"));
 }
 
 #[test]
