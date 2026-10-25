@@ -58,3 +58,46 @@ request IDs remain based on core attempts, GM IDs separate. No duplicate schedul
 Ruling: user said continue; implement inline without further design approval.
 Ruling: preserve existing worktree edits, transfer only owned new files under main
 integration lock, following newer coordinated direct-main direction.
+
+Checkpoint 2 in progress: durable attempts persist model/input before spend and
+complete result atomically; interrupted requests become explicit failures on load.
+Shared worker budget = diplomacy attempts + GM attempts, IDs/rotation independent.
+Studio intake .gm-inbox.json is bounded1MiB/1024events and transactionally dedups;
+ledger .game-master.json preserves all IDs and blocks at total1024events, rather
+than dropping history. Continuous long-world indexing remains a later dependency.
+Thirteen tests pass including real Diplomacy::apply -> GM facts with original ACL,
+never importing private proposal summaries. GM transport local HTTP test passes
+with separate role and only request_content/wait supported initially. No live
+provider call or operator UI deployment yet. Existing loop handed off explicitly
+by diplomacy-limits owner after05cf47d. Terrain owns additive lib export.
+
+Runtime connection checkpoint evidence:
+- Separate Argon role uses existing bounded direct Gemini generateContent transport;
+  it is NOT a Managed Agents integration. GM supports request_content/wait initially.
+- Same worker schedules one GM turn after a faction round; combined durable
+  core+GM attempts obey max_calls. A reproduced old-world backlog-spending bug was
+  fixed by persisting the faction turn handled by each GM attempt.
+- Independent review found duplicate Studio work under fresh request IDs. Regression
+  failed before canonical evidence-set/target dedup, then passed across restart.
+- Candidate c1f5161 plus six owned files: 34 library tests,14 GM integration tests,
+  remaining runtime suites pass (113 cases). The previously failing one-second
+  content subprocess guard passes in isolated retry; retain the initial failure.
+- Headless native suite:8 library,1 CLI,2 real Lightyear network tests pass.
+  Runtime clippy, owned-file rustfmt, headless build and actual HTTP page JS syntax
+  checks pass. Whole-workspace fmt reports pre-existing events.rs/tests/events.rs
+  formatting; those paths remain untouched and their owner is notified.
+- Actual localhost4328 test using configured gemini-4-argon completed exactly4 calls:
+  3 faction +1 GM, zero provider failures, one accepted pending content request
+  citing gm-smoke-city-need-1. Input explicitly says fixture; this is connectivity
+  evidence, NOT a real city need/build, D0, or a full-game AC audit.
+- Full input/proposal/outcome evidence remains /private/tmp/argon-gm-live/
+  world.json.game-master.json and world.json.diplomacy.json. HTTP API returns GM
+  events, attempts, decisions and combined counts; private operator-only data is
+  not added to native player snapshots. Browser control failed twice with
+  transport closed, so actual visual/screenshot QA remains blocked.
+- Studio owner accepted sidecar outbox: accepted request_content receipts resolve
+  cited exact source events and their ACL; stable receipt ID prevents repeated
+  generation. No model summary can activate content or grant paid construction.
+- Follow-up agreed with diplomacy owner: ingest_report(actor,event,received_at)
+  records eligibility separately from actual per-faction delivery. Initial GM
+  provider remains content-only until that independently tested API lands.

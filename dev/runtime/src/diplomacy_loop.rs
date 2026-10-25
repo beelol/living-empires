@@ -1,6 +1,7 @@
 //! One bounded model worker beside the native simulation. Never blocks a game tick.
 use crate::{
     diplomacy::{Diplomacy, FACTION_IDS},
+    game_master::{GameMaster, Proposal as GmProposal},
     gemini::{self, GeminiConfig},
 };
 use anyhow::Result;
@@ -29,13 +30,20 @@ impl DiplomacyLoop {
         env_file: PathBuf,
         activation_file: Option<PathBuf>,
     ) -> Result<Self> {
-        Self::start_with(state, env_file, activation_file, gemini::decide)
+        Self::start_with_providers(
+            state,
+            env_file,
+            activation_file,
+            gemini::decide,
+            gemini::decide_game_master,
+        )
     }
 
     pub fn status(&self) -> DiplomacyStatus {
         self.status.clone()
     }
 
+    #[cfg(test)]
     fn start_with<F>(
         state: PathBuf,
         env_file: PathBuf,
@@ -45,6 +53,24 @@ impl DiplomacyLoop {
     where
         F: Fn(&GeminiConfig, Value) -> Result<Value> + Send + 'static,
     {
+        Self::start_with_providers(state, env_file, activation_file, decide, |_, _| {
+            Ok(
+                json!({"action":"wait","event_ids":[],"target":"","summary":"No additional content need"}),
+            )
+        })
+    }
+
+    fn start_with_providers<F, G>(
+        state: PathBuf,
+        env_file: PathBuf,
+        activation_file: Option<PathBuf>,
+        decide: F,
+        decide_gm: G,
+    ) -> Result<Self>
+    where
+        F: Fn(&GeminiConfig, Value) -> Result<Value> + Send + 'static,
+        G: Fn(&GeminiConfig, Value) -> Result<Value> + Send + 'static,
+    {
         let status = Arc::new(RwLock::new(
             json!({"phase":"starting","message":"Starting diplomacy"}),
         ));
@@ -52,7 +78,7 @@ impl DiplomacyLoop {
         let worker_status = status.clone();
         let worker_stop = stop.clone();
         let worker = thread::Builder::new().name("empire-diplomacy".into()).spawn(move || {
-            if let Err(error) = run_worker(&state, &env_file, activation_file.as_deref(), &worker_status, &worker_stop, decide) {
+            if let Err(error) = run_worker(&state, &env_file, activation_file.as_deref(), &worker_status, &worker_stop, decide, decide_gm) {
                 if let Ok(mut value) = worker_status.write() {
                     value["phase"] = json!("error");
                     value["message"] = json!(format!("Diplomacy stopped: {error}. Fix the saved state or configuration, then restart the host."));
@@ -77,6 +103,8 @@ fn now() -> u64 {
 fn publish(
     status: &DiplomacyStatus,
     core: &Diplomacy,
+    gm: &GameMaster,
+    intake_error: Option<&str>,
     config: Option<&GeminiConfig>,
     phase: &str,
     message: &str,
@@ -89,9 +117,18 @@ fn publish(
             values.drain(..remove);
         }
     }
+    let mut gm_snapshot = gm.snapshot();
+    gm_snapshot["attempt_count"] = json!(gm.attempt_count());
+    gm_snapshot["intake_error"] = json!(intake_error);
+    for field in ["attempts", "decisions"] {
+        if let Some(values) = gm_snapshot[field].as_array_mut() {
+            let remove = values.len().saturating_sub(24);
+            values.drain(..remove);
+        }
+    }
     if let Ok(mut value) = status.write() {
         *value = json!({"phase":phase,"message":message,"model":config.map(|c| c.model.as_str()),
-            "interval_seconds":config.map(|c| c.interval.as_secs()),"max_calls":config.map(|c| c.max_calls),"world":world});
+            "interval_seconds":config.map(|c| c.interval.as_secs()),"max_calls":config.map(|c| c.max_calls),"world":world,"game_master":gm_snapshot,"total_attempt_count":core.attempts()+gm.attempt_count()});
     }
 }
 
@@ -108,18 +145,32 @@ fn retry_delay(interval: Duration, failures: u32) -> Duration {
     interval.max(Duration::from_secs(((1u64 << failures.min(5)) * 2).min(60)))
 }
 
-fn run_worker<F>(
+fn run_worker<F, G>(
     state: &Path,
     env_file: &Path,
     activation_file: Option<&Path>,
     status: &DiplomacyStatus,
     stop: &AtomicBool,
     decide: F,
+    decide_gm: G,
 ) -> Result<()>
 where
     F: Fn(&GeminiConfig, Value) -> Result<Value>,
+    G: Fn(&GeminiConfig, Value) -> Result<Value>,
 {
     let mut core = Diplomacy::load(state)?;
+    let sidecar = |suffix: &str| {
+        let mut base = state
+            .to_str()
+            .and_then(|s| s.strip_suffix(".diplomacy.json"))
+            .map(std::ffi::OsString::from)
+            .unwrap_or_else(|| state.as_os_str().to_os_string());
+        base.push(suffix);
+        PathBuf::from(base)
+    };
+    let mut gm = GameMaster::load(sidecar(".game-master.json"))?;
+    let inbox = sidecar(".gm-inbox.json");
+    let mut intake_error: Option<String>;
     // A saved request without an outcome was interrupted. Resolve it explicitly;
     // it still consumed budget, and a late result must never apply after recovery.
     if let Some(attempts) = core.snapshot(now())["attempts"].as_array() {
@@ -138,12 +189,20 @@ where
     let mut phase = "running";
     let mut message = "Factions are ready to make decisions.".to_owned();
     while !stop.load(Ordering::Relaxed) {
+        gm.observe_diplomacy(&core.snapshot(now()))?;
+        intake_error = if inbox.exists() {
+            gm.import_file(&inbox).err().map(|e| e.to_string())
+        } else {
+            None
+        };
         let config = match gemini::load_config(env_file) {
             Ok(config) => config,
             Err(error) => {
                 publish(
                     status,
                     &core,
+                    &gm,
+                    intake_error.as_deref(),
                     None,
                     "error",
                     &format!("{error}. Fix .env.local; it will be read again automatically."),
@@ -162,19 +221,97 @@ where
                 "waiting_key",
                 "Add GEMINI_API_KEY to .env.local. The Rust host will pick it up automatically.",
             ))
-        } else if core.attempts() >= config.max_calls {
+        } else if core.attempts() + gm.attempt_count() >= config.max_calls {
             Some(("paused", "The saved API call limit has been reached. Raise DIPLOMACY_MAX_CALLS in .env.local to continue."))
         } else {
             None
         };
         if let Some((phase, message)) = waiting {
-            publish(status, &core, Some(&config), phase, message);
+            publish(
+                status,
+                &core,
+                &gm,
+                intake_error.as_deref(),
+                Some(&config),
+                phase,
+                message,
+            );
             pause(stop, Duration::from_secs(1));
             continue;
         }
         if Instant::now() < next {
-            publish(status, &core, Some(&config), phase, &message);
+            publish(
+                status,
+                &core,
+                &gm,
+                intake_error.as_deref(),
+                Some(&config),
+                phase,
+                &message,
+            );
             pause(stop, Duration::from_millis(250));
+            continue;
+        }
+        if intake_error.is_none()
+            && core.attempts() > 0
+            && core.attempts() % 3 == 0
+            && gm.last_faction_turn() != Some(core.attempts())
+        {
+            let id = format!("gm-{}", gm.attempt_count() + 1);
+            let context = gm.begin_scheduled_attempt(&id, &config.model, now(), core.attempts())?;
+            publish(
+                status,
+                &core,
+                &gm,
+                intake_error.as_deref(),
+                Some(&config),
+                "thinking",
+                "Argon is reviewing recorded needs. The game continues.",
+            );
+            let started = Instant::now();
+            let result = decide_gm(&config, context)
+                .and_then(|value| serde_json::from_value::<GmProposal>(value).map_err(Into::into));
+            let cancelled =
+                stop.load(Ordering::Relaxed) || activation_file.is_some_and(|path| !path.is_file());
+            let result = if cancelled {
+                Err(anyhow::anyhow!(
+                    "Host stopped before GM proposal application"
+                ))
+            } else if started.elapsed() > Duration::from_secs(25) {
+                Err(anyhow::anyhow!("GM decision expired before application"))
+            } else {
+                result
+            };
+            // A producer can publish new facts during the request. Re-read before validation.
+            if inbox.exists() {
+                intake_error = gm.import_file(&inbox).err().map(|e| e.to_string());
+            }
+            let error = result.as_ref().err().map(|e| e.to_string());
+            match result {
+                Ok(proposal) if intake_error.is_none() => gm.complete_attempt(&id, Ok(proposal))?,
+                Ok(_) => gm.complete_attempt(
+                    &id,
+                    Err("Intake changed or failed while Argon was thinking; replan"),
+                )?,
+                Err(_) => {
+                    gm.complete_attempt(&id, Err(error.as_deref().unwrap_or("GM provider failed")))?
+                }
+            }
+            phase = if cancelled { "stopped" } else { "running" };
+            message = error.unwrap_or_else(|| "Argon's decision was recorded. Studio requests remain pending independent checks and game authority.".into());
+            next = Instant::now() + config.interval;
+            publish(
+                status,
+                &core,
+                &gm,
+                intake_error.as_deref(),
+                Some(&config),
+                phase,
+                &message,
+            );
+            if cancelled {
+                break;
+            }
             continue;
         }
         let actor = FACTION_IDS[core.attempts() as usize % FACTION_IDS.len()];
@@ -186,6 +323,8 @@ where
         publish(
             status,
             &core,
+            &gm,
+            intake_error.as_deref(),
             Some(&config),
             "thinking",
             &format!(
@@ -205,6 +344,8 @@ where
             publish(
                 status,
                 &core,
+                &gm,
+                intake_error.as_deref(),
                 Some(&config),
                 "stopped",
                 "The pending proposal was discarded.",
@@ -239,7 +380,15 @@ where
                 next = Instant::now() + delay;
             }
         }
-        publish(status, &core, Some(&config), phase, &message);
+        publish(
+            status,
+            &core,
+            &gm,
+            intake_error.as_deref(),
+            Some(&config),
+            phase,
+            &message,
+        );
     }
     Ok(())
 }
@@ -443,5 +592,78 @@ mod tests {
         );
         assert_eq!(value["world"]["decisions"].as_array().unwrap().len(), 1);
         assert_eq!(value["world"]["decisions"][0]["actor"], "tide");
+    }
+    #[test]
+    fn gm_uses_same_worker_and_shared_durable_budget_after_faction_round() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = dir.path().join("env");
+        config(&env, "test-only-key", 4);
+        let state = dir.path().join("world.json");
+        fs::write(
+            dir.path().join("world.json.gm-inbox.json"),
+            json!([{
+                "id":"need-1","source":"test-authority","at":10,"kind":"unit_need",
+                "payload":{"need":"survey capability"},"allowed_recipients":["helios"]
+            }])
+            .to_string(),
+        )
+        .unwrap();
+        let faction_calls = Arc::new(AtomicUsize::new(0));
+        let fc = faction_calls.clone();
+        let gm_calls = Arc::new(AtomicUsize::new(0));
+        let gc = gm_calls.clone();
+        let worker= DiplomacyLoop::start_with_providers(state.clone(),env.clone(),None,move |_,_| {
+            fc.fetch_add(1,Ordering::Relaxed); Ok(proposal())
+        },move |_,input| {
+            gc.fetch_add(1,Ordering::Relaxed);
+            assert_eq!(input["events"][0]["id"],"need-1");
+            Ok(json!({"action":"request_content","event_ids":["need-1"],"target":"studio","summary":"Survey capability requested"}))
+        }).unwrap();
+        wait_until(|| {
+            gm_calls.load(Ordering::Relaxed) == 1
+                && worker.status.read().unwrap()["phase"] == "paused"
+        });
+        assert_eq!(faction_calls.load(Ordering::Relaxed), 3);
+        let status = worker.status.read().unwrap().clone();
+        assert_eq!(status["total_attempt_count"], 4);
+        assert_eq!(status["game_master"]["decisions"][0]["accepted"], true);
+        assert_eq!(status["game_master"]["events"][0]["id"], "need-1");
+        drop(worker);
+        let worker = DiplomacyLoop::start_with_providers(
+            state,
+            env,
+            None,
+            |_, _| panic!("shared budget retained"),
+            |_, _| panic!("GM budget retained"),
+        )
+        .unwrap();
+        wait_until(|| worker.status.read().unwrap()["phase"] == "paused");
+        assert_eq!(worker.status.read().unwrap()["total_attempt_count"], 4);
+    }
+    #[test]
+    fn adding_gm_to_an_existing_world_does_not_replay_old_rounds_as_new_spend() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("world.json");
+        let env = dir.path().join("env");
+        config(&env, "test-only-key", 11);
+        let mut core = Diplomacy::load(&state).unwrap();
+        for n in 0..9 {
+            let actor = FACTION_IDS[n % 3];
+            let id = format!("old-{n}");
+            let at = 10 + n as u64;
+            core.record_attempt(actor, &id, core.context(actor, at).unwrap(), "test", at)
+                .unwrap();
+            core.apply(actor, core.revision(), &id, proposal(), at)
+                .unwrap();
+        }
+        drop(core);
+        let fc = Arc::new(AtomicUsize::new(0));
+        let f = fc.clone();
+        let gc = Arc::new(AtomicUsize::new(0));
+        let g = gc.clone();
+        let worker=DiplomacyLoop::start_with_providers(state,env,None,move|_,_| {f.fetch_add(1,Ordering::Relaxed);Ok(proposal())},move|_,_|{g.fetch_add(1,Ordering::Relaxed);Ok(json!({"action":"wait","event_ids":[],"target":"","summary":"No new content need"}))}).unwrap();
+        wait_until(|| worker.status.read().unwrap()["phase"] == "paused");
+        assert_eq!(fc.load(Ordering::Relaxed), 1);
+        assert_eq!(gc.load(Ordering::Relaxed), 1);
     }
 }
