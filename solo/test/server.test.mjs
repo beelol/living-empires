@@ -47,16 +47,16 @@ test('restart retains uncertain theme work and its creation target as blocked wi
  }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
-test('saved faction areas govern later construction and survive API restart without cancelling current work',async()=>{
+test('saved faction areas govern ordinary construction without queuing art and survive API restart',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'colony-area-'));let app;try{
  app=await createApp({port:0,dataDir:dir,foundryEnabled:false});
  const post=body=>fetch(app.url+'/api/v1/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  await post({id:'freeze-area-test',type:'pause',paused:true});
  for(const input of [{id:'create-east',type:'faction-create',factionId:'east',name:'East',artDirection:'Basalt blocks with copper ribs and cyan recesses.'},{id:'save-east-area',type:'faction-assign',factionId:'east',buildingIds:[],area:{minX:8,maxX:30,minZ:0,maxZ:18},reuseDesign:true}]){const r=await post(input);assert.equal(r.status,200,await r.text());}
  const first={id:'new-east-a',type:'build',kind:'solar',factionId:'landing',x:12,z:8};assert.equal((await post(first)).status,200);assert.equal((await post(first)).status,200);
- const pending=app.world.foundry.requests.find(r=>r.targets?.some(t=>t.id==='new-east-a'));pending.status='running';pending.jobId='existing-bounded-job';
- assert.equal((await post({id:'new-east-b',type:'build',kind:'solar',factionId:'landing',x:24,z:8})).status,200);assert.equal(pending.status,'running');assert.equal(app.world.foundry.requests.find(r=>r.id===pending.id),pending);
- assert.equal(app.world.alloy,30);assert.equal(app.world.buildings.find(b=>b.id==='new-east-b').factionId,'east');assert.equal(app.world.foundry.requests.filter(r=>r.preferExistingDesign).length,0);assert.equal(app.world.foundry.requests.length,2);assert.ok(app.world.foundry.requests.every(r=>r.factionId==='east'&&r.factionRevision===1&&r.drivesFactionDirection&&/artistic direction freely/.test(r.prompt)));assert.equal(app.world.foundry.enabled,false);
+ assert.equal(app.world.foundry.requests.length,0);assert.equal((await post({id:'new-east-b',type:'build',kind:'solar',factionId:'landing',x:24,z:8})).status,200);
+ assert.equal(app.world.alloy,30);assert.equal(app.world.buildings.find(b=>b.id==='new-east-b').factionId,'east');assert.equal(app.world.foundry.requests.length,0);assert.equal(app.world.foundry.enabled,false);
+ const explicit={id:'style-east',type:'faction-style',factionId:'east',artDirection:'Basalt towers with copper ribs and cyan recesses.'};assert.equal((await post(explicit)).status,200);const pending=app.world.foundry.requests.at(-1);pending.status='running';pending.jobId='existing-bounded-job';
  const originalArea=structuredClone(app.world.factions.find(f=>f.id==='east').area);await app.close();app=await createApp({port:0,dataDir:dir,foundryEnabled:false});assert.deepEqual(app.world.factions.find(f=>f.id==='east').area,originalArea);assert.equal(app.world.buildings.find(b=>b.id==='new-east-b').factionId,'east');assert.equal(app.world.foundry.requests.find(r=>r.id===pending.id).jobId,'existing-bounded-job');
  }finally{await app?.close();fs.rmSync(dir,{recursive:true,force:true});}
 });

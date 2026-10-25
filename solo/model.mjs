@@ -139,6 +139,7 @@ function commitRequests(w,candidate){
 const normalizeStyle=value=>typeof value==='string'?value.trim().replace(/\s+/g,' ').toLowerCase():value;
 function styleSignature(theme){return theme?JSON.stringify({architecture:normalizeStyle(theme.architecture),shapeLanguage:normalizeStyle(theme.shapeLanguage),materialFinish:normalizeStyle(theme.materialFinish),weathering:normalizeStyle(theme.weathering),technology:normalizeStyle(theme.technology),motifs:[...new Set(theme.motifs.map(normalizeStyle))].sort(),palette:['shell','frame','accent'].map(k=>normalizeStyle(theme.palette[k]))}):null;}
 export function adoptFactionDirection(w,request,theme,sourceHash){
+ if(!w.foundry.enabled)return null;
  if(request.directionPropagation)return request.directionPropagation;
  if(!request.drivesFactionDirection||request.rehearsal)return null;
  if(!w.foundry.requests.includes(request)||request.status!=='installed'||request.hash!==sourceHash||!(/^[a-f0-9]{64}$/).test(sourceHash)||!Array.isArray(request.installedTargets)||!request.installedTargets.length)throw Error('Only an installed independently approved design can propose faction direction.');
@@ -176,9 +177,8 @@ export function command(w,input){
  const areaFaction=factionAt(w,site.x,site.z),faction=areaFaction??factionFor(w,input.factionId??'landing');
  const creation=input.kind==='creation'?creationRequest({...input,targetId:undefined,factionAssignment:undefined,factionId:faction.id},w):null,def=input.kind==='creation'?creationBlueprint(input.prompt):DEFINITIONS[input.kind],extractor=input.kind==='extractor'||def.function==='extractor';
  const b={id:input.id,kind:input.kind,x:site.x,z:site.z,progress:0,created:w.time,factionId:faction.id,factionAssignment:1,...(extractor?{depositId:site.depositId}:{})};
- const design=!creation&&(areaFaction||input.factionId!==undefined)?requestFor(w,faction,[b],'building-'+input.id,w.foundry.mode,undefined,{drivesFactionDirection:true}):null;
  if(extractor&&!w.deposits.some(p=>p.id===site.depositId))w.deposits.push({...site.deposit});
- w.alloy-=def.cost;if(creation){b.functionVersion=1;b.function=creation.function;b.prompt=creation.userPrompt;b.name=creation.userPrompt.slice(0,70);b.creationStatus='queued';w.foundry.requests.push(creation);}if(design)w.foundry.requests.push(design);if(creation||design)faction.designIntentId=(creation||design).id;w.buildings.push(b);result.buildingId=b.id;result.factionId=faction.id;result.requestIds=[creation,design].filter(Boolean).map(r=>r.id);event(w,`${def.name} construction started.`);
+ w.alloy-=def.cost;if(creation){b.functionVersion=1;b.function=creation.function;b.prompt=creation.userPrompt;b.name=creation.userPrompt.slice(0,70);b.creationStatus='queued';w.foundry.requests.push(creation);faction.designIntentId=creation.id;}w.buildings.push(b);result.buildingId=b.id;result.factionId=faction.id;result.requestIds=creation?[creation.id]:[];event(w,`${def.name} construction started.`);
  // Recalculate the remaining route when a new foundation crosses it.
  if(w.robot.path.length){const destination=w.robot.path.at(-1);w.robot.path=findPath(w,w.robot,destination)||[];}
  }else if(input.type==='faction-create'){

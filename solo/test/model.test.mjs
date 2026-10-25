@@ -39,6 +39,24 @@ test('dry land beyond the former survey edge is buildable and mineral prospectin
  const w=createWorld();assert.equal(canBuild(w,'solar',64,8).ok,true);const result=command(w,{id:'prospect',type:'prospect'});assert.ok(result.buildingId);assert.equal(w.alloy,40);assert.equal(w.buildings.at(-1).kind,'extractor');assert.equal(w.buildings.at(-1).progress,0);command(w,{id:'prospect',type:'prospect'});assert.equal(w.alloy,40);
 });
 
+test('ordinary premade construction never queues art, even when explicitly factioned or inside a faction area',()=>{
+ for(const enabled of [false,true])for(const kind of ['solar','extractor','habitat','workshop']){
+  const w=createWorld();w.foundry.enabled=enabled;w.alloy=1000;
+  command(w,{id:'faction',type:'faction-create',factionId:'orchid',name:'Orchid',artDirection:'Layered orchid petals with copper ribs.'});
+  const areaBuild=kind==='solar';if(areaBuild)command(w,{id:'area',type:'faction-assign',factionId:'orchid',buildingIds:[],area:{minX:6,maxX:30,minZ:0,maxZ:18}});
+  const position={solar:[12,8],extractor:[-18,8],habitat:[24,8],workshop:[36,8]}[kind],input={id:kind,type:'build',kind,x:position[0],z:position[1],...(areaBuild?{}:{factionId:'orchid'})};
+  const result=command(w,input);assert.equal(result.factionId,'orchid');assert.deepEqual(result.requestIds,[]);assert.equal(w.foundry.requests.length,0);assert.equal(w.factions.find(f=>f.id==='orchid').designIntentId,undefined);
+  command(w,input);assert.equal(w.foundry.requests.length,0);assert.equal(w.buildings.filter(b=>b.id===kind).length,1);
+ }
+});
+test('factioned prospect shortcut pays once without requesting premade extractor art',()=>{
+ for(const enabled of [false,true]){
+  const w=createWorld();w.foundry.enabled=enabled;command(w,{id:'faction',type:'faction-create',factionId:'orchid',name:'Orchid',artDirection:'Layered orchid petals with copper ribs.'});
+  const input={id:'prospect-factioned',type:'prospect',factionId:'orchid'},result=command(w,input),alloy=w.alloy;
+  assert.equal(w.buildings.find(b=>b.id===result.buildingId).factionId,'orchid');assert.equal(alloy,40);assert.equal(w.foundry.requests.length,0);assert.deepEqual(command(w,input),result);assert.equal(w.alloy,alloy);assert.equal(w.foundry.requests.length,0);
+ }
+});
+
 test('new colonies receive one alloy per running second and expose the live rate',()=>{
  const w=createWorld();assert.equal(w.alloy,100);assert.equal(alloyRate(w),1);assert.equal(publicState(w).alloyRate,1);advance(w,10);assert.equal(w.alloy,110);command(w,{id:'pause-income',type:'pause',paused:true});advance(w,10);assert.equal(w.alloy,110);
 });
