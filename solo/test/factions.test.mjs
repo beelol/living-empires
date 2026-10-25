@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createWorld,command,creationRequest,assetForBuilding,validateWorld,publicState,factionAt} from '../model.mjs';
+import {createWorld,command,creationRequest,assetForBuilding,validateWorld,publicState,factionAt,adoptFactionDirection} from '../model.mjs';
+import {THEMES} from '../../public/themes.mjs';
 import {openStore} from '../store.mjs';
 
 const create=(w,id='orchid')=>command(w,{id:'create-'+id,type:'faction-create',factionId:id,name:id,artDirection:'Layered orchid petal roofs with copper ribs and purple glass.'});
@@ -101,20 +102,20 @@ test('saved area authoritatively assigns inhabitants and latest overlapping area
  const before=structuredClone(w);assert.throws(()=>saveArea(w,'wrong','orchid',eastArea,{buildingIds:['solar-a']}),/changed/);assert.deepEqual(w,before);
 });
 
-test('new area building queues inheritance while existing in-flight work keeps its frozen targets',()=>{
+test('new area building queues a free design while existing in-flight work keeps its frozen targets',()=>{
  const w=createWorld();create(w);saveArea(w,'east','orchid',eastArea);const result=build(w,'solar-a',12,'landing');
  assert.equal(result.factionId,'orchid');const first=w.foundry.requests[0];first.status='running';first.jobId='active-job';const snapshot=structuredClone(first);
  const next=build(w,'solar-b',24,'landing');assert.equal(next.factionId,'orchid');assert.deepEqual(first,snapshot);assert.equal(w.foundry.requests.length,2);
- assert.equal(w.foundry.requests[1].preferExistingDesign,true);assert.deepEqual(w.foundry.requests[1].targets,[{id:'solar-b',assignment:1}]);assert.equal(w.alloy,130);
+ assert.equal(w.foundry.requests[1].preferExistingDesign,undefined);assert.match(w.foundry.requests[1].prompt,/artistic direction freely/);assert.equal(w.foundry.requests[1].drivesFactionDirection,true);assert.equal(w.foundry.requests[1].artDirection,w.foundry.requests[1].userPrompt);assert.equal(w.foundry.requests[1].prompt.includes(w.factions.find(f=>f.id==='orchid').artDirection),false);assert.equal(w.factions.find(f=>f.id==='orchid').designIntentId,w.foundry.requests[1].id);assert.match(w.foundry.requests[1].userPrompt,/Solar array/);assert.ok(w.foundry.requests[1].prompt.length<=3000);assert.deepEqual(w.foundry.requests[1].targets,[{id:'solar-b',assignment:1}]);assert.equal(w.alloy,130);
  build(w,'solar-b',24,'landing');assert.equal(w.foundry.requests.length,2);assert.equal(w.alloy,130);
  saveArea(w,'east-again','orchid',eastArea);assert.equal(first.status,'running');assert.deepEqual(first.targets,[{id:'solar-a',assignment:1}]);
  command(w,{id:'new-style',type:'faction-style',factionId:'orchid',artDirection:'Tall folded brass blades with slate glass seams.'});
  const latest=w.foundry.requests.at(-1);assert.deepEqual(latest.targets.map(t=>t.id),['solar-a','solar-b']);assert.equal(latest.preferExistingDesign,undefined);assert.equal(latest.factionRevision,2);assert.equal(first.status,'cancelled');
 });
 
-test('default outside-area builds remain unpaid while explicit faction builds request verified inheritance',()=>{
+test('default outside-area builds remain unpaid while explicit faction builds request one fresh design',()=>{
  const w=createWorld();build(w,'outside',12);assert.equal(w.foundry.requests.length,0);create(w);build(w,'explicit',24,'orchid');
- assert.equal(w.foundry.requests.length,1);assert.equal(w.foundry.requests[0].preferExistingDesign,true);assert.deepEqual(w.foundry.requests[0].targets,[{id:'explicit',assignment:1}]);
+ assert.equal(w.foundry.requests.length,1);assert.equal(w.foundry.requests[0].preferExistingDesign,undefined);assert.match(w.foundry.requests[0].prompt,/artistic direction freely/);assert.deepEqual(w.foundry.requests[0].targets,[{id:'explicit',assignment:1}]);const queued=structuredClone(w.foundry.requests[0]);build(w,'explicit',24,'orchid');assert.equal(w.foundry.requests.length,1);assert.deepEqual(w.foundry.requests[0],queued);
 });
 
 test('creations resolve area membership and retain their subject without duplicate active work',()=>{
@@ -133,4 +134,46 @@ test('empty saved areas survive reopen and reject malformed bounds without mutat
   assert.deepEqual(w,expected);store.close();store=openStore(dir);assert.deepEqual(store.world,expected);assert.equal(factionAt(store.world,12,8).id,'orchid');
   const broken=structuredClone(store.world);broken.factions[1].area.order=0;assert.throws(()=>validateWorld(broken),/damaged/);
  }finally{store?.close();fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+function approvedDirectionSetup(){
+ const w=createWorld();create(w);build(w,'older',12,'orchid');const faction=w.factions.find(f=>f.id==='orchid');faction.theme=structuredClone(THEMES.argonaut);
+ w.buildings.find(b=>b.id==='older').asset={hash:'previous-visible'};
+ command(w,{id:'origin',type:'build',kind:'creation',x:24,z:8,factionId:'orchid',prompt:'An alien greenhouse with branching glass chambers',provider:'gemini'});
+ const source=w.foundry.requests.at(-1),hash='a'.repeat(64);Object.assign(source,{status:'installed',jobId:'job-new-direction',hash,rehearsal:false,installedTargets:['origin'],themeDraftId:'fresh-draft'});w.buildings.find(b=>b.id==='origin').asset={hash};
+ return {w,faction,source,hash};
+}
+
+test('a fresh creation brief is independent of old faction style and helper validation has no side effects',()=>{
+ const w=createWorld();create(w);const before=structuredClone(w),request=creationRequest({id:'free',factionId:'orchid',prompt:'A basalt beacon with amber sails',provider:'gemini'},w);
+ assert.equal(request.drivesFactionDirection,true);assert.equal(request.artDirection,request.userPrompt);assert.match(request.prompt,/basalt beacon/);assert.equal(request.prompt.includes(w.factions[1].artDirection),false);assert.match(request.prompt,/fixed 8 metre/);assert.ok(request.prompt.length<=3000);assert.deepEqual(w,before);
+});
+
+test('accepted changed art adopts once and queues only other current members without recursive proposals',()=>{
+ const {w,faction,source,hash}=approvedDirectionSetup(),old=w.foundry.requests[0],before=structuredClone([w.alloy,w.robot,w.buildings,w.deposits]),originalPrompt=source.prompt,theme=structuredClone(THEMES.sylvan);old.status='running';
+ const result=adoptFactionDirection(w,source,theme,hash);assert.equal(result.status,'adopted');assert.equal(faction.revision,2);assert.equal(source.factionRevision,1);assert.equal(source.adoptedFactionRevision,2);assert.equal(source.prompt,originalPrompt);assert.equal(w.foundry.requests.find(r=>r.id===source.id),source);assert.equal(old.status,'cancelled');
+ assert.deepEqual(faction.theme,theme);assert.equal(faction.themeDraftId,'fresh-draft');assert.deepEqual(faction.designOrigin,{requestId:source.id,jobId:source.jobId,sourceHash:hash});assert.ok(faction.artDirection.length<=2000);assert.equal(faction.artDirection.includes('greenhouse'),false);
+ const propagated=w.foundry.requests.filter(r=>result.requestIds.includes(r.id));assert.equal(propagated.length,1);assert.deepEqual(propagated[0].targets,[{id:'older',assignment:1}]);assert.equal(propagated[0].drivesFactionDirection,undefined);assert.match(propagated[0].prompt,/Faction design language/);assert.deepEqual([w.alloy,w.robot,w.buildings,w.deposits],before);
+ const after=structuredClone(w);assert.deepEqual(adoptFactionDirection(w,source,theme,hash),result);assert.deepEqual(w,after);assert.equal(adoptFactionDirection(w,propagated[0],theme,hash),null);assert.deepEqual(w,after);theme.palette.shell='#abcdef';assert.notEqual(faction.theme.palette.shell,theme.palette.shell);
+});
+
+test('equivalent visual style ignores descriptive identity, role and environment and queues nothing',()=>{
+ const {w,faction,source,hash}=approvedDirectionSetup(),theme=structuredClone(THEMES.argonaut);theme.id='new-role';theme.name='A new building';theme.gameplayRole='A greenhouse';theme.palette.ground='#abcdef';theme.visualChecks=['Different role requirement'];theme.shapeLanguage='  '+theme.shapeLanguage.toUpperCase().replaceAll(' ','  ')+'  ';theme.motifs.reverse();
+ const count=w.foundry.requests.length;assert.equal(adoptFactionDirection(w,source,theme,hash).status,'unchanged');assert.equal(faction.revision,1);assert.equal(w.foundry.requests.length,count);assert.equal(source.adoptedFactionRevision,undefined);
+});
+
+test('newer free prompts, explicit faction updates and reassignment each prevent stale direction adoption',()=>{
+ for(const mode of ['prompt','style','reassign']){
+  const {w,faction,source,hash}=approvedDirectionSetup();
+  if(mode==='prompt')build(w,'newest',36,'orchid');
+  if(mode==='style')command(w,{id:'latest-style',type:'faction-style',factionId:'orchid',artDirection:'New explicit titanium faceted city direction.'});
+  if(mode==='reassign')assign(w,'move-origin','landing',['origin']);
+  const savedFaction=structuredClone(faction),count=w.foundry.requests.length;assert.equal(adoptFactionDirection(w,source,THEMES.sylvan,hash).status,'superseded');assert.deepEqual(faction,savedFaction);assert.equal(w.foundry.requests.length,count);
+  if(mode==='style')assert.equal(faction.designIntentId,'style-latest-style');
+ }
+});
+
+test('failed adoption validation leaves faction, requests and assets atomically unchanged; rehearsal never propagates',()=>{
+ const {w,source,hash}=approvedDirectionSetup();w.buildings.find(b=>b.id==='older').kind='creation';w.buildings.find(b=>b.id==='older').prompt='';const before=structuredClone(w);
+ assert.throws(()=>adoptFactionDirection(w,source,THEMES.sylvan,hash),/subject/);assert.deepEqual(w,before);source.rehearsal=true;const rehearsal=structuredClone(w);assert.equal(adoptFactionDirection(w,source,THEMES.sylvan,hash),null);assert.deepEqual(w,rehearsal);
 });

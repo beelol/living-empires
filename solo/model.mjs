@@ -27,15 +27,15 @@ function targetBuildings(w,ids,{empty=false}={}){
  if(!Array.isArray(ids)||(!empty&&!ids.length)||ids.length>100||ids.some(id=>!validId(id))||new Set(ids).size!==ids.length)throw Error('Choose 1–100 unique existing building IDs.');
  const buildings=ids.map(id=>w.buildings.find(b=>b.id===id));if(buildings.some(b=>!b))throw Error('Unknown building in faction selection.');return buildings;
 }
-function requestFor(w,faction,buildings,id,provider,subject){
+function requestFor(w,faction,buildings,id,provider,subject,{drivesFactionDirection=false}={}){
  if(!['fixture','gemini','managed'].includes(provider))throw Error('Choose a Foundry provider.');
  const kind=buildings[0].kind,userPrompt=subject??`A ${DEFINITIONS[kind].name} serving its existing colony function.`;
  const marker=`[colony:${w.id};request:${id};faction:${faction.id};revision:${faction.revision}]`;
  const limits='Keep every part inside a fixed 8 metre-wide plot. Preserve the traversable front-to-centre corridor and grounded supports required by the Foundry contract. Preserve building function; no units or gameplay changes. Use named scene.components with each part assigned exactly once. Elevated ornaments use role detail, not grounded support.';
- const fixed=`${marker}\nRequested subject: ${userPrompt}\n${limits}\nFaction design language: `;
- const prompt=fixed+faction.artDirection.slice(0,Math.max(0,3000-fixed.length));
+ const fixed=`${marker}\nRequested subject: ${userPrompt}\n${limits}`;
+ const prompt=drivesFactionDirection?fixed+'\nChoose an original artistic direction freely from the requested subject and function. Invent a distinctive silhouette, composition, materials, palette and purposeful details; the existing faction style does not constrain this new design.':fixed+'\nFaction design language: '+faction.artDirection.slice(0,Math.max(0,3000-fixed.length-26));
  if(prompt.length>3000)throw Error('Creation request exceeds its bounded prompt.');
- return {id,kind,round:w.foundry.round,status:'queued',provider,explicit:true,factionId:faction.id,factionRevision:faction.revision,targets:buildings.map(b=>({id:b.id,assignment:b.factionAssignment})),artDirection:faction.artDirection,userPrompt,prompt,...(kind==='creation'?{targetId:buildings[0].id}:{})};
+ return {id,kind,round:w.foundry.round,status:'queued',provider,explicit:true,factionId:faction.id,factionRevision:faction.revision,targets:buildings.map(b=>({id:b.id,assignment:b.factionAssignment})),artDirection:drivesFactionDirection?userPrompt:faction.artDirection,userPrompt,prompt,...(drivesFactionDirection?{drivesFactionDirection:true}:{}),...(kind==='creation'?{targetId:buildings[0].id}:{})};
 }
 export function creationRequest(input,world){
  if(!bounded(input.prompt,5,2000))throw Error('Describe the creation in 5–2000 characters.');
@@ -44,7 +44,7 @@ export function creationRequest(input,world){
  if(!validId(targetId)||input.targetId&&!existing)throw Error('Unknown creation target.');
  if(existing&&(existing.kind!=='creation'||existing.factionId!==faction.id||input.factionAssignment!==undefined&&input.factionAssignment!==existing.factionAssignment))throw Error('Creation target faction assignment changed.');
  const target=existing??{id:targetId,kind:'creation',factionId:faction.id,factionAssignment:1};
- return requestFor(world,faction,[target],'creation-'+input.id,input.provider,input.prompt.trim());
+ return requestFor(world,faction,[target],'creation-'+input.id,input.provider,input.prompt.trim(),{drivesFactionDirection:true});
 }
 export function queueFactionUpdates(w,factionId,buildingIds,operationId,{reuseDesign=false}={}){
  if(!validId(operationId))throw Error('A stable operation ID is required.');
@@ -103,6 +103,25 @@ function commitRequests(w,candidate){
  for(const next of candidate.foundry.requests){const old=w.foundry.requests.find(r=>r.id===next.id);if(old)Object.assign(old,next);else w.foundry.requests.push(next);}
 }
 
+const normalizeStyle=value=>typeof value==='string'?value.trim().replace(/\s+/g,' ').toLowerCase():value;
+function styleSignature(theme){return theme?JSON.stringify({architecture:normalizeStyle(theme.architecture),shapeLanguage:normalizeStyle(theme.shapeLanguage),materialFinish:normalizeStyle(theme.materialFinish),weathering:normalizeStyle(theme.weathering),technology:normalizeStyle(theme.technology),motifs:[...new Set(theme.motifs.map(normalizeStyle))].sort(),palette:['shell','frame','accent'].map(k=>normalizeStyle(theme.palette[k]))}):null;}
+export function adoptFactionDirection(w,request,theme,sourceHash){
+ if(request.directionPropagation)return request.directionPropagation;
+ if(!request.drivesFactionDirection||request.rehearsal)return null;
+ if(!w.foundry.requests.includes(request)||request.status!=='installed'||request.hash!==sourceHash||!(/^[a-f0-9]{64}$/).test(sourceHash)||!Array.isArray(request.installedTargets)||!request.installedTargets.length)throw Error('Only an installed independently approved design can propose faction direction.');
+ const faction=w.factions.find(f=>f.id===request.factionId),sourceCurrent=request.installedTargets.some(id=>w.buildings.some(b=>b.id===id&&b.factionId===request.factionId&&b.asset?.hash===sourceHash&&request.targets?.some(t=>t.id===id&&t.assignment===b.factionAssignment)));
+ if(!faction||!sourceCurrent||faction.revision!==request.factionRevision||faction.designIntentId!==request.id){request.directionPropagation={status:'superseded',sourceHash,reason:'A newer faction direction, building request or assignment takes precedence.'};return request.directionPropagation;}
+ validateTheme(theme);
+ if(styleSignature(faction.theme)===styleSignature(theme)){request.directionPropagation={status:'unchanged',factionRevision:faction.revision,sourceHash,requestIds:[],reason:'The approved design retains the current faction visual style.'};return request.directionPropagation;}
+ if(!Number.isSafeInteger(faction.revision+1))throw Error('Faction revision counter is exhausted.');
+ const candidate=structuredClone(w),next=factionFor(candidate,faction.id),source=candidate.foundry.requests.find(r=>r.id===request.id),previousRevision=faction.revision;
+ next.revision++;next.theme=structuredClone(theme);next.themeDraftId=request.themeDraftId;next.artDirection=`Shape: ${theme.shapeLanguage.slice(0,400)}. Materials: ${theme.materialFinish.slice(0,400)}. Motifs: ${theme.motifs.join('; ').slice(0,600)}. Technology: ${theme.technology.slice(0,400)}. Colors: ${theme.palette.shell}, ${theme.palette.frame}, ${theme.palette.accent}.`.slice(0,2000);next.designOrigin={requestId:request.id,jobId:request.jobId,sourceHash};
+ const originIds=new Set(request.installedTargets),ids=candidate.buildings.filter(b=>b.factionId===faction.id&&!originIds.has(b.id)).map(b=>b.id),fullId='adopt-'+request.id,operationId=fullId.length<=100?fullId:'adopt-'+request.id.slice(0,70)+'-'+w.foundry.requests.indexOf(request);
+ const requests=queueFactionUpdates(candidate,faction.id,ids,operationId);source.adoptedFactionRevision=next.revision;source.directionPropagation={status:'adopted',previousRevision,factionRevision:next.revision,sourceHash,requestIds:requests.map(r=>r.id),reason:'The independently approved new design defines this faction direction; other current members are queued for review.'};
+ Object.assign(faction,next);commitRequests(w,candidate);for(const b of w.buildings)if(ids.includes(b.id)&&b.kind==='creation')b.creationStatus=candidate.buildings.find(t=>t.id===b.id).creationStatus;w.revision++;
+ return request.directionPropagation;
+}
+
 export function command(w,input){
  if(!input||typeof input!=='object'||typeof input.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(input.id)||['__proto__','constructor','prototype'].includes(input.id))throw Error('A stable operation ID is required.');
  const signature=JSON.stringify(Object.fromEntries(Object.keys(input).sort().map(k=>[k,input[k]])));if(Object.hasOwn(w.receipts,input.id)){if(w.receipts[input.id].signature!==signature)throw Error('Operation ID reused with different data.');return structuredClone(w.receipts[input.id].result);}
@@ -118,9 +137,9 @@ export function command(w,input){
  const areaFaction=factionAt(w,site.x,site.z),faction=areaFaction??factionFor(w,input.factionId??'landing');
  const creation=input.kind==='creation'?creationRequest({...input,targetId:undefined,factionAssignment:undefined,factionId:faction.id},w):null;
  const b={id:input.id,kind:input.kind,x:site.x,z:site.z,progress:0,created:w.time,factionId:faction.id,factionAssignment:1,...(input.kind==='extractor'?{depositId:site.depositId}:{})};
- const inheritance=!creation&&(areaFaction||input.factionId!==undefined)?{...requestFor(w,faction,[b],'building-'+input.id,w.foundry.mode),preferExistingDesign:true}:null;
+ const design=!creation&&(areaFaction||input.factionId!==undefined)?requestFor(w,faction,[b],'building-'+input.id,w.foundry.mode,undefined,{drivesFactionDirection:true}):null;
  if(input.kind==='extractor'&&!w.deposits.some(p=>p.id===site.depositId))w.deposits.push({...site.deposit});
- w.alloy-=DEFINITIONS[input.kind].cost;if(creation){b.prompt=creation.userPrompt;b.name=creation.userPrompt.slice(0,70);b.creationStatus='queued';w.foundry.requests.push(creation);}if(inheritance)w.foundry.requests.push(inheritance);w.buildings.push(b);result.buildingId=b.id;result.factionId=faction.id;result.requestIds=[creation,inheritance].filter(Boolean).map(r=>r.id);event(w,`${DEFINITIONS[b.kind].name} construction started.`);
+ w.alloy-=DEFINITIONS[input.kind].cost;if(creation){b.prompt=creation.userPrompt;b.name=creation.userPrompt.slice(0,70);b.creationStatus='queued';w.foundry.requests.push(creation);}if(design)w.foundry.requests.push(design);if(creation||design)faction.designIntentId=(creation||design).id;w.buildings.push(b);result.buildingId=b.id;result.factionId=faction.id;result.requestIds=[creation,design].filter(Boolean).map(r=>r.id);event(w,`${DEFINITIONS[b.kind].name} construction started.`);
  // Recalculate the remaining route when a new foundation crosses it.
  if(w.robot.path.length){const destination=w.robot.path.at(-1);w.robot.path=findPath(w,w.robot,destination)||[];}
  }else if(input.type==='faction-create'){
@@ -150,7 +169,7 @@ export function command(w,input){
  const faction=factionFor(w,input.factionId);
  if(!bounded(input.artDirection,5,2000))throw Error('Faction art direction must contain 5–2000 characters.');
  if(!Number.isSafeInteger(faction.revision+1))throw Error('Faction revision counter is exhausted.');
- const candidate=structuredClone(w),next=factionFor(candidate,faction.id);next.artDirection=input.artDirection.trim();next.revision++;next.theme=null;
+ const candidate=structuredClone(w),next=factionFor(candidate,faction.id);next.artDirection=input.artDirection.trim();next.revision++;next.theme=null;next.designIntentId='style-'+input.id;
  const requests=queueFactionUpdates(candidate,faction.id,candidate.buildings.filter(b=>b.factionId===faction.id).map(b=>b.id),input.id);
  Object.assign(faction,next);commitRequests(w,candidate);for(const b of w.buildings)if(b.factionId===faction.id&&b.kind==='creation')b.creationStatus='queued';result.factionId=faction.id;result.requestIds=requests.map(r=>r.id);
  }else if(input.type==='move'){
