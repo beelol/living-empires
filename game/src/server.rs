@@ -44,7 +44,12 @@ struct Authority {
     reload_error: Option<String>,
     last_reload: Instant,
     last_snapshot: Instant,
+    city_planners: std::collections::BTreeMap<String, argon_dev::city::CityPlanner>,
+    city_policy_file: Option<argon_dev::city::source::PolicyFile>,
+    city_policy_error: Option<String>,
+    city_policy_observed: Option<String>,
     city_steps: u64,
+
     city_error: Option<String>,
     city_halted: bool,
     sessions: HashMap<Entity, String>,
@@ -81,7 +86,11 @@ impl Authority {
             "world_name":self.content.world_name(),
             "release":self.release,
             "content_error":self.reload_error,
+            "city_policy_active":self.city_planners.iter().map(|(id,p)|(id.clone(),p.active_policy_version().to_owned())).collect::<std::collections::BTreeMap<_,_>>(),
+            "city_policy_observed":self.city_policy_observed,
+            "city_policy_error":self.city_policy_error,
             "city_error":self.city_error,
+
             "city_halted":self.city_halted,
             "buildings":self.world.buildings().len(),
         }));
@@ -207,6 +216,23 @@ fn authoritative_update(
                 authority.reload_error = Some(message);
             }
         }
+        if authority.world.terrain().is_some() {
+            let update = authority.city_policy_file.as_mut().map(|file| file.poll());
+            match update {
+                Some(Ok(Some(source))) => {
+                    authority.city_policy_observed = Some(source.sha256);
+                    let outcome = authority
+                        .city_planners
+                        .values_mut()
+                        .try_for_each(|p| p.stage_policy(&source.source));
+                    if let Err(error) = outcome {
+                        authority.city_policy_error = Some(format!("{error:#}"));
+                    }
+                }
+                Some(Err(error)) => authority.city_policy_error = Some(format!("{error:#}")),
+                _ => {}
+            }
+        }
         authority.last_reload = Instant::now();
     }
     let broadcast = authority.last_snapshot.elapsed() >= SNAPSHOT_INTERVAL;
@@ -254,7 +280,27 @@ fn advance_city(mut authority: NonSendMut<Authority>) {
             }
             authority.world.initialize_settlements()?;
         }
+        for faction in ["helios", "tide", "cinder"] {
+            let request = authority
+                .world
+                .city_layout_request(faction, Role::Generator)?;
+            match authority
+                .city_planners
+                .get_mut(faction)
+                .unwrap()
+                .activate_staged(&request)
+            {
+                Ok(true) => authority.city_policy_error = None,
+                Ok(false) => {}
+                Err(error) => {
+                    authority.city_policy_error = Some(format!(
+                        "Rejected city policy; retaining last good: {error:#}"
+                    ))
+                }
+            }
+        }
         authority.world.tick_settlements(1)?;
+
         if !planning {
             return Ok(blockers);
         }
@@ -277,7 +323,12 @@ fn advance_city(mut authority: NonSendMut<Authority>) {
                 None
             };
             if let Some((role, request)) = next {
-                let id = authority.world.plan_settlement(faction, request, role)?;
+                let authority = &mut *authority;
+                let planner = authority.city_planners.get_mut(faction).unwrap();
+                let id = authority
+                    .world
+                    .plan_settlement_with_planner(faction, request, role, planner)?;
+
                 if id.is_none() {
                     blockers.push(format!(
                         "{faction}: {role:?} expansion blocked; no legal affordable site"
@@ -341,7 +392,17 @@ pub fn run_with_stop(mut config: HostConfig, stop: Arc<AtomicBool>) -> Result<()
             reload_error: None,
             last_reload: Instant::now(),
             last_snapshot: Instant::now(),
+            city_planners: ["helios", "tide", "cinder"]
+                .into_iter()
+                .map(|id| (id.into(), argon_dev::city::CityPlanner::new(id).unwrap()))
+                .collect(),
+            city_policy_file: Some(argon_dev::city::source::PolicyFile::new(
+                config.content.join("city_layout.lua"),
+            )),
+            city_policy_error: None,
+            city_policy_observed: None,
             city_steps: 0,
+
             city_error: None,
             city_halted: false,
             sessions: HashMap::new(),
@@ -441,7 +502,15 @@ mod tests {
             reload_error: None,
             last_reload: Instant::now(),
             last_snapshot: Instant::now(),
+            city_planners: ["helios", "tide", "cinder"]
+                .into_iter()
+                .map(|id| (id.into(), argon_dev::city::CityPlanner::new(id).unwrap()))
+                .collect(),
+            city_policy_file: None,
+            city_policy_error: None,
+            city_policy_observed: None,
             city_steps: 0,
+
             city_error: None,
             city_halted: false,
             sessions: HashMap::new(),
@@ -460,11 +529,7 @@ mod tests {
         );
         std::fs::write(&gate, b"active").unwrap();
         app.update();
-        let snapshot = app
-            .world()
-            .non_send::<Authority>()
-            .world
-            .buildings();
+        let snapshot = app.world().non_send::<Authority>().world.buildings();
         assert_eq!(snapshot.len(), 3);
         let bytes = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -472,20 +537,14 @@ mod tests {
         app.update();
         assert!(app.world().non_send::<Authority>().city_halted);
         assert_eq!(
-            app.world()
-                .non_send::<Authority>()
-                .world
-                .buildings(),
+            app.world().non_send::<Authority>().world.buildings(),
             snapshot
         );
         std::fs::remove_dir(&path).unwrap();
         std::fs::write(&path, bytes).unwrap();
         app.update();
         assert_eq!(
-            app.world()
-                .non_send::<Authority>()
-                .world
-                .buildings(),
+            app.world().non_send::<Authority>().world.buildings(),
             snapshot
         );
     }
@@ -509,7 +568,15 @@ mod tests {
             reload_error: None,
             last_reload: Instant::now(),
             last_snapshot: Instant::now(),
+            city_planners: ["helios", "tide", "cinder"]
+                .into_iter()
+                .map(|id| (id.into(), argon_dev::city::CityPlanner::new(id).unwrap()))
+                .collect(),
+            city_policy_file: None,
+            city_policy_error: None,
+            city_policy_observed: None,
             city_steps: 0,
+
             city_error: None,
             city_halted: false,
             sessions: HashMap::new(),

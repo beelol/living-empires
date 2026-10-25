@@ -105,6 +105,22 @@ impl CityPlanner {
         &self.active.version
     }
 
+    /// Promote only at an authority tick, including while no build is requested.
+    /// Validation exercises all species/founding branches without world effects.
+    pub fn activate_staged(&mut self, request: &LayoutRequest) -> Result<bool> {
+        ensure!(
+            request.faction_id == self.faction_id,
+            "city planner belongs to another faction"
+        );
+        validate(request)?;
+        let Some(policy) = self.staged.take() else {
+            return Ok(false);
+        };
+        policy.checked_offsets(request)?;
+        self.active = policy;
+        Ok(true)
+    }
+
     /// The host reads a changed file and stages it; the next proposal boundary
     /// promotes a valid result. Failed loads leave active and staged rules intact.
     pub fn stage_policy(&mut self, source: &str) -> Result<()> {

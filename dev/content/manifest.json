@@ -1,5 +1,8 @@
 {
   "schema_version": 1,
   "entry": "rules.lua",
-  "files": ["rules.lua"]
+  "files": [
+    "rules.lua",
+    "city_layout.lua"
+  ]
 }
