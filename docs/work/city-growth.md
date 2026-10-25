@@ -72,3 +72,34 @@ subprocess deadline; isolated unchanged recheck failed too. Failure logs retaine
 /private/tmp/argon-city-{runtime-reviewed,content-recheck}.log. City-specific
 10 tests and clippy pass after both review fixes. This is not a green full-suite
 claim; foundation is notified. No guard or foreign content file was changed.
+
+## Live candidate 20:00 UTC
+
+Actual combined host at127.0.0.1:4027, NEW saved world
+`/Users/bilal/projects/argon-empires/.local-deploy/terrain-city-world.json`,seed72913.
+This is a candidate shared world, NOT canonical supervisor4000. Native CityProof.app
+connects through realLightyear. Nine completed buildings: core/generator/storehouse
+for helios(robot),tide(organic),cinder(cyborg); paidcost100+60+40 leaves800metal each.
+No mesh-only spawning. Screenshot `/private/tmp/argon-city-live/three-settlements-overview.png`
+and exact records/source/image hashes `/private/tmp/argon-city-live/checkpoint.json`.
+Actual image visibly shows three separate model families on the saved terrain;
+robot cluster partly hidden byHUD, organic/cyborg clear. Not a fullUX/GEN pass.
+Renderer uses exactauthoritative center,height,extents,hash and work progress.
+Solid3.2m foundation extends below G's maximum3m relief; interior/ramp traversal
+is not verified. Native combined lib21/21 and binary build pass; macOS large
+unwindtable linkerwarning retained. Last renderer lintcheck follows.
+
+G found JSONf64 parsing could drift oneULP afterrestart; float_roundtrip feature
+is owner-fixed on Worldintegration. Do notclaimexactrestart on the older4027
+binary. Main Gownsintegration and protocol3snapshot/client/server patch;
+`/private/tmp/argon-city-network.patch` is the agreed privatehandoff. No foreign
+central paths edited here. Lua city source remains packaged/static in thisslice.
+
+Latestuser direction: initialalgorithm permitted; future agent placement should
+combine Civ-style clustering and RTS/StarCraft functional access space. Add
+biome-tinted terrain-conforming pads/paths with feathered edges as visual-only
+polish after baselinepromotion. NewFoundry buildings wait for independent
+qualityapproval of exact bytes. Accepted placement feedback links need/change,
+sourceworld+terrainrevision, policy/recipe hashes, attempts/rejectedconstraints,
+pose/cost/authorityreceipt and before/afterBevyframes. Gownsatomic outbox;
+brain/GM/Foundry consume permittedfacts, never grant placement or freeconstruction.
