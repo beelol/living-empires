@@ -23,11 +23,13 @@ impl Default for JobLimits {
 
 impl JobLimits {
     fn validate(&self) -> Result<(), String> {
-        if !(1..=3).contains(&self.max_attempts)
-            || !(1..=6).contains(&self.max_provider_calls)
-            || !(1..=DEFAULT_TIME_BUDGET_MS).contains(&self.time_budget_ms)
+        let extended_profile = self.max_attempts > 3 || self.max_provider_calls > 6;
+        if !(1..=30).contains(&self.max_attempts)
+            || !(1..=60).contains(&self.max_provider_calls)
+            || self.time_budget_ms > DEFAULT_TIME_BUDGET_MS
+            || (extended_profile && self.time_budget_ms > 300_000)
             || self.required_image_hashes != 3 {
-            return Err("Limits require 1..3 attempts, 1..6 provider calls, 1..1,200,000 ms, and exactly 3 image hashes".into());
+            return Err("Limits require 1..30 attempts, 1..60 provider calls, exactly 3 image hashes; 0 ms disables the deadline; extended profiles are limited to 300,000 ms and ordinary profiles to 1,200,000 ms".into());
         }
         Ok(())
     }
@@ -44,6 +46,9 @@ pub struct FrozenJobContract {
     pub created_at_ms: u64,
     pub deadline_ms: u64,
     pub limits: JobLimits,
+    /// New creations may stop once the frozen style and all functional gates pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_goal: Option<String>,
     pub provenance: Provenance,
     /// Frozen model assignment for the independent creator, repairer and reviewer roles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -286,7 +291,7 @@ impl AssetPipeline {
         let mut contract = FrozenJobContract {
             job_id, prompt, prompt_sha256, theme, theme_sha256, created_at_ms: now_ms, deadline_ms, limits,
             provenance: Provenance::default(), frozen_sha256: String::new(),
-            scene_half_extent: None, refinement: None, reference: None, role_models: None,
+            scene_half_extent: None, refinement: None, reference: None, role_models: None, completion_goal: None,
         };
         contract.frozen_sha256 = contract_hash(&contract)?;
         let mut pipeline = Self {
@@ -341,6 +346,19 @@ impl AssetPipeline {
         Ok(())
     }
 
+    /// Freeze the creation goal separately from comparative asset refinement.
+    pub fn set_completion_goal(&mut self, goal: String) -> Result<(), String> {
+        self.check_integrity()?;
+        self.ensure_unstarted()?;
+        if goal != "satisfy-frozen-style" || self.contract.refinement.is_some() {
+            return Err("Unsupported completion goal or refinement baseline".into());
+        }
+        self.contract.completion_goal = Some(goal);
+        self.contract.frozen_sha256 = contract_hash(&self.contract)?;
+        self.refresh_state_hash()?;
+        Ok(())
+    }
+
     /// Replace bounded job limits before work starts, preserving one frozen deadline.
     pub fn set_limits(&mut self, limits: JobLimits) -> Result<(), String> {
         self.check_integrity()?;
@@ -373,6 +391,7 @@ impl AssetPipeline {
     pub fn set_refinement(&mut self, refinement: RefinementContract) -> Result<(), String> {
         self.check_integrity()?;
         self.ensure_unstarted()?;
+        if self.contract.completion_goal.is_some() { return Err("Style completion cannot replace a refinement goal".into()); }
         validate_refinement(&refinement, &self.contract.theme)?;
         if let Some(extent) = self.contract.scene_half_extent {
             let baseline_extent = refinement.baseline_recipe.scene.as_ref().map(|scene| scene.half_extent);
@@ -420,7 +439,7 @@ impl AssetPipeline {
 
     pub fn can_continue(&self, now_ms: u64) -> Result<bool, String> {
         self.check_integrity()?;
-        Ok(self.status == PipelineStatus::Active && now_ms < self.contract.deadline_ms
+        Ok(self.status == PipelineStatus::Active && (self.contract.limits.time_budget_ms == 0 || now_ms < self.contract.deadline_ms)
             && self.attempt_count < self.contract.limits.max_attempts
             && self.provider_calls < self.contract.limits.max_provider_calls)
     }
@@ -429,7 +448,7 @@ impl AssetPipeline {
     /// Unlike `can_continue`, this does not require budget for another attempt or call.
     pub fn can_work(&self, now_ms: u64) -> Result<bool, String> {
         self.check_integrity()?;
-        Ok(self.status == PipelineStatus::Active && now_ms < self.contract.deadline_ms)
+        Ok(self.status == PipelineStatus::Active && (self.contract.limits.time_budget_ms == 0 || now_ms < self.contract.deadline_ms))
     }
 
     /// Record each returned candidate, including invalid candidates, as a bounded attempt.
@@ -508,9 +527,15 @@ impl AssetPipeline {
         let visible_noop = prior_recipe.is_some_and(|prior| prior.parts == candidate.recipe.parts)
             || prior_evidence.as_ref().is_some_and(|prior| prior.image_sha256 == evidence.image_sha256);
         let comparison_blocked = comparison.is_some_and(|value| value.status == ComparisonStatus::Blocked);
+        let style_completion = self.contract.completion_goal.as_deref() == Some("satisfy-frozen-style");
         let comparison_failed = comparison.is_some_and(|value| {
-            !value.defects.is_empty() || visible_noop || if prior_evidence.is_none() { value.status != ComparisonStatus::Initial }
-            else { value.status != ComparisonStatus::Improved || value.improvements.is_empty() || !value.regressions.is_empty() }
+            if style_completion {
+                !value.defects.is_empty() || !value.regressions.is_empty() || if prior_evidence.is_none() { value.status != ComparisonStatus::Initial }
+                else { !matches!(value.status, ComparisonStatus::Improved | ComparisonStatus::Unchanged) }
+            } else {
+                !value.defects.is_empty() || visible_noop || if prior_evidence.is_none() { value.status != ComparisonStatus::Initial }
+                else { value.status != ComparisonStatus::Improved || value.improvements.is_empty() || !value.regressions.is_empty() }
+            }
         });
         let failed = review.theme_status == EvidenceStatus::Fail || review.render_status == EvidenceStatus::Fail
             || !review.findings.is_empty() || candidate.validation_error.is_some()
@@ -587,7 +612,7 @@ impl AssetPipeline {
 
     fn ensure_active(&mut self, now_ms: u64) -> Result<(), String> {
         if self.status != PipelineStatus::Active { return Err(format!("Job is {:?}", self.status)); }
-        if now_ms >= self.contract.deadline_ms {
+        if self.contract.limits.time_budget_ms != 0 && now_ms >= self.contract.deadline_ms {
             self.status = PipelineStatus::Exhausted;
             self.last_verdict = Some(ReviewVerdict::Exhausted);
             self.refresh_state_hash()?;
@@ -608,6 +633,10 @@ impl AssetPipeline {
             if refinement.baseline_recipe.scene.as_ref().is_some_and(|scene| scene.half_extent.to_bits() != extent.to_bits()) {
                 return Err("Refinement baseline scene extent differs from frozen renderer extent".into());
             }
+        }
+        if self.contract.completion_goal.as_deref().is_some_and(|goal| goal != "satisfy-frozen-style")
+            || (self.contract.completion_goal.is_some() && self.contract.refinement.is_some()) {
+            return Err("Invalid frozen completion goal".into());
         }
         if self.contract.limits.validate().is_err() {
             return Err("Frozen job contract or pipeline counters were tampered with".into());

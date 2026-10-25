@@ -10,6 +10,7 @@ import {validateTheme} from './public/themes.mjs';
 import {THEMES,injectDefect,canAccept} from './public/core.mjs';
 import {captureNative} from './lib/native-capture.mjs';
 import {SpendLedger} from './lib/spend-ledger.mjs';
+import {fastLimits,retryLimits,remainingTime,armDeadline} from './lib/job-policy.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const publicRoot=process.env.ASSET_PUBLIC_DIR||path.join(root,'public');
@@ -31,7 +32,7 @@ const digest=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const rustBinary=process.env.RUST_CORE_BIN||path.join(root,'target/debug/world-check');
 const rustBinarySha256=fs.existsSync(rustBinary)?createHash('sha256').update(fs.readFileSync(rustBinary)).digest('hex'):null;
 const sourceRevision=spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).stdout?.trim()||'unknown';
-const sourceFingerprint=digest(['server.mjs','public/app.mjs','public/style.css','public/index.html','public/themes.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/spend-ledger.mjs','lib/theme-inference.mjs','lib/native-capture.mjs','game/examples/foundry_audit.rs','crates/living-world-core/src/lib.rs','crates/living-world-core/src/main.rs','crates/living-world-core/src/pipeline.rs','crates/living-world-core/src/provider.rs','crates/living-world-core/fixtures/presets.json','Cargo.lock','package-lock.json'].map(file=>{const source=file.startsWith('public/')?path.join(publicRoot,file.slice(7)):path.join(root,file);return [file,fs.existsSync(source)?fs.readFileSync(source,'utf8'):null];}).concat([['world-check-binary-sha256',rustBinarySha256]]));
+const sourceFingerprint=digest(['server.mjs','public/app.mjs','public/style.css','public/index.html','public/themes.mjs','public/core.mjs','public/scene.mjs','public/render-worker.mjs','lib/spend-ledger.mjs','lib/job-policy.mjs','lib/theme-inference.mjs','lib/native-capture.mjs','game/examples/foundry_audit.rs','crates/living-world-core/src/lib.rs','crates/living-world-core/src/main.rs','crates/living-world-core/src/pipeline.rs','crates/living-world-core/src/provider.rs','crates/living-world-core/fixtures/presets.json','Cargo.lock','package-lock.json'].map(file=>{const source=file.startsWith('public/')?path.join(publicRoot,file.slice(7)):path.join(root,file);return [file,fs.existsSync(source)?fs.readFileSync(source,'utf8'):null];}).concat([['world-check-binary-sha256',rustBinarySha256]]));
 function rustSync(input){
   if(!fs.existsSync(rustBinary))throw new Error('Rust core is not built. Run cargo build -p living-world-core before starting a run.');
   const result=spawnSync(rustBinary,[],{cwd:root,input:JSON.stringify(input),encoding:'utf8',timeout:15000,maxBuffer:16*1024*1024});
@@ -108,7 +109,7 @@ for(const file of fs.readdirSync(data).filter(f=>/^(?:[\da-f-]{36}|job-[a-z0-9-]
 }
 function ensureCurrent(job){
   if(job.cancelled)throw new Error('Cancelled');
-  if(Date.now()>=job.deadline)throw new Error('Job deadline exhausted');
+  if(job.deadline!==null&&job.deadline!==undefined&&Date.now()>=job.deadline)throw new Error('Job deadline exhausted');
   if(job.pipeline){if(stableJSON(job.theme)!==stableJSON(job.pipeline.contract.theme))throw new Error('Frozen theme contract changed; create a new job.');if(!syncPipeline(job,'active'))throw new Error('Rust pipeline is no longer active.');return;}
   if(job.themeHash&&digest(job.theme)!==job.themeHash)throw new Error('Frozen theme contract changed; create a new job.');
 }
@@ -122,6 +123,8 @@ function syncPipeline(job,op,extra={}){
   job.pipeline=result.pipeline;job.calls=job.pipeline.providerCalls;save(job);return result.value;
 }
 async function providerCall(job,label,input){
+  ensureCurrent(job);
+  const timeout=remainingTime(job.deadline,input.op==='generate'&&input.request.managed?330000:120000);
   const role=input.op==='review'?'reviewer':job.pipeline.attemptCount===0?'creator':'repair';
   const frozenModel=job.pipeline.contract.roleModels?.[role]||job.pipeline.contract.provenance.model;
   if(input.request.model!==frozenModel)throw new Error('Provider role model differs from the frozen contract.');
@@ -129,7 +132,7 @@ async function providerCall(job,label,input){
   syncPipeline(job,'charge');
   const entry={number:job.pipeline.providerCalls,label,role:input.op==='review'?'reviewer':job.pipeline.attemptCount===0?'creator':'repair',model:input.request.model,agent:input.op==='generate'&&input.request.managed?input.request.agent:null,managed:input.op==='generate'&&input.request.managed,spendId,status:'dispatched',at:new Date().toISOString()};job.callLog.push(entry);job.calls=job.pipeline.providerCalls;job.spending=spending.summary();save(job);
   try{
-    const result=await rustAsync(input,controllers.get(job.id)?.signal,input.op==='generate'&&input.request.managed?330000:120000);
+    const result=await rustAsync(input,controllers.get(job.id)?.signal,timeout);
     if(result.providerError){
       const received=redactReference(job,JSON.parse(JSON.stringify(result.providerError.response).replaceAll(apiKey||'__no_key__','[redacted]')));
       const usage=received?.usageMetadata||received?.usage||received?.usage_metadata||null;
@@ -236,7 +239,7 @@ async function capture(job,attempt){
     const native=await captureNative({root,dataDir:data,job,attempt,movement:functional.movement,
       binary:process.env.NATIVE_AUDIT_BIN||path.join(root,'target/debug/examples/foundry_audit'),
       signal:controllers.get(job.id)?.signal,
-      timeoutMs:Math.min(90000,Math.max(1,job.deadline-Date.now()))});
+      timeoutMs:remainingTime(job.deadline,90000)});
     ensureCurrent(job);attempt.renderSource=native.renderSource;
     attempt.functionalHarness=native.functionalHarness;attempt.nativeEvidence=native.nativeEvidence;
     return native;
@@ -291,7 +294,11 @@ async function prepareAndRun(job,baseSource){
     job.pipeline=rustSync({...job.createInput,refinement}).pipeline;job.baseline=baseline;
     event(job,'queued','Artistic direction, feedback, selected baseline and matched-camera evidence frozen.');
     return run(job);
-  }catch(error){job.stopReason=error.message;if(job.pipeline?.status==='active')try{syncPipeline(job,'cancel');}catch{}event(job,job.cancelled?'cancelled':'blocked',error.message);controllers.delete(job.id);}
+  }catch(error){job.stopReason=error.message;if(job.pipeline?.status==='active')try{syncPipeline(job,'cancel');}catch{}event(job,job.cancelled?'cancelled':job.deadlineReached?'exhausted':'blocked',error.message);controllers.delete(job.id);}
+}
+async function executeJob(job,baseSource){
+  const stop=armDeadline(job.deadline,controllers.get(job.id),()=>{job.deadlineReached=true;});
+  try{return await prepareAndRun(job,baseSource);}finally{stop();}
 }
 async function run(job){
   let previous=job.baseline?.recipe||null,findings=job.baseline?.findings||[];
@@ -335,7 +342,7 @@ async function run(job){
       const comparison=visual.comparison;
       const comparisonDefects=(comparison?.defects||[]).map(d=>`View ${d.view}, ${d.location} (${d.criterion}): ${d.issue} Repair: ${d.repair}`);
       const regressions=(comparison?.regressions||[]).map(d=>`Regression: ${d}`);
-      const comparisonFailures=comparison&&['unchanged','regressed','blocked'].includes(comparison.status)?[`Comparative verdict ${comparison.status}: ${comparison.summary}`]:[];
+      const comparisonFailures=comparison&&((comparison.status==='unchanged'&&job.pipeline.contract.completionGoal!=='satisfy-frozen-style')||['regressed','blocked'].includes(comparison.status))?[`Comparative verdict ${comparison.status}: ${comparison.summary}`]:[];
       const defects=[...(allPass?[]:[visualFindings||'Visual review did not pass.']),...comparisonDefects,...regressions,...comparisonFailures];
       const summary=allPass?(visualFindings||'Visual theme and render review passed.'):null;
       attempt.checks.push(
@@ -359,7 +366,7 @@ async function run(job){
   }catch(e){
     if(job.pipeline?.status==='active'&&!job.cancelled){try{syncPipeline(job,'cancel');}catch{}}
     job.stopReason=job.cancelled?'Cancelled; late results cannot activate.':e.message;
-    const state=job.cancelled?'cancelled':job.pipeline?.status==='exhausted'?'exhausted':'blocked';
+    const state=job.cancelled?'cancelled':job.deadlineReached||job.pipeline?.status==='exhausted'?'exhausted':'blocked';
     event(job,state,job.stopReason);
   }finally{controllers.delete(job.id);}
 }
@@ -387,9 +394,9 @@ const server=http.createServer(async(req,res)=>{
         if(!themeInferenceEnabled)return json(res,403,{error:'Live theme inference is prepared but disabled pending an operator-approved spending ceiling. Use the editable contract or labeled local draft.'});
         if(!apiKey)return json(res,400,{error:'Configure GEMINI_API_KEY to resolve a theme with Gemini.'});
         const spendId=spending.reserve({jobId:'theme-draft',label:'theme inference',model,managed:false});
-        let draft;try{draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});spending.settle(spendId,draft.usage);}catch(error){if(error.themeInference){const id=randomUUID();spending.settle(spendId,error.themeInference.usage);atomic(path.join(data,`theme-draft-${id}.json`),{id,sourceRevision,model,prompt:input.prompt,status:'invalid',error:error.message,...error.themeInference});}else spending.unknown(spendId);throw error;}
-        const id=randomUUID();atomic(path.join(data,`theme-draft-${id}.json`),{id,sourceRevision,model,prompt:input.prompt,theme:draft.theme,usage:draft.usage,response:draft.response});
-        return json(res,200,{theme:draft.theme,usage:draft.usage,draftId:id,requiresReview:true});
+        let draft;try{draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});spending.settle(spendId,draft.usage);}catch(error){if(error.themeInference){const id=randomUUID();spending.settle(spendId,error.themeInference.usage);atomic(path.join(data,`theme-draft-${id}.json`),{id,sourceRevision,model,prompt:input.prompt,status:'invalid',error:error.message,...error.themeInference,normalizations:error.themeInference.normalizations||[]});}else spending.unknown(spendId);throw error;}
+        const id=randomUUID();atomic(path.join(data,`theme-draft-${id}.json`),{id,sourceRevision,model,prompt:input.prompt,theme:draft.theme,normalizations:draft.normalizations||[],usage:draft.usage,response:draft.response});
+        return json(res,200,{theme:draft.theme,normalizations:draft.normalizations||[],usage:draft.usage,draftId:id,requiresReview:true});
       }
       if(pathname==='/api/render-task'){
         const task=renderTasks.get(input.token);
@@ -426,9 +433,14 @@ const server=http.createServer(async(req,res)=>{
           try{
             const draft=await inferTheme({prompt:input.prompt,apiKey,model,signal:AbortSignal.timeout(120000)});
             spending.settle(spendId,draft.usage);theme=validateTheme(draft.theme);
-            artDirection={id,model,spendId,startedAt,usage:draft.usage||null,themeSha256:digest(theme)};
+            artDirection={id,model,spendId,startedAt,usage:draft.usage||null,normalizations:draft.normalizations||[],themeSha256:digest(theme)};
             atomic(draftFile,{...artDirection,status:'returned',prompt:input.prompt,theme,response:draft.response});
-          }catch(error){if(error.themeInference){spending.settle(spendId,error.themeInference.usage);}else spending.unknown(spendId);atomic(draftFile,{id,status:'failed_or_unknown',model,prompt:input.prompt,startedAt,spendId,error:error.message});throw error;}
+          }catch(error){
+            const returned=error.themeInference||null;
+            if(returned)spending.settle(spendId,returned.usage);else spending.unknown(spendId);
+            atomic(draftFile,{id,status:'failed_or_unknown',model,prompt:input.prompt,startedAt,spendId,error:error.message,...(returned||{}),normalizations:returned?.normalizations||[]});
+            throw error;
+          }
           finally{inferenceStarting=false;}
         }
         if((input.inferTheme!==true&&input.themeId&&input.themeId!==theme.id)||!['fixture','gemini','managed'].includes(input.provider)||typeof input.prompt!=='string'||input.prompt.trim().length<5||input.prompt.length>3000)return json(res,400,{error:'Provide a matching theme contract, provider, and 5–3000 character prompt.'});
@@ -438,8 +450,7 @@ const server=http.createServer(async(req,res)=>{
         const sceneHalfExtent=input.provider==='fixture'?(input.previewRecipe?.scene?.halfExtent??null):Number(baseSource?(baseSource.recipe.scene?.halfExtent??jobs.get(baseSource.jobId).sceneHalfExtent??4):(input.sceneHalfExtent??12));
         if(sceneHalfExtent!==null&&(!Number.isFinite(sceneHalfExtent)||sceneHalfExtent<4||sceneHalfExtent>16))throw new Error('Scene half extent must be 4–16 metres.');
         const now=Math.max(Date.now(),lastPipelineTime+1);lastPipelineTime=now;
-        let retryGroupId=null,limits=input.limits||null;
-        if(artDirection){limits={maxAttempts:3,maxProviderCalls:6,timeBudgetMs:1200000,requiredImageHashes:3,...(limits||{})};limits.timeBudgetMs=Math.max(1,Math.min(1200000,limits.timeBudgetMs)-(now-artDirection.startedAt));}
+        let retryGroupId=null,limits=fastLimits(),completionGoal=baseSource?null:'satisfy-frozen-style';
         if(input.retryOf){
           const prior=jobs.get(input.retryOf);
           if(!prior||prior.status!=='blocked'||!prior.callLog?.length||prior.callLog.some(call=>!['returned','returned_error'].includes(call.status))||prior.callLog.at(-1).responseStatus!=='incomplete')throw new Error('A retry requires a reconciled incomplete provider response; unknown calls cannot be retried.');
@@ -447,21 +458,21 @@ const server=http.createServer(async(req,res)=>{
           retryGroupId=prior.retryGroupId||prior.id;
           const group=[...jobs.values()].filter(j=>j.id===retryGroupId||j.retryGroupId===retryGroupId);
           const rootJob=jobs.get(retryGroupId),calls=group.reduce((n,j)=>n+(j.callLog?.length||0),0),attempts=group.reduce((n,j)=>n+j.attempts.length,0);
-          const remaining=rootJob.deadline-now;
-          if(calls>=6||attempts>=3||remaining<1000)throw new Error('The original job group call, candidate, or time limit is exhausted.');
-          limits={maxAttempts:3-attempts,maxProviderCalls:6-calls,timeBudgetMs:remaining,requiredImageHashes:3};
+          if(!rootJob)throw new Error('The original retry group record is unavailable.');
+          limits=retryLimits(rootJob,attempts,calls,now);
+          completionGoal=rootJob.pipeline.contract.completionGoal||null;
         }
-        const createInput={op:'create',theme,prompt:input.prompt,now,...(limits?{limits}:{}),...(input.provider!=='fixture'?{roleModels}:{}),...(reference.reference?{reference:reference.reference}:{}),...(sceneHalfExtent!==null?{sceneHalfExtent}:{}),provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':roleModels.creator,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}};
+        const createInput={op:'create',theme,prompt:input.prompt,now,...(completionGoal?{completionGoal}:{}),limits,...(input.provider!=='fixture'?{roleModels}:{}),...(reference.reference?{reference:reference.reference}:{}),...(sceneHalfExtent!==null?{sceneHalfExtent}:{}),provenance:{rehearsal:input.provider==='fixture',provider:input.provider,model:input.provider==='fixture'?'fixture':roleModels.creator,agent:input.provider==='managed'?agent:null,sourceRevision,sourceFingerprint}};
         const pipeline=rustSync(createInput).pipeline;
-        const job={id:pipeline.contract.jobId,pipeline,createInput,sceneHalfExtent,artDirection,inferTheme:input.inferTheme===true,retryOf:input.retryOf||null,retryGroupId,roleModels:input.provider==='fixture'?null:roleModels,reference:reference.reference,baseJobId:baseSource?.jobId||null,baseAttemptNumber:baseSource?.number||null,baseCandidateHash:baseSource?.hash||null,userFeedback:baseSource?.userFeedback||null,componentEdit:baseSource?.componentEdit||null,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':roleModels.creator,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.deadlineMs,status:baseSource?'preparing':'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
+        const job={id:pipeline.contract.jobId,pipeline,createInput,sceneHalfExtent,artDirection,inferTheme:input.inferTheme===true,retryOf:input.retryOf||null,retryGroupId,roleModels:input.provider==='fixture'?null:roleModels,reference:reference.reference,baseJobId:baseSource?.jobId||null,baseAttemptNumber:baseSource?.number||null,baseCandidateHash:baseSource?.hash||null,userFeedback:baseSource?.userFeedback||null,componentEdit:baseSource?.componentEdit||null,sourceRevision,sourceFingerprint,rustBinarySha256,prompt:input.prompt,themeId:theme.id,theme,themeHash:pipeline.contract.themeSha256,provider:input.provider,model:input.provider==='fixture'?'fixture':roleModels.creator,agent:input.provider==='managed'?agent:null,interactionId:null,environmentId:null,injectDefect:input.injectDefect===true,contractVersion:2,createdAt:new Date(pipeline.contract.createdAtMs).toISOString(),deadline:pipeline.contract.limits.timeBudgetMs===0?null:pipeline.contract.deadlineMs,status:baseSource?'preparing':'queued',calls:0,callLog:[],attempts:[],events:[],providerResponses:[]};
         Object.defineProperty(job,'referenceImages',{value:reference.images,enumerable:false});
         if(input.previewRecipe){if(input.provider!=='fixture')throw new Error('Authored recipe previews are offline only.');rustChecks(input.previewRecipe,theme.id,theme);job.previewRecipe=structuredClone(input.previewRecipe);job.previewKind='authored_scene';job.sceneHalfExtent=input.previewRecipe.scene?.halfExtent||4;}
         jobs.set(job.id,job);
         if(artDirection){
           syncPipeline(job,'charge');job.callLog.push({number:1,label:'prompt art direction',role:'art_director',model:artDirection.model,agent:null,managed:false,spendId:artDirection.spendId,status:'returned',usage:artDirection.usage,at:new Date(artDirection.startedAt).toISOString()});job.spending=spending.summary();
         }
-        controllers.set(job.id,new AbortController());event(job,job.status,baseSource?'Preparing matched baseline evidence; no generation dispatched yet.':`Brief and theme contract frozen. Job limit: ${pipeline.contract.limits.maxAttempts} candidates, ${pipeline.contract.limits.maxProviderCalls} paid calls, ${Math.ceil(pipeline.contract.limits.timeBudgetMs/60000)} minutes.`);
-        json(res,201,job);void prepareAndRun(job,baseSource);return;
+        controllers.set(job.id,new AbortController());event(job,job.status,baseSource?'Preparing matched baseline evidence; no generation dispatched yet.':`Brief and style frozen. Up to ${pipeline.contract.limits.maxAttempts} candidates and ${pipeline.contract.limits.maxProviderCalls} paid calls ${pipeline.contract.limits.timeBudgetMs?`within ${Math.ceil(pipeline.contract.limits.timeBudgetMs/1000)} seconds`:'with no overall timeout'}; stop on independent acceptance.`);
+        json(res,201,job);void executeJob(job,baseSource);return;
       }
       const match=pathname.match(/^\/api\/jobs\/([\da-z-]{1,128})\/(cancel|activate)$/);
       if(match){
@@ -486,7 +497,7 @@ const server=http.createServer(async(req,res)=>{
       return json(res,404,{error:'Unknown action'});
     }
     if(req.method!=='GET')return json(res,405,{error:'Method not allowed'});
-    if(pathname==='/api/config')return json(res,200,{keyConfigured:!!apiKey,model,roleModels,agent,themes:THEMES,themeInferenceEnabled,spending:spending.summary()});
+    if(pathname==='/api/config')return json(res,200,{service:'asset-foundry',sourceRoot:root,sourceRevision,protocolVersion:1,packageVersion:1,rustBinarySha256,capabilities:rustSync({op:'capabilities'}),jobLimits:fastLimits(),completionGoal:'satisfy-frozen-style',keyConfigured:!!apiKey,model,roleModels,agent,themes:THEMES,themeInferenceEnabled,spending:spending.summary()});
     if(pathname==='/api/render-task'){
       lastRendererSeen=Date.now();const task=renderTasks.values().next().value;
       return json(res,200,task?{token:task.token,jobId:task.jobId,attemptNumber:task.attemptNumber,candidateHash:task.candidateHash,recipe:task.recipe,theme:task.theme,sceneHalfExtent:task.sceneHalfExtent}:null);

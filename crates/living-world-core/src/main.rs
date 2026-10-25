@@ -30,9 +30,13 @@ fn field<T:DeserializeOwned>(input:&Value,key:&str)->Result<T,String>{serde_json
 fn run(input:Value)->Result<Value,String>{
     let now=input.get("now").and_then(Value::as_u64).unwrap_or(0);
     let op=input.get("op").and_then(Value::as_str).unwrap_or("validate");
-    if op=="capabilities"{return Ok(json!({"engine":"living-world-core/0.1.0","nativeProvider":cfg!(feature="live-provider"),"pipelineVersion":1}));}
+    if op=="capabilities"{
+        let source=format!("{}{}{}",include_str!("provider.rs"),include_str!("pipeline.rs"),include_str!("main.rs"));
+        return Ok(json!({"engine":"living-world-core/0.1.0","nativeProvider":cfg!(feature="live-provider"),"pipelineVersion":1,"packageVersion":1,"maxAttempts":30,"maxProviderCalls":60,"noDeadline":true,"styleCompletion":true,"providerFormat":"response-format-json-v1","sourceSha256":living_world_core::pipeline::sha256(source.as_bytes())}));
+    }
     if op=="create"{
         let mut pipeline=AssetPipeline::create(field(&input,"theme")?,field(&input,"prompt")?,now)?;
+        if input.get("completionGoal").is_some(){pipeline.set_completion_goal(field::<String>(&input,"completionGoal")?)?;}
         if input.get("limits").is_some(){pipeline.set_limits(field::<JobLimits>(&input,"limits")?)?;}
         if input.get("roleModels").is_some(){pipeline.set_role_models(field::<RoleModels>(&input,"roleModels")?)?;}
         if input.get("sceneHalfExtent").is_some(){pipeline.set_scene_half_extent(field(&input,"sceneHalfExtent")?)?;}
@@ -105,6 +109,19 @@ mod offline_tests {
     use super::*;
 
     #[test]
+    fn capabilities_expose_the_exact_completion_and_provider_protocol() {
+        let capabilities = run(json!({"op":"capabilities"})).unwrap();
+        assert_eq!(capabilities["packageVersion"], 1);
+        assert_eq!(capabilities["pipelineVersion"], 1);
+        assert_eq!(capabilities["maxAttempts"], 30);
+        assert_eq!(capabilities["maxProviderCalls"], 60);
+        assert_eq!(capabilities["noDeadline"], true);
+        assert_eq!(capabilities["styleCompletion"], true);
+        assert_eq!(capabilities["providerFormat"], "response-format-json-v1");
+        assert_eq!(capabilities["sourceSha256"].as_str().unwrap().len(), 64);
+    }
+
+    #[test]
     fn create_accepts_and_freezes_role_models_and_remaining_limits() {
         let input = json!({
             "op":"create","now":1000,"prompt":"Build one forest relay",
@@ -120,13 +137,23 @@ mod offline_tests {
             "limits":{"maxAttempts":2,"timeBudgetMs":400000,"maxProviderCalls":5,"requiredImageHashes":3},
             "roleModels":{"creator":"gemini-3.8-flash","repair":"gemini-4-argon","reviewer":"gemini-4-argon"}
         });
-        let output = run(input).unwrap();
+        let output = run(input.clone()).unwrap();
         let pipeline = &output["pipeline"];
         assert_eq!(pipeline["contract"]["deadlineMs"],401000);
         assert_eq!(pipeline["contract"]["limits"]["maxProviderCalls"],5);
         assert_eq!(pipeline["contract"]["roleModels"]["creator"],"gemini-3.8-flash");
         assert_eq!(pipeline["contract"]["roleModels"]["repair"],"gemini-4-argon");
         assert_eq!(pipeline["contract"]["roleModels"]["reviewer"],"gemini-4-argon");
+
+        let fast = run(json!({
+            "op":"create","now":1000,"prompt":"Build one forest relay","theme":input["theme"],
+            "completionGoal":"satisfy-frozen-style",
+            "limits":{"maxAttempts":30,"timeBudgetMs":0,"maxProviderCalls":60,"requiredImageHashes":3}
+        })).unwrap();
+        assert_eq!(fast["pipeline"]["contract"]["completionGoal"], "satisfy-frozen-style");
+        assert_eq!(fast["pipeline"]["contract"]["limits"]["maxAttempts"], 30);
+        assert_eq!(fast["pipeline"]["contract"]["limits"]["maxProviderCalls"], 60);
+        assert_eq!(fast["pipeline"]["contract"]["limits"]["timeBudgetMs"], 0);
     }
 
     #[test]

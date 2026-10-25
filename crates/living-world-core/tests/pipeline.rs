@@ -388,9 +388,13 @@ fn refinement_freezes_feedback_baseline_camera_and_requires_improvement_over_acc
         user_feedback:"Replace the repeated posts with a recognizable arch but keep the entrance open".into(),
         baseline_recipe:baseline_recipe.clone(), baseline_evidence:baseline_evidence.clone(), component_edit:None,
     };
+    let mut completion_conflict=AssetPipeline::create(frozen_theme.clone(),"Design the Orchard Relay".into(),100).unwrap();
+    completion_conflict.set_completion_goal("satisfy-frozen-style".into()).unwrap();
+    assert!(completion_conflict.set_refinement(refinement.clone()).is_err());
     let mut pipeline=AssetPipeline::create(frozen_theme.clone(),"Design the Orchard Relay".into(),100).unwrap();
     pipeline.set_scene_half_extent(10.0).unwrap();
     pipeline.set_refinement(refinement.clone()).unwrap();
+    assert!(pipeline.set_completion_goal("satisfy-frozen-style".into()).is_err());
     pipeline.set_provenance(Provenance { rehearsal:false, provider:"gemini".into(), model:"gemini-review".into(), agent:None, source_revision:None, source_fingerprint:None }).unwrap();
 
     let mut candidate_recipe=recipe(&frozen_theme.id);
@@ -521,4 +525,81 @@ fn deterministic_live_failure_keeps_capture_as_the_next_comparison_baseline() {
     critique.improvements.push("Recipe now carries the frozen theme identity".into());
     decision.comparison = Some(critique);
     assert_eq!(pipeline.decide(decision, current, 4).unwrap(), ReviewVerdict::Accept);
+}
+
+#[test]
+fn completion_profile_keeps_ordinary_defaults_and_legacy_contract_limits() {
+    let ordinary = AssetPipeline::create(theme(), "A copper orchard relay".into(), 1_000).unwrap();
+    assert_eq!(ordinary.contract.limits, JobLimits::default());
+    assert!(ordinary.contract.completion_goal.is_none());
+    let mut old_state = serde_json::to_value(&ordinary).unwrap();
+    old_state["contract"].as_object_mut().unwrap().remove("completionGoal");
+    let restored: AssetPipeline = serde_json::from_value(old_state).unwrap();
+    assert_eq!(restored.contract.limits.max_attempts, 3);
+    assert_eq!(restored.contract.limits.max_provider_calls, 6);
+    assert_eq!(restored.contract.limits.time_budget_ms, 1_200_000);
+}
+
+#[test]
+fn completion_profile_allows_thirty_candidates_sixty_calls_and_a_frozen_no_deadline_sentinel() {
+    let mut pipeline = AssetPipeline::create(theme(), "A copper orchard relay".into(), 1_000).unwrap();
+    let fast = JobLimits { max_attempts: 30, max_provider_calls: 60, time_budget_ms: 0, required_image_hashes: 3 };
+    pipeline.set_limits(fast.clone()).unwrap();
+    pipeline.set_completion_goal("satisfy-frozen-style".into()).unwrap();
+    assert_eq!(pipeline.contract.deadline_ms, pipeline.contract.created_at_ms);
+    assert_eq!(pipeline.contract.limits, fast);
+    for invalid in [
+        JobLimits { max_attempts: 31, ..fast.clone() },
+        JobLimits { max_provider_calls: 61, ..fast.clone() },
+        JobLimits { max_attempts: 30, max_provider_calls: 60, time_budget_ms: 300_001, required_image_hashes: 3 },
+    ] {
+        let mut candidate = AssetPipeline::create(theme(), "A copper orchard relay".into(), 1_000).unwrap();
+        assert!(candidate.set_limits(invalid).is_err());
+    }
+    assert!(pipeline.can_continue(u64::MAX - 1).unwrap());
+    for _ in 0..60 { pipeline.charge_call(u64::MAX - 1).unwrap(); }
+    assert!(!pipeline.can_continue(u64::MAX).unwrap());
+    assert!(pipeline.charge_call(u64::MAX).is_err());
+    assert!(pipeline.set_completion_goal("satisfy-frozen-style".into()).is_err());
+}
+
+#[test]
+fn style_completion_accepts_unchanged_review_only_after_all_style_and_functional_gates_pass() {
+    let t = theme();
+    let mut pipeline = AssetPipeline::create(t.clone(), "An orchard relay".into(), 0).unwrap();
+    pipeline.set_completion_goal("satisfy-frozen-style".into()).unwrap();
+    let mut invalid = recipe(&t.id);
+    invalid.parts[0].position[1] += 0.1;
+    let rejected_geometry = pipeline.submit_candidate(invalid, 1).unwrap();
+    assert!(rejected_geometry.checks.iter().any(|check| check.status != "pass"));
+    let prior_evidence = evidence(rejected_geometry.candidate_sha256);
+    let mut failed = review();
+    let mut initial = comparison(&prior_evidence, None, ComparisonStatus::Initial);
+    initial.simulated = true;
+    failed.comparison = Some(initial);
+    assert_eq!(pipeline.decide(failed, prior_evidence.clone(), 2).unwrap(), ReviewVerdict::Repair);
+
+    let valid = pipeline.submit_candidate(recipe(&t.id), 3).unwrap();
+    assert!(valid.checks.iter().all(|check| check.status == "pass"));
+    let current_evidence = evidence(valid.candidate_sha256);
+    let mut unchanged = review();
+    let mut unchanged_comparison = comparison(&current_evidence, Some(&prior_evidence), ComparisonStatus::Unchanged);
+    unchanged_comparison.simulated = true;
+    unchanged.comparison = Some(unchanged_comparison);
+    assert_eq!(pipeline.decide(unchanged, current_evidence, 4).unwrap(), ReviewVerdict::Accept);
+}
+
+#[test]
+fn style_completion_never_accepts_reviewer_findings_or_regressions() {
+    let t = theme();
+    let mut pipeline = AssetPipeline::create(t.clone(), "An orchard relay".into(), 0).unwrap();
+    pipeline.set_completion_goal("satisfy-frozen-style".into()).unwrap();
+    let candidate = pipeline.submit_candidate(recipe(&t.id), 1).unwrap();
+    let current = evidence(candidate.candidate_sha256);
+    let mut decision = review();
+    let mut compare = comparison(&current, None, ComparisonStatus::Initial);
+    compare.simulated = true;
+    compare.regressions.push("Entry became obstructed".into());
+    decision.comparison = Some(compare);
+    assert_eq!(pipeline.decide(decision, current, 2).unwrap(), ReviewVerdict::Repair);
 }
