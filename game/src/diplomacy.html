@@ -10,6 +10,7 @@
 <main>
 <header><div><h1>Diplomacy</h1><p class="muted">Living Empires · local operator view</p></div><p id="model" class="muted">Connecting to the Rust host…</p></header>
 <div id="status" role="status" aria-live="polite"><span id="phase">Connecting</span><p id="message">Waiting for the diplomacy worker.</p><div id="budget"></div></div>
+<section aria-labelledby="gm-title"><h2 id="gm-title">Argon · game master</h2><p id="gm-summary" class="muted">Waiting for recorded world activity.</p><div id="gm-events"></div><details><summary>Inspect Argon’s received reports and decisions</summary><pre id="gm-evidence"></pre></details></section>
 <section aria-labelledby="faction-title"><h2 id="faction-title">The factions</h2><div id="factions"><p class="empty">Faction identities will appear when the host is ready.</p></div></section>
 <div class="columns"><section><h2>Offers</h2><div id="offers"></div></section><section><h2>Active pacts</h2><div id="pacts"></div></section></div>
 <section><h2>Recent decisions</h2><ol id="events"></ol></section>
@@ -27,7 +28,13 @@ function render(data){
  const phases={waiting_key:'Waiting for API key',waiting_activation:'Waiting for host activation',thinking:'Thinking',running:'Loop running',retrying:'Retry scheduled',paused:'Call limit reached',error:'Diplomacy paused',starting:'Starting',stopped:'Stopped'};
  document.getElementById('phase').textContent=phases[data.phase]||data.phase||'Starting';
  document.getElementById('message').textContent=data.message||'';
- document.getElementById('budget').textContent=`${world.attempt_count||0} / ${data.max_calls||'—'} API attempts · ${data.interval_seconds||'—'} seconds between turns · saved revision ${world.revision||0}`;
+ const gm=data.game_master||{};
+ document.getElementById('budget').textContent=`${data.total_attempt_count??world.attempt_count??0} / ${data.max_calls||'—'} shared API attempts · factions ${world.attempt_count||0} · Argon ${gm.attempt_count||0} · ${data.interval_seconds||'—'} seconds between turns`;
+ document.getElementById('gm-summary').textContent=gm.intake_error?`Report intake blocked: ${gm.intake_error}. Fix the source report file; the host will retry.`:`${(gm.events||[]).length} recorded reports · ${gm.attempt_count||0} model attempts. Content requests await Studio review and game approval.`;
+ const gmEvents=document.getElementById('gm-events');gmEvents.replaceChildren();
+ for(const d of (gm.decisions||[]).slice(-5).reverse()){const row=node('article',undefined,'record');const p=d.proposal||{};row.append(node('p',`${d.accepted?(p.action==='wait'?'Waiting':'Pending Studio request'):'Rejected decision'} · ${d.id}`),node('p',p.summary||d.reason,'muted'));if((p.event_ids||[]).length)row.append(node('small',`Evidence: ${p.event_ids.join(', ')}`));gmEvents.append(row)}
+ if(!gmEvents.children.length)empty(gmEvents,'Argon reviews reports after each round of faction turns. No content request has been recorded.');
+ document.getElementById('gm-evidence').textContent=JSON.stringify({reports:gm.events||[],attempts:(gm.attempts||[]).slice(-6),decisions:(gm.decisions||[]).slice(-6)},null,2);
  const list=document.getElementById('factions');list.replaceChildren();
  for(const f of factions){const row=node('article',undefined,'faction');const identity=node('div');identity.append(node('h3',f.name),node('p',f.leader,'muted'));const priorities=node('div');priorities.append(node('small','Priorities'),node('p',(f.priorities||[]).join(' · ')));const stances=node('div',undefined,'stances');for(const [target,stance]of Object.entries(f.stances||{}))stances.append(node('div',`${name(target)}: ${stance}`,stance));row.append(identity,priorities,stances);list.append(row)}
  const offers=document.getElementById('offers');offers.replaceChildren();for(const offer of world.pending_offers||[]){const row=node('div',undefined,'record');row.append(node('p',`${name(offer.proposer)} → ${name(offer.recipient)}`),node('p','Non-aggression · 5 minutes after acceptance','muted'),node('small',`${offer.id} · version ${offer.version} · expires ${time(offer.expires_at)}`));offers.append(row)}if(!offers.children.length)empty(offers,'No open offers. Each faction can start a conversation or propose a pact.');

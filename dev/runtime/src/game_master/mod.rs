@@ -40,11 +40,25 @@ pub struct Receipt {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Attempt {
+    id: String,
+    model: String,
+    at: u64,
+    context: Value,
+    finished: bool,
+    #[serde(default)]
+    faction_turn: Option<u64>,
+    error: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Saved {
     schema_version: u32,
     revision: u64,
     events: Vec<Event>,
     decisions: Vec<Receipt>,
+    #[serde(default)]
+    attempts: Vec<Attempt>,
 }
 pub struct GameMaster {
     path: PathBuf,
@@ -123,15 +137,27 @@ impl GameMaster {
                 revision: 0,
                 events: vec![],
                 decisions: vec![],
+                attempts: vec![],
             },
             Err(e) => return Err(e.into()),
         };
-        Ok(Self {
+        let mut gm = Self {
             path,
             saved,
             lock,
             uncertain_save: false,
-        })
+        };
+        if gm.saved.attempts.iter().any(|a| !a.finished) {
+            let mut next = gm.saved.clone();
+            for a in &mut next.attempts {
+                if !a.finished {
+                    a.finished = true;
+                    a.error = Some("Request interrupted by restart; no proposal applied".into());
+                }
+            }
+            gm.commit(next)?;
+        }
+        Ok(gm)
     }
     /// Trusted server adapters supply facts and ACLs. Never expose ingestion to model/player input.
     pub fn ingest(&mut self, event: Event) -> Result<()> {
@@ -156,13 +182,224 @@ impl GameMaster {
         next.revision += 1;
         self.commit(next)
     }
+    /// Persist spending evidence before calling the provider. Only one request may be pending.
+    pub fn begin_attempt(&mut self, id: &str, model: &str, at: u64) -> Result<Value> {
+        self.begin_for_turn(id, model, at, None)
+    }
+    pub fn begin_scheduled_attempt(
+        &mut self,
+        id: &str,
+        model: &str,
+        at: u64,
+        faction_turn: u64,
+    ) -> Result<Value> {
+        self.begin_for_turn(id, model, at, Some(faction_turn))
+    }
+    pub fn last_faction_turn(&self) -> Option<u64> {
+        self.saved.attempts.last().and_then(|a| a.faction_turn)
+    }
+    fn begin_for_turn(
+        &mut self,
+        id: &str,
+        model: &str,
+        at: u64,
+        faction_turn: Option<u64>,
+    ) -> Result<Value> {
+        ensure!(
+            !self.uncertain_save,
+            "GM writer stopped after uncertain save; restart to reconcile"
+        );
+        ensure!(
+            identifier(id) && identifier(model),
+            "invalid model request identity"
+        );
+        ensure!(
+            self.saved.attempts.len() < LIMIT && self.saved.decisions.len() < LIMIT,
+            "GM request budget capacity exhausted"
+        );
+        ensure!(
+            !self
+                .saved
+                .attempts
+                .iter()
+                .any(|a| a.id == id || !a.finished)
+                && !self.saved.decisions.iter().any(|r| r.id == id),
+            "duplicate or concurrent GM request"
+        );
+        let context = self.context();
+        let mut next = self.saved.clone();
+        next.attempts.push(Attempt {
+            id: id.into(),
+            model: model.into(),
+            at,
+            context: context.clone(),
+            finished: false,
+            faction_turn,
+            error: None,
+        });
+        self.commit(next)?;
+        Ok(context)
+    }
+    pub fn attempt_count(&self) -> u64 {
+        self.saved.attempts.len() as u64
+    }
+    /// Save the response and accepted/pending result in the same transaction.
+    pub fn complete_attempt(
+        &mut self,
+        id: &str,
+        outcome: std::result::Result<Proposal, &str>,
+    ) -> Result<()> {
+        ensure!(
+            !self.uncertain_save,
+            "GM writer stopped after uncertain save; restart to reconcile"
+        );
+        let index = self
+            .saved
+            .attempts
+            .iter()
+            .position(|a| a.id == id)
+            .context("unknown GM request")?;
+        ensure!(
+            !self.saved.attempts[index].finished,
+            "GM request already finished; late result rejected"
+        );
+        let mut next = self.saved.clone();
+        match outcome {
+            Ok(proposal) => {
+                ensure!(
+                    next.decisions.len() < LIMIT && !next.decisions.iter().any(|r| r.id == id),
+                    "GM receipt capacity/identity conflict"
+                );
+                let observed_revision = next.attempts[index].context["revision"]
+                    .as_u64()
+                    .context("invalid request revision")?;
+                let validation = if observed_revision == next.revision {
+                    validate_new_proposal(&next, &proposal)
+                } else {
+                    Err(anyhow::anyhow!(
+                        "stale GM context; replan from current facts"
+                    ))
+                };
+                next.decisions.push(Receipt {
+                    id: id.into(),
+                    observed_revision,
+                    proposal,
+                    accepted: validation.is_ok(),
+                    reason: validation.err().map_or_else(
+                        || "Recorded; proposed world changes remain pending validation".into(),
+                        |e| e.to_string(),
+                    ),
+                });
+                next.revision += 1;
+            }
+            Err(error) => {
+                ensure!(error.len() <= 2000, "provider error exceeds evidence limit");
+                next.attempts[index].error = Some(error.into());
+            }
+        }
+        next.attempts[index].finished = true;
+        self.commit(next)
+    }
+    /// Read a trusted local Studio export. A malformed/conflicting batch changes nothing.
+    pub fn import_file(&mut self, path: &Path) -> Result<()> {
+        ensure!(
+            !self.uncertain_save,
+            "GM writer stopped after uncertain save; restart to reconcile"
+        );
+        let mut bytes = Vec::new();
+        File::open(path)?.take(1_048_577).read_to_end(&mut bytes)?;
+        ensure!(bytes.len() <= 1_048_576, "GM intake file exceeds one MiB");
+        let events: Vec<Event> =
+            serde_json::from_slice(&bytes).context("invalid GM intake event array")?;
+        ensure!(events.len() <= LIMIT, "GM intake batch exceeds limit");
+        self.ingest_batch(events)
+    }
+    fn ingest_batch(&mut self, events: Vec<Event>) -> Result<()> {
+        ensure!(
+            !self.uncertain_save,
+            "GM writer stopped after uncertain save; restart to reconcile"
+        );
+        let mut next = self.saved.clone();
+        for event in events {
+            validate_event(&event)?;
+            if let Some(old) = next.events.iter().find(|e| e.id == event.id) {
+                ensure!(
+                    old == &event,
+                    "event ID reused with different facts or permissions"
+                );
+            } else {
+                ensure!(next.events.len() < LIMIT, "GM inbox full");
+                next.events.push(event);
+                next.revision += 1;
+            }
+        }
+        if next.revision != self.saved.revision {
+            self.commit(next)?;
+        }
+        Ok(())
+    }
+    /// Consume only committed delivered history; omit full operator contexts and summaries.
+    pub fn observe_diplomacy(&mut self, snapshot: &Value) -> Result<()> {
+        #[derive(Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Delivered {
+            actor: String,
+            target: String,
+            action: String,
+            message: String,
+            offer_id: String,
+            at: u64,
+        }
+        ensure!(
+            snapshot["schema_version"] == 1,
+            "unsupported diplomacy event snapshot"
+        );
+        let history = snapshot["history"]
+            .as_array()
+            .context("missing diplomacy event history")?;
+        ensure!(
+            history.len() <= LIMIT,
+            "diplomacy event history exceeds limit"
+        );
+        let mut events = Vec::new();
+        for (index, value) in history.iter().enumerate() {
+            let e: Delivered = serde_json::from_value(value.clone())
+                .context("invalid delivered diplomacy event")?;
+            let mut recipients = vec![e.actor.clone()];
+            if !e.target.is_empty() && e.target != e.actor {
+                recipients.push(e.target.clone());
+            }
+            events.push(Event {
+                id: format!("diplomacy-history-{}", index + 1),
+                source: "diplomacy".into(),
+                at: e.at,
+                kind: format!("diplomacy.{}", e.action),
+                payload: serde_json::to_value(e)?,
+                allowed_recipients: recipients,
+            });
+        }
+        self.ingest_batch(events)
+    }
     pub fn revision(&self) -> u64 {
         self.saved.revision
     }
     pub fn context(&self) -> Value {
-        json!({"role":"argon_game_master", "revision":self.revision(), "events":self.saved.events,
+        let mut value = json!({"role":"argon_game_master", "revision":self.revision(), "events":self.saved.events.iter().rev().take(64).collect::<Vec<_>>(),
             "recent_decisions": self.saved.decisions.iter().rev().take(16).collect::<Vec<_>>(),
-            "scope":"Operator knowledge. Route only exact facts to allowed recipients. Content and event requests are pending proposals; no world effects."})
+            "scope":"Operator knowledge. Route only exact facts to allowed recipients. Content and event requests are pending proposals; no world effects."});
+        while value.to_string().len() > 48000 {
+            if value["events"].as_array().is_some_and(|v| v.len() > 1) {
+                value["events"].as_array_mut().unwrap().pop();
+            } else if value["recent_decisions"]
+                .as_array()
+                .is_some_and(|v| !v.is_empty())
+            {
+                value["recent_decisions"].as_array_mut().unwrap().pop();
+            } else {
+                break;
+            }
+        }
+        value
     }
     pub fn decide(
         &mut self,
@@ -191,7 +428,7 @@ impl GameMaster {
                 "stale GM context; replan from current facts"
             ))
         } else {
-            validate_proposal(&self.saved.events, &proposal)
+            validate_new_proposal(&self.saved, &proposal)
         };
         let receipt = Receipt {
             id: id.into(),
@@ -267,6 +504,23 @@ impl GameMaster {
         Ok(())
     }
 }
+fn validate_new_proposal(saved: &Saved, proposal: &Proposal) -> Result<()> {
+    validate_proposal(&saved.events, proposal)?;
+    if proposal.action == "request_content" {
+        ensure!(
+            !saved.decisions.iter().any(|r| r.accepted
+                && r.proposal.action == "request_content"
+                && r.proposal.target == proposal.target
+                && r.proposal.event_ids.len() == proposal.event_ids.len()
+                && r.proposal
+                    .event_ids
+                    .iter()
+                    .all(|id| proposal.event_ids.contains(id))),
+            "content work for these recorded needs was already requested"
+        );
+    }
+    Ok(())
+}
 fn validate_proposal(events: &[Event], p: &Proposal) -> Result<()> {
     ensure!(
         !p.summary.trim().is_empty() && p.summary.len() <= 2000,
@@ -315,7 +569,10 @@ fn validate_proposal(events: &[Event], p: &Proposal) -> Result<()> {
 }
 fn validate_saved(s: &Saved) -> Result<()> {
     ensure!(
-        s.schema_version == 1 && s.events.len() <= LIMIT && s.decisions.len() <= LIMIT,
+        s.schema_version == 1
+            && s.events.len() <= LIMIT
+            && s.decisions.len() <= LIMIT
+            && s.attempts.len() <= LIMIT,
         "unsupported or excessive GM history"
     );
     ensure!(
@@ -327,6 +584,27 @@ fn validate_saved(s: &Saved) -> Result<()> {
         validate_event(event)?;
         ensure!(ids.insert(&event.id), "duplicate saved event");
     }
+    let mut attempt_ids = HashSet::new();
+    let mut pending = 0;
+    for a in &s.attempts {
+        ensure!(
+            identifier(&a.id) && identifier(&a.model) && attempt_ids.insert(&a.id),
+            "invalid saved GM request"
+        );
+        ensure!(
+            a.context["role"] == "argon_game_master"
+                && a.context["revision"]
+                    .as_u64()
+                    .is_some_and(|r| r <= s.revision)
+                && a.context.to_string().len() <= 48000
+                && a.error.as_ref().is_none_or(|e| e.len() <= 2000),
+            "invalid saved GM input"
+        );
+        if !a.finished {
+            pending += 1;
+        }
+    }
+    ensure!(pending <= 1, "multiple pending GM requests");
     let mut ids = HashSet::new();
     for r in &s.decisions {
         ensure!(

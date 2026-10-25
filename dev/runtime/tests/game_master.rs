@@ -1,6 +1,4 @@
-#[path = "../src/game_master/mod.rs"]
-mod game_master;
-use game_master::{Event, GameMaster, Proposal};
+use argon_dev::game_master::{Event, GameMaster, Proposal};
 use serde_json::json;
 
 fn event(id: &str, recipients: &[&str]) -> Event {
@@ -193,4 +191,141 @@ fn post_rename_failure_stops_writer_before_it_can_overwrite_uncertain_result() {
     drop(gm);
     let gm = GameMaster::load(&path).unwrap();
     assert_eq!(gm.snapshot()["events"][1]["id"], "uncertain");
+}
+#[test]
+fn model_spend_is_durable_and_interrupted_attempt_cannot_apply_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gm");
+    let mut gm = GameMaster::load(&path).unwrap();
+    gm.ingest(event("need", &["helios"])).unwrap();
+    let input = gm.begin_attempt("gm-1", "gemini-4-argon", 10).unwrap();
+    assert_eq!(input["events"][0]["id"], "need");
+    assert_eq!(gm.attempt_count(), 1);
+    assert!(gm.begin_attempt("gm-1", "gemini-4-argon", 11).is_err());
+    drop(gm);
+    let mut gm = GameMaster::load(&path).unwrap();
+    assert_eq!(gm.attempt_count(), 1);
+    assert!(gm
+        .complete_attempt("gm-1", Ok(route(&["need"], "helios")))
+        .is_err());
+    assert!(gm.deliveries("helios").is_empty());
+    assert!(gm.snapshot()["attempts"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("interrupted"));
+}
+#[test]
+fn provider_outcomes_and_inputs_are_saved_before_any_dispatch_acknowledgment() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gm");
+    let mut gm = GameMaster::load(&path).unwrap();
+    gm.ingest(event("need", &["helios"])).unwrap();
+    gm.begin_attempt("gm-1", "gemini-4-argon", 10).unwrap();
+    gm.complete_attempt("gm-1", Err("provider unavailable"))
+        .unwrap();
+    gm.begin_attempt("gm-2", "gemini-4-argon", 11).unwrap();
+    let mut p = route(&["need"], "studio");
+    p.action = "request_content".into();
+    gm.complete_attempt("gm-2", Ok(p)).unwrap();
+    drop(gm);
+    let gm = GameMaster::load(&path).unwrap();
+    assert_eq!(gm.attempt_count(), 2);
+    assert_eq!(
+        gm.snapshot()["attempts"][0]["error"],
+        "provider unavailable"
+    );
+    assert_eq!(gm.snapshot()["decisions"][0]["accepted"], true);
+    assert_eq!(gm.snapshot()["attempts"][1]["finished"], true);
+    assert!(gm.deliveries("studio").is_empty());
+}
+#[test]
+fn studio_intake_preserves_permissions_and_rejects_conflicting_batch_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gm");
+    let mut gm = GameMaster::load(&path).unwrap();
+    gm.ingest(event("known", &["tide"])).unwrap();
+    let inbox = dir.path().join("inbox.json");
+    std::fs::write(
+        &inbox,
+        serde_json::to_vec(&vec![
+            event("new", &["helios"]),
+            event("known", &["cinder"]),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(gm.import_file(&inbox).is_err());
+    assert_eq!(gm.snapshot()["events"].as_array().unwrap().len(), 1);
+    std::fs::write(
+        &inbox,
+        serde_json::to_vec(&vec![event("new", &["helios"]), event("known", &["tide"])]).unwrap(),
+    )
+    .unwrap();
+    gm.import_file(&inbox).unwrap();
+    gm.import_file(&inbox).unwrap();
+    assert_eq!(gm.snapshot()["events"].as_array().unwrap().len(), 2);
+    assert!(
+        !gm.decide("leak", gm.revision(), route(&["new"], "tide"))
+            .unwrap()
+            .accepted
+    );
+    std::fs::write(&inbox, b"[{\"model\":\"bad input\"}]").unwrap();
+    assert!(gm.import_file(&inbox).is_err());
+}
+#[test]
+fn real_diplomacy_results_reach_gm_without_private_reasoning_or_broadened_acl() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut diplomacy =
+        argon_dev::diplomacy::Diplomacy::load(dir.path().join("diplomacy")).unwrap();
+    diplomacy.apply("helios",0,"turn-1",json!({"action":"message","target":"tide","message":"Known route needs survey", "summary":"private strategist note", "offer_id":"", "offer_version":0,"stance":"neutral"}),10).unwrap();
+    let mut gm = GameMaster::load(dir.path().join("gm")).unwrap();
+    gm.observe_diplomacy(&diplomacy.snapshot(10)).unwrap();
+    gm.observe_diplomacy(&diplomacy.snapshot(11)).unwrap();
+    assert_eq!(gm.snapshot()["events"].as_array().unwrap().len(), 1);
+    assert!(!gm.context().to_string().contains("private strategist note"));
+    assert_eq!(
+        gm.snapshot()["events"][0]["allowed_recipients"],
+        json!(["helios", "tide"])
+    );
+    assert!(
+        !gm.decide(
+            "leak",
+            gm.revision(),
+            route(&["diplomacy-history-1"], "cinder")
+        )
+        .unwrap()
+        .accepted
+    );
+}
+#[test]
+fn repeated_gm_turns_cannot_enqueue_duplicate_unresolved_studio_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gm");
+    let mut gm = GameMaster::load(&path).unwrap();
+    gm.ingest(event("need-a", &["helios"])).unwrap();
+    gm.ingest(event("need-b", &["helios"])).unwrap();
+    let mut p = route(&["need-a", "need-b"], "studio");
+    p.action = "request_content".into();
+    gm.begin_attempt("gm-1", "gemini-4-argon", 10).unwrap();
+    gm.complete_attempt("gm-1", Ok(p.clone())).unwrap();
+    drop(gm);
+    let mut gm = GameMaster::load(&path).unwrap();
+    p.event_ids.reverse();
+    gm.begin_attempt("gm-2", "gemini-4-argon", 11).unwrap();
+    gm.complete_attempt("gm-2", Ok(p.clone())).unwrap();
+    assert_eq!(gm.snapshot()["decisions"][1]["accepted"], false);
+    assert!(
+        !gm.decide("manual-duplicate", gm.revision(), p)
+            .unwrap()
+            .accepted
+    );
+    assert_eq!(
+        gm.snapshot()["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["accepted"] == true)
+            .count(),
+        1
+    );
 }
