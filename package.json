@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:core": "cargo build -p living-world-core",
+    "build:core": "cargo build -p living-world-core --features live-provider",
     "test:core": "cargo test -p living-world-core",
     "dev": "node --env-file-if-exists=.env server.mjs",
     "start": "node --env-file-if-exists=.env server.mjs",
