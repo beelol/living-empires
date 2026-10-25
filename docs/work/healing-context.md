@@ -29,6 +29,33 @@ stays frozen. Latest feedback can supersede previous creative choices within tha
 contract; changing the palette/theme contract requires a new bounded job. World
 propagation still needs explicit prompt scope and authoritative activation.
 
-Checks: node --check server.mjs; Rust request-boundary regression checks supplied
-by art-quality; combined existing npm and Rust suites plus live evidence to be
-recorded after integration. Until then live acceptance is not_run.
+Checks: node --check server.mjs passed; Rust with live-provider passed 65/65,
+including original-baseline Add repair and scoped/retained-image critic inputs;
+combined npm suite passed 59/59. Changes pushed as 0679df0 and served at 4318
+with binary SHA-256 b338eb251f426195f9f56e25b2a5cfda7bc968b31e083d5afd9128a4f37b6b34.
+Existing Argonaut and stadium package exports still pass the matching verifier.
+
+Live evidence, 2026-10-25:
+
+- Solar addition job `job-argonaut-1792967805134`: accepted hash
+  `79c0c1e4f47f60e2dbed8ef180ae135d68ef18fdb2364512d88e17d63032fa73`.
+  Added 14 parts in one new solar-array component. All 19 original parts and both
+  original component records remained exactly equal. One Argon creation and one
+  independent Flash review; no injected defect or fixture.
+- Actual renders showed slab-like collector faces. A new scoped feedback job
+  `job-argonaut-1792967879433` refined only solar-array, accepted hash
+  `61cb539ebe29b0c6dfefb70a57e50ea7da24cec65c17fb0ff7b8cb6814faf13c`.
+  Flash identified segmented photovoltaic panels and mounting articulation as
+  improvements with no regressions. All 19 non-solar parts stayed exactly equal.
+  Delta: 16 added, 8 changed, 3 removed parts, all within solar-array.
+- Both jobs preserve three matched-camera before/after PNGs, hashes, feedback,
+  call records, scope and independent comparisons. Exported packages and image
+  hashes were verified; ignored `.data/solar-detail-audit.json` retains the audit.
+- Dashboard discovered the API-created revision automatically. Review model was
+  gemini-3.8-flash; creator/repair model gemini-4-argon. Shared conservative total
+  allowance after these four calls: $37.3053925 of the approved $500, not an invoice.
+
+Evidence boundary: these live jobs passed on their first candidate. The new
+multi-attempt retained-baseline path and Add retry bug fix have regression-test
+coverage, not a newly observed live multi-attempt example. No claim of general
+artistic quality, world integration, neighborhood propagation or Bevy acceptance.
