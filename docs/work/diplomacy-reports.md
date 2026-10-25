@@ -55,3 +55,10 @@ Remaining integration: GM owner imports only actual per-actor deliveries into
 the existing sole worker; source owners supply real world observations. Then
 verify repeated world-aware model decisions within the existing approved budget.
 This checkpoint does not complete the resumed integration goal or any game AC.
+
+Reconciled with origin/main 673aa19, including GM worker checkpoint 927c9da and
+terrain/settlement additions. No README/AGENTS drift or owned-path overlap.
+Combined checks pass: 34 runtime unit tests, 10 report tests, 14 GM tests, and
+runtime all-target clippy with warnings denied. Final diff against that exact
+integration base contains only the three claimed files. Main-checkout Studio
+work is preserved; publication uses the isolated checkout under the shared lock.
