@@ -254,3 +254,24 @@ asnative; fixed bypassingconfigureddata intoadapter, regressiontest verifies
 customnativebytesandpreservedbrowserframe. Newrefinementbaselineattempt0 and
 frozenextent checks added. Nativeexample extended forboundedscenegeometry and
 consistentfrozenextent cameras; nofront-onlyviewclaimedasrear.
+
+Checkpoint c0b802d95f4e5e614e3d42a6e09ca31778edb060 normalpush andexactremote
+verifiedafterreconciliation; lockreleased. Final31Node/36Python/34coreRust and
+4nativeexampletests pass. Nativebinaryrebuiltcurrentcode. Canonicalcityworld
+promoted to .local/city-deploy/world.json (coordinatorverified9buildingshealth
+release88944949). ClosedonlyownobsoleteoldworlddispatcherPID70117 andownidle
+FoundryPID46028. NeededFoundryrestartedcurrentcode+sponsorednative mode; one
+canonicaldispatcher toolsession61720 nowreadsnewroot .game-master.json with
+freshfoundry.sqlite andoutputsnewroot/foundry-ready. Copiedonlyoperatorarttheme
+routing, nooldfacts/jobs. Oldworldrecordsremainrollback. GM/G/coordinatornotified
+andhourlyheartbeatupdated. CanonicalGM5events/0brainneeds atcheck; nofabricated
+productionrequests, actualautomaticexpansion remains blockedonsource/authority
+andgenuineunitcontract, notclaimedcomplete.
+
+GMreviewfoundparent-wideFoundryspoolcouldleakbetween2worldsinonefolder.
+AgreedexplicitcompatibleisolationwithGMowner: WORLD_STATE.foundry-ready/
+andWORLD_STATE.foundry-events/, exactbasename. Stoppedownidlecanonicalworker
+70241 (requests0) andstartedtoolsession86715withcanonicaloutput
+.local/city-deploy/world.json.foundry-ready andfreshworld.json.foundry.sqlite.
+Noexistingfilesmoved/imported; priorrehearsalsretained. Updatedoperatorinvocation
+andheartbeat. G/GMmustuseexactmatchingpath; defaultparent-wideisdeprecated.
