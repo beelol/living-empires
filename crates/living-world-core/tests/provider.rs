@@ -258,3 +258,17 @@ fn managed_prompt_has_an_exact_valid_component_example() {
  assert!(text.contains("lowercase hyphenated"));
  assert!(text.contains("Elevated fins"));
 }
+
+#[test]
+fn generation_schema_matches_authoritative_scene_component_bounds() {
+    let (_, body) = build_generation_request(&request(false)).unwrap();
+    assert!(body["generationConfig"]["responseJsonSchema"]["properties"]["parts"].get("scene").is_none());
+    let component = &body["generationConfig"]["responseJsonSchema"]["properties"]["scene"]["properties"]["components"]["items"]["properties"];
+    assert_eq!(component["id"]["pattern"], "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$");
+    assert_eq!(component["id"]["minLength"], 1);
+    assert_eq!(component["id"]["maxLength"], 64);
+    assert_eq!(component["name"]["minLength"], 1);
+    assert_eq!(component["name"]["maxLength"], 100);
+    assert_eq!(component["role"]["minLength"], 1);
+    assert_eq!(component["role"]["maxLength"], 80);
+}
