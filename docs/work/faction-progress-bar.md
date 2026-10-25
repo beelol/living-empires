@@ -29,3 +29,10 @@ as paused, removes provider animation from waiting requests, and retains the
 recorded stopped reason. If an already-started request remains active, its actual
 stage is shown with “Scheduling paused”; no claim is made that it was cancelled.
 Focused checks include maintenance with queued and running work.
+
+Replacement follow-up: a stopped banner entry must remain the latest relevant
+request for at least one current member. Historical targetless failures and fully
+replaced cancelled jobs remain in history without masking replacement progress
+or completion. An unresolved failure on another member remains visible. Focused
+checks cover same-revision cancellation → replacement running → installed, plus
+a separate member failure and an obsolete targetless failure.
