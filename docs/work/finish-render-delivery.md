@@ -20,7 +20,8 @@ The parent completion/integration stream owns the server, provider and native-ca
 
 - RED: `node --test test/render-delivery.test.mjs` failed four assertions because `createRenderDelivery` was missing.
 - GREEN: focused delivery tests cover acknowledgement, retrying the identical payload after a transient failure, bounded final failure, and terminal stale/invalid responses.
-- Full `npm test`: 63/63 pass after building the isolated `target/debug/world-check` binary. The first run before that local build had four missing-binary failures and one hit the parent-owned native-capture readiness race; no changes were made to that test path.
-- Pending: ownership check, staged-diff review and commit SHA.
+- Full `npm test`: 63/63 pass on integration base `a47f993bbd1d626f520ce4baad7a05cf2600da5b` after building the isolated `target/debug/world-check` binary. The first run before that local build had five failures from the missing binary and one hit the parent-owned native-capture readiness race; no changes were made to that test path.
+- `python3 dev/agent.py check --id foundry-render-delivery-01 --base a47f993bbd1d626f520ce4baad7a05cf2600da5b`: passed for the four owned paths.
+- `git diff --check a47f993bbd1d626f520ce4baad7a05cf2600da5b..HEAD`: passed.
 
 These tests establish only the renderer transport behavior. They do not establish live provider success, independent review, package activation, or integrated game acceptance.
