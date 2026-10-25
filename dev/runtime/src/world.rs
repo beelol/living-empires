@@ -204,6 +204,28 @@ impl World {
             .and_then(|s| s.metal(faction))
     }
 
+    /// Atomically update an existing building's appearance reference. The caller
+    /// must verify the exact approved activation package before constructing the
+    /// `ApprovedVisualRef`; this method owns entity lookup, CAS, idempotency and save.
+    pub fn revise_building_visual(
+        &mut self,
+        building_id: &str,
+        operation_id: &str,
+        expected: Option<&crate::settlement::ApprovedVisualRef>,
+        replacement: crate::settlement::ApprovedVisualRef,
+    ) -> Result<bool> {
+        let mut next = self.saved.clone();
+        let state = next.settlements.as_mut().context("settlements not initialized")?;
+        let changed = state.revise_building_visual(
+            building_id,
+            operation_id,
+            expected,
+            replacement,
+        )?;
+        if changed { self.commit(next)?; }
+        Ok(changed)
+    }
+
     /// Explicit authored scenario setup; never reinterpret a legacy arena.
     pub fn initialize_settlements(&mut self) -> Result<()> {
         if self.saved.settlements.is_some() {
