@@ -31,6 +31,7 @@ pub struct HostConfig {
     pub advertise: Vec<SocketAddr>,
     pub content: PathBuf,
     pub state: PathBuf,
+    pub seed: Option<u64>,
     pub release: String,
     pub activation_file: Option<PathBuf>,
 }
@@ -87,6 +88,21 @@ impl Authority {
             );
         }
         match command {
+            ClientCommand::RequestTerrain { fingerprint, x, y } => {
+                if !self.sessions.contains_key(&peer) {
+                    return rejected("Join a session before requesting terrain", true);
+                }
+                let Some(terrain) = self.world.terrain() else {
+                    return rejected("This saved world uses the legacy arena", false);
+                };
+                if fingerprint != terrain.info().fingerprint {
+                    return rejected("Terrain version changed; reconnect to synchronize", true);
+                }
+                match terrain.chunk(x, y) {
+                    Some(chunk) => ServerUpdate::TerrainChunk { fingerprint, chunk },
+                    None => rejected("Terrain chunk is outside the saved world", false),
+                }
+            }
             ClientCommand::Hello { protocol, token } => {
                 if protocol != PROTOCOL_VERSION {
                     return rejected(
@@ -196,6 +212,11 @@ fn authoritative_update(
             welcomed |= matches!(response, ServerUpdate::Welcome { .. });
             sender.send::<UpdateChannel>(response);
         }
+        if welcomed {
+            sender.send::<UpdateChannel>(ServerUpdate::TerrainManifest {
+                info: authority.world.terrain().map(|t| t.info()),
+            });
+        }
         if (welcomed || broadcast) && authority.sessions.contains_key(&peer) {
             sender.send::<UpdateChannel>(authority.snapshot());
         }
@@ -220,7 +241,7 @@ pub fn run(config: HostConfig) -> Result<()> {
 /// Explicit stop handle supports integration tests without process-wide signals.
 pub fn run_with_stop(mut config: HostConfig, stop: Arc<AtomicBool>) -> Result<()> {
     let content = ContentRuntime::load(&config.content)?;
-    let world = World::load(&config.state)?;
+    let world = World::load_terrain(&config.state, config.seed)?;
     let listener = Admin::bind(config.bind)?;
     config.bind = listener.local_addr()?;
     let health = Health::new(json!({"ok":false}));

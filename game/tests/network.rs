@@ -28,6 +28,9 @@ impl Host {
             std::fs::copy(source.join(name), content.join(name)).unwrap();
         }
         let state = directory.path().join("world.json");
+        // Retain the original v1 arena fixture for transport/reload regression.
+        // New terrain worlds have their own two-client integration test.
+        std::fs::write(&state, r#"{"schema_version":1,"next_id":1,"players":[]}"#).unwrap();
         let gate = directory.path().join("active");
         let address = TcpListener::bind("127.0.0.1:0")
             .unwrap()

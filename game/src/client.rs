@@ -4,13 +4,17 @@ use crate::protocol::{
     ServerUpdate,
 };
 use anyhow::{Context, Result, bail, ensure};
-use argon_dev::world::Player;
+use argon_dev::{
+    terrain::{Terrain, TerrainChunk, TerrainInfo},
+    world::Player,
+};
 use bevy::prelude::{App, Entity, MinimalPlugins, Resource, Update, World};
 #[cfg(feature = "native")]
 use bevy::prelude::{DefaultPlugins, PluginGroup, Window, WindowPlugin, default};
 use lightyear::prelude::{client, *};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     net::SocketAddr,
@@ -34,6 +38,7 @@ pub struct ProbeResult {
     pub player: Player,
     pub next_sequence: u64,
     pub players: Vec<Player>,
+    pub terrain_fingerprint: Option<String>,
     pub content_version: String,
     pub world_name: String,
     pub release: String,
@@ -141,6 +146,14 @@ struct ClientState {
     last_received: Instant,
     hello_sent: bool,
     ready: bool,
+    welcomed: bool,
+    terrain_manifest_received: bool,
+    terrain_info: Option<TerrainInfo>,
+    terrain: Option<Terrain>,
+    terrain_chunks: HashMap<(u32, u32), TerrainChunk>,
+    terrain_requested: HashSet<(u32, u32)>,
+    terrain_next_chunk: u32,
+    terrain_last_progress: Instant,
     token: Option<String>,
     player: Option<Player>,
     next_sequence: u64,
@@ -166,6 +179,14 @@ impl ClientState {
             last_received: Instant::now(),
             hello_sent: false,
             ready: false,
+            welcomed: false,
+            terrain_manifest_received: false,
+            terrain_info: None,
+            terrain: None,
+            terrain_chunks: HashMap::new(),
+            terrain_requested: HashSet::new(),
+            terrain_next_chunk: 0,
+            terrain_last_progress: Instant::now(),
             token,
             player: None,
             next_sequence: 1,
@@ -201,6 +222,68 @@ impl ClientState {
     fn accept(&mut self, update: ServerUpdate) -> Result<bool> {
         self.last_received = Instant::now();
         match update {
+            ServerUpdate::TerrainManifest { info } => {
+                ensure!(
+                    self.welcomed,
+                    "terrain manifest arrived before session welcome"
+                );
+                if let Some(info) = &info {
+                    info.validate()?;
+                }
+                if self.terrain_info != info {
+                    self.terrain = None;
+                    self.terrain_chunks.clear();
+                }
+                self.terrain_requested.clear();
+                self.terrain_next_chunk = 0;
+                self.terrain_info = info;
+                self.terrain_manifest_received = true;
+                self.terrain_last_progress = Instant::now();
+                self.ready = self.terrain_info.is_none() || self.terrain.is_some();
+                self.status = if self.ready {
+                    "Connected | authoritative host".into()
+                } else {
+                    "Loading saved terrain...".into()
+                };
+            }
+            ServerUpdate::TerrainChunk { fingerprint, chunk } => {
+                let info = self
+                    .terrain_info
+                    .as_ref()
+                    .context("terrain chunk arrived without manifest")?;
+                ensure!(
+                    fingerprint == info.fingerprint,
+                    "terrain chunk belongs to a different world version"
+                );
+                chunk.validate(info)?;
+                let key = (chunk.chunk_x, chunk.chunk_y);
+                ensure!(
+                    self.terrain_requested.remove(&key),
+                    "unsolicited terrain chunk"
+                );
+                ensure!(
+                    !self.terrain_chunks.contains_key(&key),
+                    "duplicate terrain chunk"
+                );
+                self.terrain_chunks.insert(key, chunk);
+                self.terrain_last_progress = Instant::now();
+                let side = info.cells / info.chunk_cells;
+                let total = (side * side) as usize;
+                self.status = format!(
+                    "Loading saved terrain: {}/{} chunks",
+                    self.terrain_chunks.len(),
+                    total
+                );
+                if self.terrain_chunks.len() == total {
+                    let terrain = Terrain::from_chunks(
+                        info.clone(),
+                        self.terrain_chunks.drain().map(|(_, c)| c).collect(),
+                    )?;
+                    self.terrain = Some(terrain);
+                    self.ready = self.welcomed && self.terrain_manifest_received;
+                    self.status = "Connected | verified saved terrain".into();
+                }
+            }
             ServerUpdate::Welcome {
                 token,
                 player,
@@ -221,8 +304,10 @@ impl ClientState {
                 }
                 self.player = Some(player);
                 self.next_sequence = next_sequence;
-                self.ready = true;
-                self.status = "Connected | authoritative host".into();
+                self.welcomed = true;
+                self.ready = false;
+                self.terrain_manifest_received = false;
+                self.status = "Connected | awaiting world geography".into();
             }
             ServerUpdate::Moved {
                 player,
@@ -285,6 +370,7 @@ impl ClientState {
             player: player.clone(),
             next_sequence: self.next_sequence,
             players: self.players.clone(),
+            terrain_fingerprint: self.terrain.as_ref().map(|t| t.info().fingerprint),
             content_version: self.content_version.clone(),
             world_name: self.world_name.clone(),
             release: self.release.clone(),
@@ -310,6 +396,10 @@ fn disconnect(world: &mut World, state: &mut ClientState) {
         let _ = world.despawn(entity);
     }
     state.ready = false;
+    state.welcomed = false;
+    state.terrain_manifest_received = false;
+    state.terrain_requested.clear();
+    state.terrain_next_chunk = 0;
     state.hello_sent = false;
     if let Some(pending) = &mut state.pending {
         pending.sent = false;
@@ -387,12 +477,15 @@ fn network_step(world: &mut World, state: &mut ClientState) -> Result<()> {
         disconnect(world, state);
         return Ok(());
     }
-    let timed_out = if connected && state.ready {
+    let terrain_stalled = state.welcomed
+        && !state.ready
+        && state.terrain_last_progress.elapsed() > Duration::from_secs(30);
+    let timed_out = if connected && state.welcomed {
         state.last_received.elapsed() > Duration::from_secs(2)
     } else {
         state.connect_started.elapsed() > Duration::from_secs(4)
     };
-    if world.get::<Disconnected>(entity).is_some() || timed_out {
+    if world.get::<Disconnected>(entity).is_some() || timed_out || terrain_stalled {
         state.status = "Connection interrupted; reconnecting with saved identity...".into();
         disconnect(world, state);
         return Ok(());
@@ -404,6 +497,27 @@ fn network_step(world: &mut World, state: &mut ClientState) -> Result<()> {
                 token: state.token.clone(),
             });
             state.hello_sent = true;
+        }
+        if state.welcomed
+            && state.terrain_manifest_received
+            && state.terrain.is_none()
+            && let Some(info) = &state.terrain_info
+        {
+            let side = info.cells / info.chunk_cells;
+            while state.terrain_requested.len() < 8 && state.terrain_next_chunk < side * side {
+                let n = state.terrain_next_chunk;
+                state.terrain_next_chunk += 1;
+                let key = (n % side, n / side);
+                if state.terrain_chunks.contains_key(&key) {
+                    continue;
+                }
+                state.terrain_requested.insert(key);
+                sender.send::<CommandChannel>(ClientCommand::RequestTerrain {
+                    fingerprint: info.fingerprint.clone(),
+                    x: key.0,
+                    y: key.1,
+                });
+            }
         }
         if state.ready
             && let Some(pending) = &mut state.pending
@@ -453,6 +567,10 @@ impl HeadlessClient {
             .world_mut()
             .resource_mut::<ClientState>()
             .queue_move(dx, dy)
+    }
+
+    pub fn terrain(&self) -> Option<&Terrain> {
+        self.app.world().resource::<ClientState>().terrain.as_ref()
     }
 
     pub fn result(&self) -> Option<ProbeResult> {
@@ -547,14 +665,110 @@ mod tests {
     }
 
     #[test]
+    fn terrain_requires_a_manifest_before_movement_and_accepts_legacy_explicitly() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = state(directory.path());
+        client.accept(welcome(1)).unwrap();
+        assert!(
+            !client.queue_move(1.0, 0.0),
+            "welcome alone does not establish geography"
+        );
+        client
+            .accept(ServerUpdate::TerrainManifest { info: None })
+            .unwrap();
+        assert!(client.queue_move(1.0, 0.0));
+    }
+
+    #[test]
+    fn terrain_download_validates_the_complete_geometry_before_movement() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = state(directory.path());
+        let terrain = argon_dev::terrain::Terrain::generate(928751);
+        let info = terrain.info();
+        client.accept(welcome(1)).unwrap();
+        client
+            .accept(ServerUpdate::TerrainManifest {
+                info: Some(info.clone()),
+            })
+            .unwrap();
+        assert!(!client.ready);
+        for y in 0..24 {
+            for x in 0..24 {
+                client.terrain_requested.insert((x, y));
+                client
+                    .accept(ServerUpdate::TerrainChunk {
+                        fingerprint: info.fingerprint.clone(),
+                        chunk: terrain.chunk(x, y).unwrap(),
+                    })
+                    .unwrap();
+            }
+        }
+        assert!(client.ready);
+        assert!(
+            client.terrain_chunks.is_empty(),
+            "assembly buffers must be freed"
+        );
+        assert_eq!(client.terrain.as_ref().unwrap().info(), info);
+        assert!(client.terrain.as_ref().unwrap().deposits().is_empty());
+        assert!(client.queue_move(1.0, 0.0));
+        client.accept(welcome(1)).unwrap();
+        assert!(!client.ready);
+        client
+            .accept(ServerUpdate::TerrainManifest { info: Some(info) })
+            .unwrap();
+        assert!(client.ready, "reconnect reuses matching verified geometry");
+    }
+
+    #[test]
+    fn malformed_or_unsolicited_chunks_never_enter_the_client_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = state(directory.path());
+        let terrain = argon_dev::terrain::Terrain::generate(44019);
+        let info = terrain.info();
+        client.accept(welcome(1)).unwrap();
+        client
+            .accept(ServerUpdate::TerrainManifest {
+                info: Some(info.clone()),
+            })
+            .unwrap();
+        let mut chunk = terrain.chunk(0, 0).unwrap();
+        assert!(
+            client
+                .accept(ServerUpdate::TerrainChunk {
+                    fingerprint: info.fingerprint.clone(),
+                    chunk: chunk.clone()
+                })
+                .is_err()
+        );
+        client.terrain_requested.insert((0, 0));
+        chunk.heights[0] = f32::NAN;
+        assert!(
+            client
+                .accept(ServerUpdate::TerrainChunk {
+                    fingerprint: info.fingerprint,
+                    chunk
+                })
+                .is_err()
+        );
+        assert!(client.terrain_chunks.is_empty());
+        assert!(!client.ready);
+    }
+
+    #[test]
     fn reconnect_resolves_a_lost_ack_without_replaying_the_committed_move() {
         let directory = tempfile::tempdir().unwrap();
         let mut client = state(directory.path());
         client.accept(welcome(1)).unwrap();
+        client
+            .accept(ServerUpdate::TerrainManifest { info: None })
+            .unwrap();
         assert!(client.queue_move(1.0, 0.0));
         client.pending.as_mut().unwrap().sent = true;
         client.ready = false;
         client.accept(welcome(2)).unwrap();
+        client
+            .accept(ServerUpdate::TerrainManifest { info: None })
+            .unwrap();
         assert!(client.pending.is_none());
         assert!(client.queue_move(0.0, 1.0));
         assert_eq!(client.pending.as_ref().unwrap().sequence, 2);
@@ -565,10 +779,16 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut client = state(directory.path());
         client.accept(welcome(1)).unwrap();
+        client
+            .accept(ServerUpdate::TerrainManifest { info: None })
+            .unwrap();
         assert!(client.queue_move(0.5, -0.5));
         client.pending.as_mut().unwrap().sent = true;
         client.ready = false;
         client.accept(welcome(1)).unwrap();
+        client
+            .accept(ServerUpdate::TerrainManifest { info: None })
+            .unwrap();
         let retry = client.pending.as_ref().unwrap();
         assert_eq!(
             (retry.sequence, retry.dx, retry.dy, retry.sent),
@@ -581,6 +801,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut client = state(directory.path());
         client.accept(welcome(1)).unwrap();
+        client
+            .accept(ServerUpdate::TerrainManifest { info: None })
+            .unwrap();
         client.queue_move(1.0, 0.0);
         client
             .accept(ServerUpdate::MoveRejected {

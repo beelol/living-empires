@@ -1,10 +1,13 @@
-use argon_dev::world::Player;
+use argon_dev::{
+    terrain::{TerrainChunk, TerrainInfo},
+    world::Player,
+};
 use bevy::prelude::*;
 use lightyear::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const PROTOCOL_ID: u64 = 0x4c4956494e470001;
 // Shared development-only transport key. Session capabilities still authorize moves.
 // Public Internet admission requires a trusted token issuer before production use.
@@ -21,6 +24,11 @@ pub enum ClientCommand {
         sequence: u64,
         dx: f64,
         dy: f64,
+    },
+    RequestTerrain {
+        fingerprint: String,
+        x: u32,
+        y: u32,
     },
 }
 
@@ -49,6 +57,13 @@ pub enum ServerUpdate {
     Rejected {
         reason: String,
         reconnect: bool,
+    },
+    TerrainManifest {
+        info: Option<TerrainInfo>,
+    },
+    TerrainChunk {
+        fingerprint: String,
+        chunk: TerrainChunk,
     },
 }
 
