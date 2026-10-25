@@ -15,6 +15,26 @@ let displayedBrief=briefs.argonaut;
 const labels=[['THEME-01','Frozen theme & material palette'],['GEN-05.access','Commander can enter'],['GEN-06.support','Structure meets the ground'],['GEN-05.sensor','Sensor detects the test target'],['THEME-02','Visual theme consistency'],['LIVE-04','Three actual rendered views']];
 const terminal=['accepted','active','failed','blocked','cancelled','exhausted'];
 function el(tag,text,className){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(className)e.className=className;return e;}
+const runSummary=el('section'),runSummaryTitle=el('strong'),runSummaryReason=el('p'),runSummarySpend=el('p');
+runSummary.id='current-run-summary';runSummary.hidden=true;runSummary.setAttribute('role','status');runSummary.setAttribute('aria-live','polite');runSummary.style.cssText='font-size:12px;line-height:1.5;margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:5px';
+runSummaryReason.style.margin='6px 0';runSummarySpend.style.cssText='font-size:10px;margin:6px 0;color:var(--muted)';
+runSummary.append(runSummaryTitle,runSummaryReason,runSummarySpend,$('cancel'));$('generation-panel').before(runSummary,$('error'));
+function runLimitReason(job){
+  const limits=job.pipeline?.contract?.limits||{},attempts=job.attempts?.length||0,calls=job.calls||0,reached=[];
+  if(attempts>=(limits.maxAttempts??3))reached.push(`Candidate limit reached (${attempts}/${limits.maxAttempts??3})`);
+  if(calls>=(limits.maxProviderCalls??6))reached.push(`API call limit reached (${calls}/${limits.maxProviderCalls??6})`);
+  const stoppedAt=terminal.includes(job.status)?Date.parse(job.events?.at(-1)?.at):Date.now(),deadline=Number(job.deadline||job.pipeline?.contract?.deadlineMs);
+  if(deadline&&Number.isFinite(stoppedAt)&&stoppedAt>=deadline)reached.push(`Time limit reached (${Math.round((limits.timeBudgetMs??1200000)/60000)} minutes)`);
+  return job.status==='exhausted'?(reached.join('; ')||`Run stopped at ${attempts}/${limits.maxAttempts??3} candidates and ${calls}/${limits.maxProviderCalls??6} API calls; ${job.stopReason||'no further work allowed'}`):job.stopReason||'';
+}
+function renderRunSummary(job){
+  const limits=job.pipeline?.contract?.limits||{},attempt=job.attempts?.at(-1),stopped=['failed','blocked','exhausted','cancelled'].includes(job.status),phase={generating:'Generating scene',repairing:'Revising scene',rendering:'Capturing actual renders',reviewing:'Independent visual review in progress',validating:'Checking geometry',preparing:'Preparing the selected scene',accepted:'Scene accepted',active:'Scene active'}[job.status]||job.status;
+  runSummary.hidden=false;runSummaryTitle.textContent=`${phase} · ${job.attempts?.length||0}/${limits.maxAttempts??3} candidates · ${job.calls||0}/${limits.maxProviderCalls??6} API calls`;
+  const failure=attempt?.validationError||(attempt?.checks||[]).find(check=>check.status==='fail'||check.status==='blocked')?.detail||attempt?.decisionReason;
+  const reason=stopped?[runLimitReason(job),failure&&`Last issue: ${failure}`].filter(Boolean).join('. '):job.status==='reviewing'?'The critic is inspecting three actual renderer views.':!terminal.includes(job.status)?job.events?.at(-1)?.message||'Work is in progress.':job.stopReason||'';
+  runSummaryReason.textContent=reason.length>320?reason.slice(0,317)+'…':reason;runSummaryReason.title=reason;
+  const spend=job.spending||config?.spending;runSummarySpend.hidden=!spend||!Number.isFinite(spend.capUsd);runSummarySpend.textContent=spend?`Session dollars: $${Number(spend.capUsd).toFixed(2)} allowance · $${Number(spend.allocatedUsd||0).toFixed(2)} reserved, not billed spend. Job candidates and API calls have separate limits.`:'';
+}
 async function api(url,body){const response=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const value=await response.json();if(!response.ok)throw new Error(value.error||'Request failed');return value;}
 function error(e){$('error').textContent=e.message;}
 function validateContract(value){
@@ -390,7 +410,7 @@ function renderJob(job){
   currentJob=job;busy=!terminal.includes(job.status);renderSavedScenes();const savedUrl=new URL(location.href);savedUrl.searchParams.set('job',job.id);history.replaceState(null,'',savedUrl);$('start').disabled=busy;$('cancel').hidden=!busy;setEditorLocked(busy);$('contract-version').textContent=`CONTRACT v${job.contractVersion||1}`;
   const editorContract=editorTheme(job.theme,job.themeId);
   if(JSON.stringify(themeContract)!==JSON.stringify(editorContract))renderThemeContract(editorContract,{selectPreset:true,preview:false});
-  $('run-status').textContent=job.status.toUpperCase();
+  $('run-status').textContent=job.status.toUpperCase();renderRunSummary(job);
   const limits=job.pipeline?.contract?.limits||{};
   $('run-budget').textContent=`${job.attempts.length}/${limits.maxAttempts??3} CANDIDATES · ${job.calls}/${limits.maxProviderCalls??6} CALLS`;
   $('run-title').textContent=job.status==='accepted'?'Candidate accepted.':job.status==='active'?'Candidate active in preview.':job.status==='blocked'?'Run blocked.':busy?'Run in progress.':'Run finished.';
@@ -406,7 +426,7 @@ function renderJob(job){
   if(job.provider==='fixture')$('connection').textContent='OFFLINE REHEARSAL';
   else $('connection').textContent='GEMINI · '+(job.provider==='managed'?'MANAGED':'DIRECT');
   renderLatestComparison(job);renderAttemptHistory(job);renderRefinementControls(job);
-  if(job.stopReason&&['blocked','exhausted'].includes(job.status))$('error').textContent=job.stopReason;
+  $('error').textContent='';
 }
 for(const t of Object.values(THEMES)){const option=el('option',t.name+' · '+t.genre);option.value=t.id;$('theme').append(option);}
 $('theme').onchange=()=>{$('use-manual-theme').checked=true;themeChanged();$('theme-draft-note').textContent='MANUAL THEME OVERRIDE · The selected preset will be frozen for this job.';};
@@ -453,7 +473,7 @@ $('cancel').onclick=async()=>{try{renderJob(await api(`/api/jobs/${currentJob.id
 $('activate').onclick=async()=>{try{const r=await api(`/api/jobs/${currentJob.id}/activate`,{});$('release-label').textContent=(r.rehearsal?'REHEARSAL ACTIVE · ':'ACTIVE · ')+r.hash.slice(0,10);renderJob(await api('/api/jobs/'+currentJob.id));}catch(e){error(e);}};
 $('base-version').onchange=()=>{if(currentJob){renderRefinementControls(currentJob);const selected=currentJob.attempts.find(attempt=>attempt.hash===$('base-version').value);if(selected?.recipe){world.load(selected.recipe,currentJob.theme);lastHash=selected.hash;$('scene-name').textContent=selected.recipe.name.toUpperCase();$('version-label').textContent=`SAVED VERSION ${selected.number}`;}}};
 $('new-scene').onclick=()=>{
-  if(busy)return;currentJob=null;releasePinned=false;sceneRevision++;setEditorLocked(false);$('generation-panel').hidden=false;$('generation-panel').open=true;$('generation-panel').classList.remove('has-scene');$('refinement-panel').hidden=true;$('new-scene').hidden=true;$('prompt').value='';$('error').textContent='';$('use-manual-theme').checked=false;$('inject').checked=false;$('provider').value=config?.keyConfigured?'gemini':'fixture';$('connection').textContent=config?.keyConfigured?'GEMINI · DIRECT':'OFFLINE REHEARSAL';modeNote();clearLocalReference();const url=new URL(location.href);url.searchParams.delete('job');history.replaceState(null,'',url);renderSavedScenes();$('prompt').focus();
+  if(busy)return;runSummary.hidden=true;currentJob=null;releasePinned=false;sceneRevision++;setEditorLocked(false);$('generation-panel').hidden=false;$('generation-panel').open=true;$('generation-panel').classList.remove('has-scene');$('refinement-panel').hidden=true;$('new-scene').hidden=true;$('prompt').value='';$('error').textContent='';$('use-manual-theme').checked=false;$('inject').checked=false;$('provider').value=config?.keyConfigured?'gemini':'fixture';$('connection').textContent=config?.keyConfigured?'GEMINI · DIRECT':'OFFLINE REHEARSAL';modeNote();clearLocalReference();const url=new URL(location.href);url.searchParams.delete('job');history.replaceState(null,'',url);renderSavedScenes();$('prompt').focus();
 };
 $('saved-scene').onchange=async()=>{
   if(busy)return;
