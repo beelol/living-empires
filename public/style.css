@@ -5,3 +5,5 @@
 .primary:hover:not(:disabled){filter:brightness(1.08)}
 .event:last-child{border-bottom:0}
 @media(max-width:520px){main{padding:0 12px}.breadcrumb{letter-spacing:.7px}.pill{font-size:8px;padding:6px 7px}.viewport-card{min-height:420px}.world-hud{gap:9px}.hud-symbol{width:34px;height:34px;flex:none}.world-hud b{font-size:11px}.world-hud div>span{font-size:9px}.world-hud button{max-width:94px;line-height:1.4}.scene-caption{left:13px;right:13px;bottom:96px}.brief-card,.progress-card,.acceptance-card,.evidence-card{padding:17px}.pipeline{padding:11px 7px;gap:3px;font-size:7px}.events{max-height:180px}.image-grid{grid-template-columns:1fr 1fr}.image-grid figure:last-child{grid-column:1/-1;width:calc(50% - 3px)}}
+.package-link{display:flex;justify-content:center;align-items:center;margin-top:9px;padding:11px;border:1px solid #d3dcd0;border-radius:5px;color:#49674c;text-decoration:none;font-size:10px;font-weight:600}
+.package-link:hover{background:#eaf0e5;color:#315b44}

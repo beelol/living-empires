@@ -32,14 +32,17 @@ function renderChecks(checks=[]){
 }
 function renderJob(job){
   currentJob=job;busy=!terminal.includes(job.status);$('start').disabled=busy;$('cancel').hidden=!busy;$('theme').disabled=busy;$('provider').disabled=busy;$('inject').disabled=busy;
-  $('run-status').textContent=job.status.toUpperCase();$('run-title').textContent=job.status==='accepted'?'A candidate has earned its place.':job.status==='active'?'Your frontier has evolved.':job.status==='blocked'?'The loop needs attention.':busy?'The next iteration is taking shape.':'Run complete.';
+  $('run-status').textContent=job.status.toUpperCase();$('run-title').textContent=job.status==='accepted'?'A candidate has earned its place.':job.status==='active'?'The asset is active in the test scene.':job.status==='blocked'?'The loop needs attention.':busy?'The next iteration is taking shape.':'Run complete.';
   $('run-budget').textContent=`${job.attempts.length}/3 CANDIDATES · ${job.calls}/6 CALLS`;
   $('events').replaceChildren(...job.events.slice().reverse().map(event=>{const row=el('div',undefined,'event');row.append(el('time',new Date(event.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})),el('span',event.message));return row;}));
   const stage={queued:'generating',generating:'generating',repairing:'generating',validating:'validating',rendering:'validating',reviewing:'reviewing',accepted:'accepted',active:'accepted'}[job.status];
   document.querySelectorAll('[data-stage]').forEach(e=>e.classList.toggle('running',e.dataset.stage===stage));
   const attempt=job.attempts.at(-1);renderChecks(attempt?.checks);
   if(attempt?.recipe&&attempt.hash!==lastHash){world.load(attempt.recipe,job.theme);lastHash=attempt.hash;$('scene-name').textContent=attempt.recipe.name.toUpperCase();$('scene-theme').textContent=job.theme.name.toUpperCase();$('version-label').textContent=`CANDIDATE ${attempt.number}`;}
-  $('activate').disabled=job.status!=='accepted';$('activate').textContent=job.status==='accepted'?(job.provider==='fixture'?'Activate rehearsal candidate ↗':'Activate verified candidate ↗'):job.status==='active'?'Candidate is active ✓':'Awaiting a verified candidate ↗';
+  $('activate').disabled=job.status!=='accepted';$('activate').textContent=job.status==='accepted'?(job.provider==='fixture'?'Use rehearsal asset in preview ↗':'Use verified asset in preview ↗'):job.status==='active'?'Asset is active ✓':'Awaiting a verified candidate ↗';
+  const packageLink=$('download-package'),downloadable=['accepted','active'].includes(job.status);
+  packageLink.hidden=!downloadable;packageLink.href=downloadable?`/api/jobs/${encodeURIComponent(job.id)}/package`:'';
+  packageLink.textContent=job.provider==='fixture'?'Download rehearsal asset package ↓':'Download asset package ↓';
   if(job.provider==='fixture')$('connection').textContent='OFFLINE REHEARSAL';
   else $('connection').textContent='GEMINI · '+(job.provider==='managed'?'MANAGED':'DIRECT');
   const signature=job.attempts.map(a=>a.hash+':'+a.images.length+':'+a.checks.map(c=>c.status).join(',')).join('|');
